@@ -1,0 +1,2402 @@
+import subprocess
+import unittest
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from cmu.cli import main
+from cmu.models import Memory, MemoryScope, MemoryStatus, MemoryType
+from cmu.promotion import promote_memory, review_promotion
+from cmu.remembering import RememberRequest, remember_candidate
+from cmu.retrieval import PreflightQuery, preflight
+from cmu.store import MemoryStore
+from cmu.usage import (
+    CommitLinkRequest,
+    MemoryUseReceipt,
+    MemoryUseStore,
+    format_git_metadata_error,
+    inspect_git_commit,
+    link_commit,
+    use_summary,
+    usage_adjustment,
+)
+
+
+class MemoryStoreTests(unittest.TestCase):
+    def test_store_round_trips_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Migration order matters",
+                summary="Apply schema migrations before service rollout.",
+                signals=["migration", "deploy"],
+                scope=MemoryScope(code=["billing migrations"]),
+            )
+
+            store.add(memory)
+
+            loaded = store.list()
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].title, "Migration order matters")
+
+
+class PreflightTests(unittest.TestCase):
+    def test_preflight_returns_action_note_for_relevant_memory(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            signals=["migration", "deploy"],
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            evidence=["Previous deploy failed when service rolled out first."],
+            use_this_path="Check migration order before changing deployment code.",
+            avoid_this="Do not roll out service code before confirming schema compatibility.",
+            challenge_only_if="The deployment path no longer touches the billing schema.",
+            liability_score=5,
+            confidence=0.9,
+        )
+
+        note = preflight(
+            [memory],
+            PreflightQuery(
+                prompt="Fix billing deployment migration failure",
+                actor="agent",
+                area="billing",
+                files=["billing/deploy.py"],
+                risk="high",
+            ),
+        )
+
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("Do migration before deploy", note.render())
+
+    def test_preflight_stays_quiet_when_irrelevant(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Auth token rotation",
+            summary="Token rotation has a lock ordering constraint.",
+            signals=["auth", "token"],
+            scope=MemoryScope(code=["auth"]),
+            liability_score=4,
+        )
+
+        note = preflight(
+            [memory],
+            PreflightQuery(prompt="Change CSS spacing on settings page", risk="low"),
+        )
+
+        self.assertIsNone(note)
+
+    def test_cli_preflight_creates_use_receipt_when_memory_surfaces(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                signals=["migration", "deploy"],
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Previous deploy failed when service rolled out first."],
+                use_this_path="Check migration order before changing deployment code.",
+                avoid_this="Do not roll out service code before confirming schema compatibility.",
+                challenge_only_if="The deployment path no longer touches the billing schema.",
+                liability_score=5,
+                confidence=0.9,
+            )
+            store.add(memory)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Fix billing deployment migration failure",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--file",
+                        "billing/deploy.py",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Use Receipt: use_", output.getvalue())
+            receipts = MemoryUseStore(tmp).list()
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].memory_id, memory.id)
+            self.assertEqual(receipts[0].files, ["billing/deploy.py"])
+
+    def test_cli_preflight_does_not_create_use_receipt_when_quiet(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            store.add(
+                Memory.create(
+                    type=MemoryType.SITUATION,
+                    title="Auth token rotation",
+                    summary="Token rotation has a lock ordering constraint.",
+                    signals=["auth", "token"],
+                    scope=MemoryScope(code=["auth"]),
+                    liability_score=4,
+                )
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Change CSS spacing on settings page",
+                        "--risk",
+                        "low",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU stayed quiet", output.getvalue())
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_preflight_uses_commit_receipts_to_adjust_ranking(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            first = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Billing deploy checks service order",
+                summary="Billing deploy work should check service rollout order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                use_this_path="Check service rollout order.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            second = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Billing deploy checks migration order",
+                summary="Billing deploy work should check migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                use_this_path="Check migration order.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(first)
+            store.add(second)
+            receipt = MemoryUseReceipt.create(
+                second,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 3.0})(),
+            )
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.85
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Fix billing deploy",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--file",
+                        "billing/deploy.py",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Billing deploy checks migration order", output.getvalue())
+
+    def test_cli_preflight_does_not_use_receipts_to_surface_irrelevant_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Billing deploy checks migration order",
+                summary="Billing deploy work should check migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                use_this_path="Check migration order.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+            for _ in range(10):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                    match=type("MatchStub", (), {"score": 3.0})(),
+                )
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.95
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Change CSS spacing on settings page",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "frontend",
+                        "--file",
+                        "ui/settings.css",
+                        "--risk",
+                        "low",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU stayed quiet", output.getvalue())
+            self.assertNotIn("Use Receipt:", output.getvalue())
+
+
+class MemoryUseTests(unittest.TestCase):
+    def test_link_commit_marks_mixed_commit_with_lower_confidence(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.9,
+        )
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(
+                prompt="Fix billing deployment migration failure",
+                actor="agent",
+                area="billing",
+                files=["billing/deploy.py"],
+                risk="high",
+            ),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+
+        decision = link_commit(
+            receipt,
+            CommitLinkRequest(
+                use_id=receipt.id,
+                commit_hash="abc123",
+                message="Fix billing deploy",
+                files=["billing/deploy.py", "auth/tokens.py", "ui/settings.css", "README.md"],
+            ),
+        )
+
+        self.assertTrue(decision.linked)
+        self.assertEqual(receipt.outcome_signal, "committed")
+        self.assertIn("mixed_commit", receipt.flags)
+        self.assertLess(receipt.link_confidence, 0.85)
+
+    def test_link_commit_marks_no_file_context_and_no_overlap(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.9,
+        )
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+
+        no_context = link_commit(
+            receipt,
+            CommitLinkRequest(use_id=receipt.id, commit_hash="abc123", message="Fix billing deploy"),
+        )
+
+        self.assertTrue(no_context.linked)
+        self.assertIn("no_commit_file_context", receipt.flags)
+        self.assertEqual(receipt.outcome_signal, "committed")
+        self.assertLess(receipt.link_confidence, 0.5)
+
+        no_overlap = link_commit(
+            receipt,
+            CommitLinkRequest(
+                use_id=receipt.id,
+                commit_hash="def456",
+                message="Fix unrelated frontend settings",
+                files=["ui/settings.css"],
+            ),
+        )
+
+        self.assertTrue(no_overlap.linked)
+        self.assertIn("no_file_overlap", receipt.flags)
+        self.assertEqual(receipt.outcome_signal, "committed_low_confidence")
+        self.assertLess(receipt.link_confidence, 0.4)
+
+    def test_link_commit_detects_wip_and_revert_signals(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.ANCHOR,
+            title="Auth token rotation ordering",
+            summary="Token rotation must acquire the lock before updating active credentials.",
+            scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.85,
+        )
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Change auth token rotation", actor="agent", area="auth", files=["auth/tokens.py"], risk="high"),
+            match=type("MatchStub", (), {"score": 5.0})(),
+        )
+
+        wip = link_commit(
+            receipt,
+            CommitLinkRequest(
+                use_id=receipt.id,
+                commit_hash="abc123",
+                message="WIP auth token rotation checkpoint",
+                files=["auth/tokens.py"],
+            ),
+        )
+
+        self.assertTrue(wip.linked)
+        self.assertEqual(receipt.outcome_signal, "checkpoint")
+        self.assertIn("wip_commit", receipt.flags)
+        self.assertLessEqual(receipt.link_confidence, 0.55)
+
+        reverted = link_commit(
+            receipt,
+            CommitLinkRequest(
+                use_id=receipt.id,
+                commit_hash="def456",
+                message="Revert auth token rotation checkpoint",
+                files=["auth/tokens.py"],
+            ),
+        )
+
+        self.assertTrue(reverted.linked)
+        self.assertEqual(receipt.outcome_signal, "reverted")
+        self.assertIn("reverted_after_use", receipt.flags)
+        self.assertLessEqual(receipt.link_confidence, 0.2)
+
+    def test_link_commit_detects_delayed_commit(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.9,
+        )
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+        receipt.surfaced_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+
+        decision = link_commit(
+            receipt,
+            CommitLinkRequest(
+                use_id=receipt.id,
+                commit_hash="abc123",
+                message="Fix billing deploy",
+                files=["billing/deploy.py"],
+                commit_time=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+
+        self.assertTrue(decision.linked)
+        self.assertIn("delayed_commit", receipt.flags)
+        self.assertLess(receipt.link_confidence, 0.85)
+
+    def test_cli_use_link_persists_commit_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-link",
+                        receipt.id,
+                        "--commit",
+                        "abc123",
+                        "--manual",
+                        "--message",
+                        "Fix billing deploy",
+                        "--file",
+                        "billing/deploy.py",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Link Applied", output.getvalue())
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.commit_hash, "abc123")
+            self.assertEqual(linked.outcome_signal, "committed")
+            self.assertGreaterEqual(linked.link_confidence, 0.8)
+
+    def test_memory_use_store_round_trips_git_metadata_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", files=["billing/deploy.py"]),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.commit_hash = "abc123"
+            receipt.commit_message = "Fix billing deploy"
+            receipt.commit_files = ["billing/deploy.py"]
+            receipt.commit_time = "2026-05-18T12:00:00+00:00"
+            receipt.metadata_source = "git"
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.85
+            receipt.flags = ["mixed_commit"]
+            MemoryUseStore(tmp).add(receipt)
+
+            [loaded] = MemoryUseStore(tmp).list()
+
+            self.assertEqual(loaded.commit_hash, "abc123")
+            self.assertEqual(loaded.commit_time, "2026-05-18T12:00:00+00:00")
+            self.assertEqual(loaded.metadata_source, "git")
+            self.assertEqual(loaded.flags, ["mixed_commit"])
+
+    def test_inspect_git_commit_reads_message_time_and_all_changed_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_files_and_commit(
+                tmp,
+                {
+                    "billing/deploy.py": "deploy = true\n",
+                    "billing/schema.sql": "select 1;\n",
+                },
+                ["Fix billing deploy", "Body line for checkpoint context."],
+            )
+
+            metadata = inspect_git_commit(tmp, "HEAD")
+
+            self.assertRegex(metadata.commit_hash, r"^[0-9a-f]{40}$")
+            self.assertIn("Fix billing deploy", metadata.message)
+            self.assertIn("Body line for checkpoint context.", metadata.message)
+            self.assertRegex(metadata.commit_time, r"^\d{4}-\d{2}-\d{2}T")
+            self.assertEqual(metadata.files, ["billing/deploy.py", "billing/schema.sql"])
+
+    def test_cli_use_link_reads_git_metadata_for_commit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link", receipt.id, "--commit", "HEAD"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Link Applied", output.getvalue())
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertNotEqual(linked.commit_hash, "HEAD")
+            self.assertEqual(linked.commit_message, "Fix billing deploy")
+            self.assertEqual(linked.commit_files, ["billing/deploy.py"])
+            self.assertEqual(linked.metadata_source, "git")
+            self.assertEqual(linked.outcome_signal, "committed")
+            self.assertGreaterEqual(linked.link_confidence, 0.8)
+
+    def test_cli_use_link_git_failure_does_not_mutate_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", files=["billing/deploy.py"]),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link", receipt.id, "--commit", "HEAD"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Link Not Applied", output.getvalue())
+            self.assertIn("git metadata unavailable", output.getvalue())
+            [loaded] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded.commit_hash, "")
+            self.assertEqual(loaded.outcome_signal, "")
+            self.assertEqual(loaded.flags, [])
+
+    def test_git_metadata_error_explains_inaccessible_parent_repo(self) -> None:
+        rendered = format_git_metadata_error(
+            "C:/project",
+            "fatal: cannot change to 'C:/Users/chait'",
+        )
+
+        self.assertIn("git metadata unavailable", rendered)
+        self.assertIn("root=", rendered)
+        self.assertIn("project", rendered)
+        self.assertIn("cannot access from the CMU root", rendered)
+        self.assertIn("manual commit metadata", rendered)
+
+    def test_cli_use_link_git_metadata_can_be_overridden_for_known_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "generated/bundle.js", "bundle\n", "Fix billing deploy")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-link",
+                        receipt.id,
+                        "--commit",
+                        "HEAD",
+                        "--file",
+                        "billing/deploy.py",
+                        "--message",
+                        "Fix billing deploy with generated output",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.metadata_source, "git")
+            self.assertEqual(linked.commit_files, ["billing/deploy.py"])
+            self.assertEqual(linked.commit_message, "Fix billing deploy with generated output")
+            self.assertEqual(linked.outcome_signal, "committed")
+            self.assertGreaterEqual(linked.link_confidence, 0.8)
+
+    def test_cli_use_link_latest_reads_head_commit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "auth/tokens.py", "locked = true\n", "WIP auth token checkpoint")
+            memory = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.85,
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Change auth token rotation", actor="agent", area="auth", files=["auth/tokens.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 5.0})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-latest", receipt.id])
+
+            self.assertEqual(exit_code, 0)
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.metadata_source, "git")
+            self.assertEqual(linked.outcome_signal, "checkpoint")
+            self.assertIn("wip_commit", linked.flags)
+
+    def test_cli_use_link_auto_dry_run_does_not_mutate_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-auto"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Link Auto Dry Run", output.getvalue())
+            self.assertIn("would link", output.getvalue())
+            [loaded] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded.commit_hash, "")
+
+    def test_cli_use_link_auto_apply_links_confident_match(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-auto", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Link Auto Applied", output.getvalue())
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.commit_hash, metadata.commit_hash)
+            self.assertEqual(linked.metadata_source, "git-auto")
+            self.assertIn("auto_linked", linked.flags)
+            self.assertGreaterEqual(linked.link_confidence, 0.8)
+
+    def test_cli_use_link_auto_leaves_ambiguous_receipt_unlinked(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            first = inspect_git_commit(tmp, "HEAD")
+            write_and_commit(tmp, "billing/deploy.py", "deploy = false\n", "Fix billing deploy")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(first, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-auto", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("multiple commits were plausible", output.getvalue())
+            [loaded] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded.commit_hash, "")
+
+    def test_cli_use_link_auto_applies_split_credit_for_shared_commit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            use_store = MemoryUseStore(tmp)
+            for prompt in ["Fix billing deploy", "Repair billing deployment"]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt=prompt, actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.surfaced_at = before_commit(metadata, minutes=30)
+                use_store.add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-auto", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("split-credit", output.getvalue())
+            linked = MemoryUseStore(tmp).list()
+            self.assertEqual(len(linked), 2)
+            self.assertTrue(all(receipt.commit_hash == metadata.commit_hash for receipt in linked))
+            self.assertTrue(all("split_credit" in receipt.flags for receipt in linked))
+
+    def test_cli_use_link_auto_surfaces_drag_review_prompt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            MemoryStore(tmp).add(memory)
+            for signal, flags in [
+                ("reverted", ["reverted_after_use"]),
+                ("committed_low_confidence", ["no_file_overlap"]),
+            ]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"{signal}123"
+                receipt.outcome_signal = signal
+                receipt.flags = flags
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-link-auto"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Review Prompts", output.getvalue())
+            self.assertIn("drag signals", output.getvalue())
+
+    def test_usage_adjustment_is_capped_for_repeated_positive_and_negative_signals(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+        )
+        positive_receipts = []
+        for _ in range(10):
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.95
+            positive_receipts.append(receipt)
+        negative_receipts = []
+        for _ in range(10):
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.outcome_signal = "reverted"
+            receipt.link_confidence = 0.2
+            receipt.flags = ["reverted_after_use", "no_file_overlap"]
+            negative_receipts.append(receipt)
+
+        self.assertEqual(usage_adjustment(positive_receipts), 0.8)
+        self.assertEqual(usage_adjustment(negative_receipts), -0.8)
+
+    def test_cli_use_summary_renders_persisted_signal_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            committed = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            committed.outcome_signal = "committed"
+            committed.link_confidence = 0.85
+            reverted = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            reverted.outcome_signal = "reverted"
+            reverted.link_confidence = 0.2
+            reverted.flags = ["reverted_after_use"]
+            MemoryUseStore(tmp).add(committed)
+            MemoryUseStore(tmp).add(reverted)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-summary", memory.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("Total Uses: 2", rendered)
+            self.assertIn("Committed: 1", rendered)
+            self.assertIn("Reverted: 1", rendered)
+
+    def test_cli_use_review_surfaces_strong_usefulness_card(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"abc12{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review"])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("CMU Use Review", rendered)
+            self.assertIn("Strengthen evidence suggested", rendered)
+            self.assertIn("2 high-confidence committed uses", rendered)
+
+    def test_cli_use_review_surfaces_drag_card_for_stable_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            MemoryStore(tmp).add(memory)
+            for signal, flags in [
+                ("reverted", ["reverted_after_use"]),
+                ("committed_low_confidence", ["no_file_overlap"]),
+            ]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"{signal}123"
+                receipt.outcome_signal = signal
+                receipt.flags = flags
+                receipt.link_confidence = 0.2
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review"])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("Review suggested", rendered)
+            self.assertIn("2 drag signals across 2 linked uses", rendered)
+            self.assertIn("challenge or retirement", rendered)
+            self.assertIn("Do Not Auto-Mutate", rendered)
+
+    def test_cli_use_review_specific_memory_shows_unlinked_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy debugging",
+                summary="Billing deploy failures often need migration checks.",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("Needs linked evidence", rendered)
+            self.assertIn("Run use-link-auto or use-link", rendered)
+
+    def test_cli_use_review_stays_quiet_when_no_memory_has_review_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy debugging",
+                summary="Billing deploy failures often need migration checks.",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.commit_hash = "abc123"
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.85
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("No memory use review cards found", output.getvalue())
+
+    def test_cli_use_review_thresholds_reports_empty_diagnostic(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", "--thresholds"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Threshold Report", rendered)
+            self.assertIn("Mode: diagnostic only", rendered)
+            self.assertIn("Auto-Link Apply Candidate: score >= 0.55", rendered)
+            self.assertIn("Functionality: No use receipts yet", rendered)
+            self.assertIn("Accuracy: Not enough evidence", rendered)
+            self.assertIn("No Memory Use Receipts found", rendered)
+
+    def test_cli_use_review_thresholds_reports_real_receipt_behavior(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            useful = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy checks migration order",
+                summary="Billing deploy work should check migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            )
+            noisy = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            )
+            store.add(useful)
+            store.add(noisy)
+            add_strong_receipts(tmp, useful, count=2)
+            add_drag_receipts(tmp, noisy, count=2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", "--thresholds"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Threshold Report", rendered)
+            self.assertIn("Strengthen Review: 2+ strong committed uses and 0 drag signals", rendered)
+            self.assertIn("Drag Review: 2+ drag signals", rendered)
+            self.assertIn("Functionality: Use receipts and linked commit/checkpoint signals exist", rendered)
+            self.assertIn("Accuracy: Enough linked evidence for a first-pass threshold review", rendered)
+            self.assertIn("Billing deploy checks migration order: Strengthen evidence suggested", rendered)
+            self.assertIn("Do migration before deploy: Review suggested", rendered)
+            self.assertIn("Do Not Auto-Mutate", rendered)
+
+    def test_cli_use_review_thresholds_rejects_mutating_options(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as apply_context:
+                main(["--root", tmp, "use-review", "--thresholds", "--apply"])
+            self.assertIn("diagnostic only", str(apply_context.exception))
+
+            with self.assertRaises(SystemExit) as prepare_context:
+                main(["--root", tmp, "use-review", "--thresholds", "--prepare", "strengthen"])
+            self.assertIn("diagnostic only", str(prepare_context.exception))
+
+            with self.assertRaises(SystemExit) as memory_context:
+                main(["--root", tmp, "use-review", "mem_123", "--thresholds"])
+            self.assertIn("does not accept a memory id", str(memory_context.exception))
+
+    def test_cli_use_review_prepare_strengthen_proposal_does_not_mutate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy debugging",
+                summary="Billing deploy failures often need migration checks.",
+                confidence=0.7,
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"abc12{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "strengthen"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Proposal", output.getvalue())
+            self.assertIn("Use-review strengthened evidence", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.evidence, [])
+            self.assertEqual(loaded.confidence, 0.7)
+
+    def test_cli_use_review_prepare_strengthen_apply_requires_approval(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy debugging",
+                summary="Billing deploy failures often need migration checks.",
+                confidence=0.7,
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"abc12{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "strengthen", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Missing: approved_by", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.evidence, [])
+
+    def test_cli_use_review_prepare_strengthen_apply_adds_approved_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                confidence=0.75,
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"abc12{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-review",
+                        memory.id,
+                        "--prepare",
+                        "strengthen",
+                        "--apply",
+                        "--approved-by",
+                        "CMU owner",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Applied", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertIn("Use-review evidence approved by: CMU owner", loaded.evidence)
+            self.assertGreater(loaded.confidence, 0.75)
+
+    def test_cli_use_review_prepare_challenge_apply_saves_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            MemoryStore(tmp).add(memory)
+            for signal, flags in [
+                ("reverted", ["reverted_after_use"]),
+                ("committed_low_confidence", ["no_file_overlap"]),
+            ]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"{signal}123"
+                receipt.outcome_signal = signal
+                receipt.flags = flags
+                receipt.link_confidence = 0.2
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "challenge", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Applied", output.getvalue())
+            candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(candidates), 1)
+            self.assertIn("practice challenge", candidates[0].signals)
+            self.assertIn(f"Challenges stable memory: {memory.id}", candidates[0].evidence)
+            practices = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
+            self.assertEqual(len(practices), 1)
+
+    def test_cli_use_review_prepare_scope_review_is_proposal_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            )
+            MemoryStore(tmp).add(memory)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "scope-review", "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Proposal", output.getvalue())
+            self.assertIn("Current scope: billing, deployment", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.scope.code, ["billing"])
+
+    def test_cli_use_review_prepare_scope_review_apply_requires_approval(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            )
+            MemoryStore(tmp).add(memory)
+            add_drag_receipts(tmp, memory, count=2)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-review",
+                        memory.id,
+                        "--prepare",
+                        "scope-review",
+                        "--apply",
+                        "--scope-code",
+                        "billing/deploy.py",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("approved scope review requires explicit owner/team approval", output.getvalue())
+            self.assertIn("Missing: approved_by", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.scope.code, ["billing"])
+
+    def test_cli_use_review_prepare_scope_review_apply_narrows_stable_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            )
+            MemoryStore(tmp).add(memory)
+            add_drag_receipts(tmp, memory, count=2)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-review",
+                        memory.id,
+                        "--prepare",
+                        "scope-review",
+                        "--apply",
+                        "--approved-by",
+                        "CMU core owner",
+                        "--scope-code",
+                        "billing/deploy.py",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Applied", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.scope.code, ["billing/deploy.py"])
+            self.assertEqual(loaded.scope.workflow, ["deployment"])
+            self.assertIn("Scope adjusted from use-review by: CMU core owner", loaded.evidence)
+
+    def test_cli_use_review_prepare_scope_review_refuses_stable_broadening(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Billing deploy ordering",
+                summary="Billing deploys should respect migration order.",
+                scope=MemoryScope(code=["billing/deploy.py"], workflow=["deployment"]),
+            )
+            MemoryStore(tmp).add(memory)
+            add_drag_receipts(tmp, memory, count=2)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-review",
+                        memory.id,
+                        "--prepare",
+                        "scope-review",
+                        "--apply",
+                        "--approved-by",
+                        "CMU core owner",
+                        "--scope-code",
+                        "billing",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("stable memory scope changes that broaden or shift scope require the challenge or split path", output.getvalue())
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.scope.code, ["billing/deploy.py"])
+
+    def test_use_summary_counts_commit_signals(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.9,
+        )
+        committed = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", files=["billing/deploy.py"]),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+        committed.outcome_signal = "committed"
+        committed.link_confidence = 0.85
+        mixed = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", files=["billing/deploy.py"]),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+        mixed.outcome_signal = "reverted"
+        mixed.link_confidence = 0.2
+        mixed.flags = ["reverted_after_use", "mixed_commit"]
+
+        summary = use_summary([committed, mixed], memory.id)
+
+        self.assertEqual(summary.total, 2)
+        self.assertEqual(summary.committed, 1)
+        self.assertEqual(summary.reverted, 1)
+        self.assertEqual(summary.mixed, 1)
+        self.assertLess(summary.retrieval_adjustment, 0.1)
+
+
+class RememberingTests(unittest.TestCase):
+    def test_remember_candidate_for_reusable_situational_intelligence(self) -> None:
+        decision = remember_candidate(
+            [],
+            RememberRequest(
+                title="Store init should create missing root",
+                situation="The smoke test failed because init created .cmu but not the missing root directory.",
+                signals=["explained failure"],
+                outcome="Creating the root before .cmu fixed the CLI init path.",
+                worked="Create the configured root directory before creating the .cmu store.",
+                failed="Assuming the caller already created the root caused a setup failure.",
+                future_use="Use when adding commands that accept custom local store roots.",
+                evidence=["Smoke test failed before the root creation fix."],
+                liability_score=3,
+                suggested_next_type=MemoryType.SITUATION,
+                scope=MemoryScope(code=["cmu/store.py"], workflow=["local setup"], actor=["agent"]),
+                confidence=0.75,
+            ),
+        )
+
+        self.assertTrue(decision.saved)
+        self.assertIsNotNone(decision.memory)
+        assert decision.memory is not None
+        self.assertEqual(decision.memory.type, MemoryType.CANDIDATE)
+        self.assertGreaterEqual(decision.liability_score, 3)
+
+    def test_remember_rejects_low_liability_without_trigger(self) -> None:
+        decision = remember_candidate(
+            [],
+            RememberRequest(
+                situation="Routine formatting typo fix in a local comment.",
+                future_use="Use only if this exact comment typo appears again.",
+                liability_score=1,
+                scope=MemoryScope(code=["README.md"]),
+            ),
+        )
+
+        self.assertFalse(decision.saved)
+        self.assertIn("worked_or_failed", decision.render())
+
+    def test_remember_rejects_likely_duplicate(self) -> None:
+        existing = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Migration order matters",
+            summary="Deploy failed because service code ran before billing migration.",
+            signals=["migration", "deploy", "explained failure"],
+            scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            liability_score=4,
+            confidence=0.8,
+        )
+
+        decision = remember_candidate(
+            [existing],
+            RememberRequest(
+                situation="Billing deploy failed because service code ran before migration.",
+                signals=["explained failure"],
+                future_use="Use when billing deploy order fails again.",
+                evidence=["Deploy log showed service code before migration."],
+                liability_score=4,
+                scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+            ),
+        )
+
+        self.assertFalse(decision.saved)
+        self.assertIn("duplicate", decision.render().lower())
+
+    def test_remember_allows_distinct_memory_with_common_cmu_terms(self) -> None:
+        existing = Memory.create(
+            type=MemoryType.CANDIDATE,
+            title="Stable Practice and Anchor memory mutation must happen",
+            summary="Stable Practice and Anchor memory mutation must happen only through approved challenge resolution details, not from the original challenge text alone.",
+            signals=[],
+            scope=MemoryScope(code=["cmu/challenges.py", "cmu/cli.py"], workflow=["stable-memory-resolution"], actor=["agent"]),
+            evidence=["Unit tests cover update, retire, split, missing mutating details, and CLI split persistence."],
+            use_this_path="Require update, retire, and split outcomes to provide explicit approved resolution details plus resolution evidence.",
+            avoid_this="Letting planned mutating outcomes infer too much from the challenge would make stable memory too easy to rewrite.",
+            challenge_only_if="Use when adding or changing CMU stable-memory mutation paths.",
+            liability_score=4,
+            confidence=0.85,
+        )
+
+        decision = remember_candidate(
+            [existing],
+            RememberRequest(
+                situation="Threshold diagnostics had use receipts but no linked commit evidence, while automatic Git linking could not inspect the repository root.",
+                signals=["tooling quirk"],
+                worked="Report functionality readiness separately from accuracy readiness and keep automatic linking non-mutating on Git metadata failure.",
+                failed="Treating receipt count alone as accuracy evidence would overstate confidence and lead to premature threshold tuning.",
+                future_use="Use when CMU has receipt history but cannot judge matching or review accuracy because checkpoint links are missing.",
+                evidence=["use-review --thresholds reported receipts with zero linked checkpoint signals."],
+                liability_score=4,
+                scope=MemoryScope(code=["cmu/usage.py"], workflow=["threshold-diagnostics"], actor=["agent"]),
+                confidence=0.85,
+            ),
+        )
+
+        self.assertTrue(decision.saved)
+
+
+class CliRememberTests(unittest.TestCase):
+    def test_cli_remember_adds_candidate_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "remember",
+                        "--situation",
+                        "A dependency version quirk caused repeated test errors after failed attempts.",
+                        "--signal",
+                        "repeated error",
+                        "--signal",
+                        "tooling quirk",
+                        "--worked",
+                        "Pin the tool version before rerunning tests.",
+                        "--future-use",
+                        "Use when the same dependency version mismatch appears.",
+                        "--evidence",
+                        "Tests passed after pinning the version.",
+                        "--liability",
+                        "4",
+                        "--scope-code",
+                        "tools",
+                        "--scope-workflow",
+                        "testing",
+                        "--scope-actor",
+                        "agent",
+                        "--confidence",
+                        "0.8",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            memories = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(memories), 1)
+
+
+class PromotionTests(unittest.TestCase):
+    def test_candidate_to_situation_review_passes_when_gate_fields_exist(self) -> None:
+        candidate = Memory.create(
+            type=MemoryType.CANDIDATE,
+            title="Store init should create missing root",
+            summary="The init command failed when the configured root directory did not exist.",
+            signals=["explained failure"],
+            scope=MemoryScope(code=["cmu/store.py"], workflow=["local setup"], actor=["agent"]),
+            evidence=["Smoke test failed before root creation and passed after the fix."],
+            use_this_path="Create the configured root before creating .cmu.",
+            avoid_this="Do not assume custom store roots already exist.",
+            challenge_only_if="Use when adding commands that accept custom local store roots.",
+            liability_score=3,
+            confidence=0.75,
+        )
+
+        review = review_promotion([candidate], candidate.id, MemoryType.SITUATION)
+
+        self.assertTrue(review.gate_passed)
+        self.assertIn("Gate: PASS", review.render())
+
+    def test_candidate_to_situation_review_blocks_missing_required_fields(self) -> None:
+        candidate = Memory.create(
+            type=MemoryType.CANDIDATE,
+            title="Thin candidate",
+            summary="Something happened.",
+            liability_score=2,
+        )
+
+        review = review_promotion([candidate], candidate.id, MemoryType.SITUATION)
+
+        self.assertFalse(review.gate_passed)
+        self.assertIn("evidence_or_outcome", review.missing)
+        self.assertIn("scope", review.missing)
+
+    def test_promote_changes_candidate_to_situation(self) -> None:
+        candidate = Memory.create(
+            type=MemoryType.CANDIDATE,
+            title="Migration order matters",
+            summary="Billing deploy failed because service code ran before migration.",
+            signals=["explained failure"],
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            evidence=["Deploy passed after migration order was corrected."],
+            use_this_path="Run billing migration before service rollout.",
+            avoid_this="Do not roll out service code before schema compatibility.",
+            challenge_only_if="Use when billing deploy or migration order fails again.",
+            liability_score=4,
+            confidence=0.65,
+        )
+
+        decision = promote_memory([candidate], candidate.id, MemoryType.SITUATION)
+
+        self.assertTrue(decision.promoted)
+        self.assertIsNotNone(decision.memory)
+        assert decision.memory is not None
+        self.assertEqual(decision.memory.type, MemoryType.SITUATION)
+        self.assertGreaterEqual(decision.memory.confidence, 0.7)
+
+    def test_situation_to_practice_review_shows_authority_proposal(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery", "agent behavior"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+        )
+
+        review = review_promotion([situation], situation.id, MemoryType.PRACTICE)
+
+        rendered = review.render()
+        self.assertTrue(review.gate_passed)
+        self.assertIn("CMU Practice Proposal Review", rendered)
+        self.assertIn("READY FOR AUTHORITY REVIEW", rendered)
+        self.assertIn("Authority Needed: Explicit owner/team approval before promotion.", rendered)
+        self.assertIn("Choices: Approve, Narrow/Edit, or Keep as Situation.", rendered)
+        self.assertIn("Status: Proposal only. No promotion has been applied.", rendered)
+
+    def test_situation_to_anchor_review_blocks_low_liability(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Local wording cleanup",
+            summary="A local wording cleanup avoided a small bit of confusion.",
+            scope=MemoryScope(code=["README.md"]),
+            evidence=["The wording was clarified."],
+            liability_score=2,
+            confidence=0.8,
+        )
+
+        review = review_promotion([situation], situation.id, MemoryType.ANCHOR)
+
+        self.assertFalse(review.gate_passed)
+        self.assertIn("high_memory_liability", review.missing)
+        self.assertIn("NEEDS NARROWING", review.render())
+
+    def test_situation_to_practice_promotion_requires_approval(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery", "agent behavior"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+        )
+
+        decision = promote_memory([situation], situation.id, MemoryType.PRACTICE)
+
+        self.assertFalse(decision.promoted)
+        self.assertEqual(situation.type, MemoryType.SITUATION)
+        self.assertIn("explicit owner/team approval required", decision.render())
+
+    def test_situation_to_practice_promotion_records_approval(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery", "agent behavior"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.72,
+        )
+
+        decision = promote_memory([situation], situation.id, MemoryType.PRACTICE, approved_by="CMU core owner")
+
+        self.assertTrue(decision.promoted)
+        self.assertIsNotNone(decision.memory)
+        assert decision.memory is not None
+        self.assertEqual(decision.memory.type, MemoryType.PRACTICE)
+        self.assertEqual(decision.memory.approved_by, "CMU core owner")
+        self.assertIn("Authority approval: CMU core owner", decision.memory.evidence)
+        self.assertGreaterEqual(decision.memory.confidence, 0.75)
+
+
+class CliPromotionTests(unittest.TestCase):
+    def test_cli_promote_updates_stored_candidate_to_situation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Dependency version quirk",
+                summary="A dependency version quirk caused repeated test errors.",
+                signals=["repeated error", "tooling quirk"],
+                scope=MemoryScope(code=["tools"], workflow=["testing"], actor=["agent"]),
+                evidence=["Tests passed after pinning the version."],
+                use_this_path="Pin the tool version before rerunning tests.",
+                avoid_this="Do not keep retrying tests without checking dependency versions.",
+                challenge_only_if="Use when the same dependency version mismatch appears.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(candidate)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "promote", candidate.id, "--to", "situation"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Promotion Applied", output.getvalue())
+            situations = MemoryStore(tmp).list(type=MemoryType.SITUATION)
+            self.assertEqual(len(situations), 1)
+            self.assertEqual(situations[0].id, candidate.id)
+
+    def test_cli_review_anchor_proposal_does_not_promote_situation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                signals=["auth", "credentials", "security"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Previous rotation risk was resolved by enforcing lock order."],
+                use_this_path="Acquire the rotation lock before updating active credentials.",
+                avoid_this="Do not update credentials without the lock.",
+                challenge_only_if="The rotation service no longer shares credential state.",
+                liability_score=5,
+                confidence=0.85,
+            )
+            store.add(situation)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review", situation.id, "--to", "anchor"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Anchor Proposal Review", output.getvalue())
+            self.assertIn("Status: Proposal only. No promotion has been applied.", output.getvalue())
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.ANCHOR)), 0)
+            situations = MemoryStore(tmp).list(type=MemoryType.SITUATION)
+            self.assertEqual(len(situations), 1)
+            self.assertEqual(situations[0].id, situation.id)
+
+    def test_cli_promote_anchor_updates_situation_with_approval(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                signals=["auth", "credentials", "security"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Previous rotation risk was resolved by enforcing lock order."],
+                use_this_path="Acquire the rotation lock before updating active credentials.",
+                avoid_this="Do not update credentials without the lock.",
+                challenge_only_if="The rotation service no longer shares credential state.",
+                liability_score=5,
+                confidence=0.85,
+            )
+            store.add(situation)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "promote",
+                        situation.id,
+                        "--to",
+                        "anchor",
+                        "--approved-by",
+                        "security owner",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Promotion Applied", output.getvalue())
+            self.assertIn("Approved By: security owner", output.getvalue())
+            anchors = MemoryStore(tmp).list(type=MemoryType.ANCHOR)
+            self.assertEqual(len(anchors), 1)
+            self.assertEqual(anchors[0].id, situation.id)
+            self.assertEqual(anchors[0].approved_by, "security owner")
+            self.assertIn("Authority approval: security owner", anchors[0].evidence)
+
+
+class ChallengeTests(unittest.TestCase):
+    def test_challenge_practice_records_candidate_without_mutating_stable_memory(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+            approved_by="CMU core owner",
+        )
+
+        decision = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="A batch import task needs many memories at once, not only one compact Action Note.",
+                benefit="Create a scoped exception for batch import planning.",
+                risk="Too much context could make normal agent work noisy.",
+                rollback="Keep the original preflight behavior for non-batch tasks.",
+                challenged_by="agent",
+                evidence=["Batch import planning requires comparing many candidate records."],
+            ),
+        )
+
+        self.assertTrue(decision.saved)
+        self.assertEqual(practice.type, MemoryType.PRACTICE)
+        self.assertIsNotNone(decision.challenge_memory)
+        assert decision.challenge_memory is not None
+        self.assertEqual(decision.challenge_memory.type, MemoryType.CANDIDATE)
+        self.assertIn("practice challenge", decision.challenge_memory.signals)
+        self.assertIn(f"Challenges stable memory: {practice.id}", decision.challenge_memory.evidence)
+        self.assertIn("Status: Challenge recorded. Stable memory was not changed.", decision.render())
+
+    def test_challenge_blocks_non_stable_memory(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Local situation",
+            summary="A reusable but not stable situation.",
+            scope=MemoryScope(code=["cmu"]),
+            evidence=["Observed during local work."],
+        )
+
+        decision = challenge_stable_memory(
+            [situation],
+            ChallengeRequest(
+                memory_id=situation.id,
+                mismatch="This should not use the stable-memory challenge path.",
+                benefit="Use normal Situation refinement instead.",
+                risk="Would add friction too early.",
+                rollback="Keep it as a Situation.",
+            ),
+        )
+
+        self.assertFalse(decision.saved)
+        self.assertIn("only Practice or Anchor", decision.render())
+
+    def test_resolve_challenge_exception_creates_exception_and_retires_challenge(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+            approved_by="CMU core owner",
+        )
+        challenge = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="Batch import planning needs many memories at once.",
+                benefit="Create a scoped exception for batch import planning.",
+                risk="Too much context could make normal agent work noisy.",
+                rollback="Keep compact preflight for non-batch tasks.",
+                challenged_by="agent",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [practice, challenge],
+            ResolveChallengeRequest(
+                challenge_id=challenge.id,
+                outcome="exception",
+                approved_by="CMU core owner",
+            ),
+        )
+
+        self.assertTrue(resolution.applied)
+        self.assertIsNotNone(resolution.outcome_memory)
+        assert resolution.outcome_memory is not None
+        self.assertEqual(resolution.outcome_memory.type, MemoryType.EXCEPTION)
+        self.assertEqual(resolution.outcome_memory.approved_by, "CMU core owner")
+        self.assertIn(f"Exception to stable memory: {practice.id}", resolution.outcome_memory.evidence)
+        self.assertEqual(challenge.status, MemoryStatus.RETIRED)
+        self.assertEqual(practice.type, MemoryType.PRACTICE)
+
+    def test_resolve_challenge_strengthen_adds_evidence_without_changing_type(self) -> None:
+        anchor = Memory.create(
+            type=MemoryType.ANCHOR,
+            title="Auth token rotation ordering",
+            summary="Token rotation must acquire the lock before updating active credentials.",
+            signals=["auth", "credentials", "security"],
+            scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+            evidence=["Previous rotation risk was resolved by enforcing lock order."],
+            use_this_path="Acquire the rotation lock before updating active credentials.",
+            avoid_this="Do not update credentials without the lock.",
+            challenge_only_if="The rotation service no longer shares credential state.",
+            liability_score=5,
+            confidence=0.75,
+            approved_by="security owner",
+        )
+        challenge = challenge_stable_memory(
+            [anchor],
+            ChallengeRequest(
+                memory_id=anchor.id,
+                mismatch="The new service may isolate credential state.",
+                benefit="Avoid unnecessary global lock ordering.",
+                risk="Removing the lock too broadly could reintroduce races.",
+                rollback="Keep the lock-order Anchor for shared credential state.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [anchor, challenge],
+            ResolveChallengeRequest(
+                challenge_id=challenge.id,
+                outcome="strengthen",
+                approved_by="security owner",
+            ),
+        )
+
+        self.assertTrue(resolution.applied)
+        self.assertIsNone(resolution.outcome_memory)
+        self.assertEqual(anchor.type, MemoryType.ANCHOR)
+        self.assertGreaterEqual(anchor.confidence, 0.8)
+        self.assertIn(f"Challenge reviewed and precedent strengthened: {challenge.id}", anchor.evidence)
+        self.assertEqual(challenge.status, MemoryStatus.RETIRED)
+
+    def test_resolve_challenge_requires_approval(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Stable practice",
+            summary="A stable practice.",
+            scope=MemoryScope(code=["cmu"]),
+            evidence=["Approved earlier."],
+            use_this_path="Follow the stable path.",
+            challenge_only_if="Constraints differ.",
+        )
+        challenge = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="Something changed.",
+                benefit="Maybe improve the practice.",
+                risk="Could weaken the precedent.",
+                rollback="Keep the old practice.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [practice, challenge],
+            ResolveChallengeRequest(challenge_id=challenge.id, outcome="exception", approved_by=""),
+        )
+
+        self.assertFalse(resolution.applied)
+        self.assertIn("explicit owner/team approval required", resolution.render())
+
+    def test_resolve_challenge_update_requires_explicit_replacement_details(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Stable practice",
+            summary="A stable practice.",
+            scope=MemoryScope(code=["cmu"]),
+            evidence=["Approved earlier."],
+            use_this_path="Follow the stable path.",
+            avoid_this="Avoid the old trap.",
+            challenge_only_if="Constraints differ.",
+            approved_by="owner",
+        )
+        challenge = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="The old default is now too broad.",
+                benefit="Replace the default with narrower guidance.",
+                risk="A weak update could erase a useful precedent.",
+                rollback="Restore the prior stable practice.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [practice, challenge],
+            ResolveChallengeRequest(challenge_id=challenge.id, outcome="update", approved_by="owner"),
+        )
+
+        self.assertFalse(resolution.applied)
+        self.assertIn("replacement_summary", resolution.render())
+        self.assertIn("resolution_evidence", resolution.render())
+
+    def test_resolve_challenge_update_mutates_stable_memory_after_approval(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should surface compact Action Notes only when memory changes action.",
+            signals=["practice discovery"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+            approved_by="CMU core owner",
+        )
+        challenge = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="High-risk stable-memory work needs a visible preflight lead.",
+                benefit="Clarify when the agent should mention the CMU-backed lead.",
+                risk="Mentioning CMU too often could become noisy.",
+                rollback="Return to quiet-only preflight behavior.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [practice, challenge],
+            ResolveChallengeRequest(
+                challenge_id=challenge.id,
+                outcome="update",
+                approved_by="CMU core owner",
+                replacement_summary="CMU should stay quiet unless memory changes action, but high-risk matched work should name the CMU-backed lead.",
+                replacement_use_path="Run preflight at task start and mention the memory-backed lead when it shapes high-risk work.",
+                replacement_avoid="Do not expose raw memory or create a dashboard moment.",
+                replacement_challenge="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                evidence=["Owner approved visible leads for high-risk matched work."],
+            ),
+        )
+
+        self.assertTrue(resolution.applied)
+        self.assertEqual(practice.summary, "CMU should stay quiet unless memory changes action, but high-risk matched work should name the CMU-backed lead.")
+        self.assertIn("mention the memory-backed lead", practice.use_this_path)
+        self.assertIn(f"Stable memory updated from challenge: {challenge.id}", practice.evidence)
+        self.assertIn("Rollback path from challenge: Return to quiet-only preflight behavior.", practice.evidence)
+        self.assertEqual(challenge.status, MemoryStatus.RETIRED)
+
+    def test_resolve_challenge_retire_retires_stable_memory_after_approval(self) -> None:
+        anchor = Memory.create(
+            type=MemoryType.ANCHOR,
+            title="Auth token rotation ordering",
+            summary="Token rotation must acquire the lock before updating active credentials.",
+            signals=["auth", "credentials", "security"],
+            scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+            evidence=["Previous rotation risk was resolved by enforcing lock order."],
+            use_this_path="Acquire the rotation lock before updating active credentials.",
+            avoid_this="Do not update credentials without the lock.",
+            challenge_only_if="The rotation service no longer shares credential state.",
+            liability_score=5,
+            confidence=0.85,
+            approved_by="security owner",
+        )
+        challenge = challenge_stable_memory(
+            [anchor],
+            ChallengeRequest(
+                memory_id=anchor.id,
+                mismatch="The old shared credential service has been removed.",
+                benefit="Stop guiding agents toward obsolete lock ordering.",
+                risk="Retiring the anchor too early could hide a race in old deployments.",
+                rollback="Restore the anchor for old shared credential deployments.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [anchor, challenge],
+            ResolveChallengeRequest(
+                challenge_id=challenge.id,
+                outcome="retire",
+                approved_by="security owner",
+                retirement_reason="The shared credential service no longer exists in supported deployments.",
+                evidence=["Supported deployments use isolated credential state."],
+            ),
+        )
+
+        self.assertTrue(resolution.applied)
+        self.assertEqual(anchor.status, MemoryStatus.RETIRED)
+        self.assertIn(f"Stable memory retired from challenge: {challenge.id}", anchor.evidence)
+        self.assertIn("Retirement reason: The shared credential service no longer exists in supported deployments.", anchor.evidence)
+        self.assertEqual(challenge.status, MemoryStatus.RETIRED)
+
+    def test_resolve_challenge_split_creates_scoped_stable_memory(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["practice discovery"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+            approved_by="CMU core owner",
+        )
+        challenge = challenge_stable_memory(
+            [practice],
+            ChallengeRequest(
+                memory_id=practice.id,
+                mismatch="Batch import planning needs many memories at once.",
+                benefit="Create a split-off practice for batch import planning.",
+                risk="Too much context could make normal agent work noisy.",
+                rollback="Keep compact preflight for non-batch tasks.",
+            ),
+        ).challenge_memory
+        assert challenge is not None
+
+        resolution = resolve_challenge(
+            [practice, challenge],
+            ResolveChallengeRequest(
+                challenge_id=challenge.id,
+                outcome="split",
+                approved_by="CMU core owner",
+                split_title="Batch import planning can inspect multiple memories",
+                split_summary="Batch import planning may need a broader memory review before selecting candidates.",
+                split_use_path="Inspect the relevant memory set before narrowing import decisions.",
+                split_avoid="Do not apply broad memory review to ordinary task-start preflight.",
+                split_challenge="The work is not a batch import, migration, or consolidation task.",
+                split_scope=MemoryScope(code=["cmu"], workflow=["batch import"], actor=["agent"]),
+                evidence=["Batch import planning requires comparing many candidate records."],
+            ),
+        )
+
+        self.assertTrue(resolution.applied)
+        self.assertIsNotNone(resolution.outcome_memory)
+        assert resolution.outcome_memory is not None
+        self.assertEqual(resolution.outcome_memory.type, MemoryType.PRACTICE)
+        self.assertEqual(resolution.outcome_memory.approved_by, "CMU core owner")
+        self.assertIn("batch import", resolution.outcome_memory.scope.workflow)
+        self.assertIn(f"Split from stable memory: {practice.id}", resolution.outcome_memory.evidence)
+        self.assertIn(f"Split-off stable memory: {resolution.outcome_memory.id}", practice.evidence)
+        self.assertEqual(practice.status, MemoryStatus.ACTIVE)
+        self.assertEqual(challenge.status, MemoryStatus.RETIRED)
+
+
+class CliChallengeTests(unittest.TestCase):
+    def test_cli_challenge_stores_candidate_and_preserves_anchor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            anchor = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                signals=["auth", "credentials", "security"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Previous rotation risk was resolved by enforcing lock order."],
+                use_this_path="Acquire the rotation lock before updating active credentials.",
+                avoid_this="Do not update credentials without the lock.",
+                challenge_only_if="The rotation service no longer shares credential state.",
+                liability_score=5,
+                confidence=0.85,
+                approved_by="security owner",
+            )
+            store.add(anchor)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "challenge",
+                        anchor.id,
+                        "--mismatch",
+                        "The new rotation service uses isolated credential state.",
+                        "--benefit",
+                        "Allow a narrower path without global lock ordering.",
+                        "--risk",
+                        "Removing the lock too broadly could reintroduce credential races.",
+                        "--rollback",
+                        "Keep the original lock-order Anchor for shared credential state.",
+                        "--challenged-by",
+                        "security agent",
+                        "--evidence",
+                        "New service design document says credential state is isolated.",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Stable Memory Challenge", output.getvalue())
+            self.assertIn("Stable memory was not changed", output.getvalue())
+            anchors = MemoryStore(tmp).list(type=MemoryType.ANCHOR)
+            self.assertEqual(len(anchors), 1)
+            self.assertEqual(anchors[0].id, anchor.id)
+            candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(candidates), 1)
+            self.assertIn("anchor challenge", candidates[0].signals)
+            self.assertIn(f"Challenges stable memory: {anchor.id}", candidates[0].evidence)
+
+    def test_cli_resolve_challenge_exception_persists_exception_and_retires_challenge(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["practice discovery"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(practice)
+            challenge = challenge_stable_memory(
+                [practice],
+                ChallengeRequest(
+                    memory_id=practice.id,
+                    mismatch="Batch import planning needs many memories at once.",
+                    benefit="Create a scoped exception for batch import planning.",
+                    risk="Too much context could make normal agent work noisy.",
+                    rollback="Keep compact preflight for non-batch tasks.",
+                ),
+            ).challenge_memory
+            assert challenge is not None
+            store.add(challenge)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "resolve-challenge",
+                        challenge.id,
+                        "--outcome",
+                        "exception",
+                        "--approved-by",
+                        "CMU core owner",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Challenge Resolution Applied", output.getvalue())
+            exceptions = MemoryStore(tmp).list(type=MemoryType.EXCEPTION)
+            self.assertEqual(len(exceptions), 1)
+            self.assertIn(f"Exception to stable memory: {practice.id}", exceptions[0].evidence)
+            retired = MemoryStore(tmp).list(type=MemoryType.CANDIDATE, status=MemoryStatus.RETIRED)
+            self.assertEqual(len(retired), 1)
+            self.assertEqual(retired[0].id, challenge.id)
+
+    def test_cli_resolve_challenge_strengthen_updates_anchor_and_retires_challenge(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            anchor = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                signals=["auth", "credentials", "security"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Previous rotation risk was resolved by enforcing lock order."],
+                use_this_path="Acquire the rotation lock before updating active credentials.",
+                avoid_this="Do not update credentials without the lock.",
+                challenge_only_if="The rotation service no longer shares credential state.",
+                liability_score=5,
+                confidence=0.75,
+                approved_by="security owner",
+            )
+            store.add(anchor)
+            challenge = challenge_stable_memory(
+                [anchor],
+                ChallengeRequest(
+                    memory_id=anchor.id,
+                    mismatch="The new service may isolate credential state.",
+                    benefit="Avoid unnecessary global lock ordering.",
+                    risk="Removing the lock too broadly could reintroduce races.",
+                    rollback="Keep the lock-order Anchor for shared credential state.",
+                ),
+            ).challenge_memory
+            assert challenge is not None
+            store.add(challenge)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "resolve-challenge",
+                        challenge.id,
+                        "--outcome",
+                        "strengthen",
+                        "--approved-by",
+                        "security owner",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            anchors = MemoryStore(tmp).list(type=MemoryType.ANCHOR)
+            self.assertEqual(len(anchors), 1)
+            self.assertIn(f"Challenge reviewed and precedent strengthened: {challenge.id}", anchors[0].evidence)
+            retired = MemoryStore(tmp).list(type=MemoryType.CANDIDATE, status=MemoryStatus.RETIRED)
+            self.assertEqual(len(retired), 1)
+
+    def test_cli_resolve_challenge_split_persists_new_stable_memory_and_retires_challenge(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["practice discovery"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(practice)
+            challenge = challenge_stable_memory(
+                [practice],
+                ChallengeRequest(
+                    memory_id=practice.id,
+                    mismatch="Batch import planning needs many memories at once.",
+                    benefit="Create a split-off practice for batch import planning.",
+                    risk="Too much context could make normal agent work noisy.",
+                    rollback="Keep compact preflight for non-batch tasks.",
+                ),
+            ).challenge_memory
+            assert challenge is not None
+            store.add(challenge)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "resolve-challenge",
+                        challenge.id,
+                        "--outcome",
+                        "split",
+                        "--approved-by",
+                        "CMU core owner",
+                        "--split-title",
+                        "Batch import planning can inspect multiple memories",
+                        "--split-summary",
+                        "Batch import planning may need a broader memory review before selecting candidates.",
+                        "--split-use-path",
+                        "Inspect the relevant memory set before narrowing import decisions.",
+                        "--split-avoid",
+                        "Do not apply broad memory review to ordinary task-start preflight.",
+                        "--split-challenge",
+                        "The work is not a batch import, migration, or consolidation task.",
+                        "--scope-code",
+                        "cmu",
+                        "--scope-workflow",
+                        "batch import",
+                        "--scope-actor",
+                        "agent",
+                        "--evidence",
+                        "Batch import planning requires comparing many candidate records.",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Challenge Resolution Applied", output.getvalue())
+            practices = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
+            self.assertEqual(len(practices), 2)
+            split_practice = next(memory for memory in practices if memory.id != practice.id)
+            self.assertIn("batch import", split_practice.scope.workflow)
+            self.assertIn(f"Split from stable memory: {practice.id}", split_practice.evidence)
+            original = next(memory for memory in practices if memory.id == practice.id)
+            self.assertIn(f"Split-off stable memory: {split_practice.id}", original.evidence)
+            retired = MemoryStore(tmp).list(type=MemoryType.CANDIDATE, status=MemoryStatus.RETIRED)
+            self.assertEqual(len(retired), 1)
+
+
+def init_git_repo(root: str) -> None:
+    run_git_test(root, ["init"])
+    run_git_test(root, ["config", "user.email", "cmu@example.test"])
+    run_git_test(root, ["config", "user.name", "CMU Test"])
+
+
+def add_drag_receipts(root: str, memory: Memory, *, count: int) -> None:
+    for index in range(count):
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+        receipt.commit_hash = f"drag{index}"
+        receipt.commit_message = "Fix unrelated deploy issue"
+        receipt.commit_files = ["ui/settings.css"]
+        receipt.outcome_signal = "committed_low_confidence"
+        receipt.link_confidence = 0.25
+        receipt.flags = ["no_file_overlap"]
+        MemoryUseStore(root).add(receipt)
+
+
+def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:
+    for index in range(count):
+        receipt = MemoryUseReceipt.create(
+            memory,
+            PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+            match=type("MatchStub", (), {"score": 4.2})(),
+        )
+        receipt.commit_hash = f"strong{index}"
+        receipt.commit_message = "Fix billing deploy"
+        receipt.commit_files = ["billing/deploy.py"]
+        receipt.outcome_signal = "committed"
+        receipt.link_confidence = 0.85
+        MemoryUseStore(root).add(receipt)
+
+
+def before_commit(metadata, *, minutes: int) -> str:
+    committed = datetime.fromisoformat(metadata.commit_time)
+    return (committed - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def write_and_commit(root: str, path: str, content: str, message: str) -> None:
+    write_files_and_commit(root, {path: content}, [message])
+
+
+def write_files_and_commit(root: str, files: dict[str, str], messages: list[str]) -> None:
+    for path, content in files.items():
+        file_path = Path(root) / path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+        run_git_test(root, ["add", path])
+    commit_args = ["commit"]
+    for message in messages:
+        commit_args.extend(["-m", message])
+    run_git_test(root, commit_args)
+
+
+def run_git_test(root: str, args: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise unittest.SkipTest(f"git unavailable: {error}") from error
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    return result.stdout
+
+
+if __name__ == "__main__":
+    unittest.main()

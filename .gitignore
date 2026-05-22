@@ -1,0 +1,5 @@
+# Local strategic memory files for CMU development. Keep out of git.
+CMU_*.md
+.cmu/
+__pycache__/
+.pytest_cache/
