@@ -213,7 +213,7 @@ class AutoLinkReport:
                 split = " split-credit" if decision.split_credit else ""
                 lines.append(
                     f"{decision.receipt.id} {action}{split} {short_hash(decision.commit_hash)} "
-                    f"score {decision.score:.2f} - {decision.reason}"
+                    f"link score {decision.score:.2f} - {decision.reason}"
                 )
                 lines.append(f"  Reasons: {format_list(decision.reasons)}")
             else:

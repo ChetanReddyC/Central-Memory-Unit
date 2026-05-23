@@ -677,6 +677,7 @@ class MemoryUseTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("CMU Use Link Auto Dry Run", output.getvalue())
             self.assertIn("would link", output.getvalue())
+            self.assertIn("link score", output.getvalue())
             [loaded] = MemoryUseStore(tmp).list()
             self.assertEqual(loaded.commit_hash, "")
 
@@ -708,6 +709,7 @@ class MemoryUseTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertIn("CMU Use Link Auto Applied", output.getvalue())
+            self.assertIn("link score", output.getvalue())
             [linked] = MemoryUseStore(tmp).list()
             self.assertEqual(linked.commit_hash, metadata.commit_hash)
             self.assertEqual(linked.metadata_source, "git-auto")
