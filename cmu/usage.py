@@ -1037,7 +1037,15 @@ def build_use_review_card(memory: Memory | None, receipts: list[MemoryUseReceipt
     drag = [receipt for receipt in linked if is_drag_signal(receipt)]
     memory_id = receipts[0].memory_id
     title = memory.title if memory is not None else receipts[0].memory_title
-    status, why, suggested_action = review_judgment(memory, len(receipts), len(linked), len(strong_committed), len(drag), len(reverted))
+    status, why, suggested_action = review_judgment(
+        memory,
+        len(receipts),
+        len(linked),
+        len(strong_committed),
+        len(drag),
+        len(reverted),
+        len(mixed),
+    )
     return UseReviewCard(
         memory=memory,
         memory_id=memory_id,
@@ -1084,6 +1092,7 @@ def review_judgment(
     strong_committed: int,
     drag_signals: int,
     reverted: int,
+    mixed: int = 0,
 ) -> tuple[str, str, str]:
     if linked_uses == 0:
         return (
@@ -1095,13 +1104,22 @@ def review_judgment(
         linked_uses >= DRAG_REVIEW_RATIO_MIN_USES and drag_signals / linked_uses >= DRAG_REVIEW_RATIO
     ):
         action = "Review scope and wording; narrow this memory if it is surfacing too broadly."
+        why = f"{drag_signals} drag signals across {linked_uses} linked uses."
+        if mixed == drag_signals and strong_committed:
+            action = "Inspect broad mixed commits before challenging this memory; keep collecting focused linked uses unless drag continues."
+            why = (
+                f"{drag_signals} drag signals across {linked_uses} linked uses, all from mixed commits, "
+                f"with {strong_committed} strong focused uses."
+            )
         if memory is not None and memory.type in {MemoryType.PRACTICE, MemoryType.ANCHOR}:
             action = "Use the challenge path or narrow scope before trusting this stable memory further."
+            if mixed == drag_signals and strong_committed:
+                action = "Inspect broad mixed commits before challenging this stable memory; keep collecting focused linked uses unless drag continues."
         if reverted:
             action = "Review for challenge or retirement; at least one linked use was reverted."
         return (
             "Review suggested",
-            f"{drag_signals} drag signals across {linked_uses} linked uses.",
+            why,
             action,
         )
     if strong_committed >= STRENGTHEN_MIN_STRONG_COMMITS and drag_signals == 0:
