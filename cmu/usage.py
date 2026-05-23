@@ -248,18 +248,24 @@ class UseReviewCard:
     def render(self) -> str:
         memory_label = f"{self.memory_id} {self.memory_title}".strip()
         memory_type = self.memory.type.value if self.memory is not None else "unknown"
-        return "\n".join(
+        lines = [
+            "CMU Use Review",
+            f"Memory: {memory_label}",
+            f"Type: {memory_type}",
+            f"Status: {self.status}",
+            f"Why: {self.why}",
+            f"Signals: {self.signal_summary()}",
+        ]
+        interpretation = self.signal_interpretation()
+        if interpretation:
+            lines.append(f"Interpretation: {interpretation}")
+        lines.extend(
             [
-                "CMU Use Review",
-                f"Memory: {memory_label}",
-                f"Type: {memory_type}",
-                f"Status: {self.status}",
-                f"Why: {self.why}",
-                f"Signals: {self.signal_summary()}",
                 f"Suggested Action: {self.suggested_action}",
                 "Do Not Auto-Mutate: Use evidence should guide review, not silently rewrite memory.",
             ]
         )
+        return "\n".join(lines)
 
     def signal_summary(self) -> str:
         return (
@@ -269,6 +275,16 @@ class UseReviewCard:
             f"{self.low_confidence} low-confidence, {self.mixed} mixed, "
             f"{self.drag_signals} drag signals"
         )
+
+    def signal_interpretation(self) -> str:
+        if self.mixed:
+            return (
+                "Mixed commits are weak evidence because the checkpoint changed much more than the receipt files; "
+                "inspect scope before tuning thresholds."
+            )
+        if self.drag_signals:
+            return "Drag signals mean the linked evidence is weak, reverted, or unrelated; review the memory before tuning thresholds."
+        return ""
 
 
 @dataclass

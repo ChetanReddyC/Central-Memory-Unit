@@ -939,6 +939,37 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("challenge or retirement", rendered)
             self.assertIn("Do Not Auto-Mutate", rendered)
 
+    def test_cli_use_review_explains_mixed_commit_drag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should surface memory only when it changes action.",
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Improve use-review wording", files=["cmu/usage.py"]),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                )
+                receipt.commit_hash = f"mixed{index}"
+                receipt.outcome_signal = "committed"
+                receipt.commit_files = ["cmu/usage.py", "cmu/cli.py", "tests/test_cmu_spine.py", "pyproject.toml"]
+                receipt.flags = ["mixed_commit"]
+                receipt.link_confidence = 0.65
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("2 drag signals across 2 linked uses", rendered)
+            self.assertIn("Mixed commits are weak evidence", rendered)
+            self.assertIn("inspect scope before tuning thresholds", rendered)
+
     def test_cli_use_review_specific_memory_shows_unlinked_state(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
