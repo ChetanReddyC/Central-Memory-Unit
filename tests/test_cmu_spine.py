@@ -71,6 +71,79 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertEqual(loaded[situation.id].relationships[0].type, MemoryRelationType.RELATED_PRACTICE)
             self.assertEqual(loaded[situation.id].relationships[0].target_id, practice.id)
 
+    def test_cli_relate_adds_memory_relationship(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use retry budget",
+                summary="Retries should respect an explicit budget.",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Webhook timeout root cause",
+                summary="Webhook timeout debugging revealed the retry budget practice.",
+            )
+            store.add(practice)
+            store.add(situation)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "relate",
+                        situation.id,
+                        "--type",
+                        "related_practice",
+                        "--target",
+                        practice.id,
+                        "--reason",
+                        "Timeout debugging should lead to the retry budget practice.",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Memory Relationship Applied", output.getvalue())
+            loaded = {memory.id: memory for memory in MemoryStore(tmp).list()}
+            self.assertEqual(loaded[situation.id].relationships[0].target_id, practice.id)
+            self.assertEqual(loaded[situation.id].relationships[0].type, MemoryRelationType.RELATED_PRACTICE)
+
+    def test_cli_relations_shows_outgoing_and_incoming_links(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use retry budget",
+                summary="Retries should respect an explicit budget.",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Webhook timeout root cause",
+                summary="Webhook timeout debugging revealed the retry budget practice.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="This situation teaches the retry budget practice.",
+                    )
+                ],
+            )
+            store.add(practice)
+            store.add(situation)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "relations", practice.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("CMU Memory Relationships", rendered)
+            self.assertIn("Incoming:", rendered)
+            self.assertIn("related_practice <-", rendered)
+            self.assertIn(situation.title, rendered)
+
 
 class PreflightTests(unittest.TestCase):
     def test_preflight_returns_action_note_for_relevant_memory(self) -> None:

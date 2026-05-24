@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
-from .models import Memory, MemoryScope, MemoryType
+from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
 from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import PreflightQuery, action_threshold, build_action_note, rank_memories
@@ -63,6 +63,17 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--type", choices=[item.value for item in MemoryType])
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.set_defaults(func=cmd_list)
+
+    relate_parser = subparsers.add_parser("relate", help="Create a graph relationship between two memories.")
+    relate_parser.add_argument("source_id", help="Memory id that carries the relationship.")
+    relate_parser.add_argument("--type", choices=[item.value for item in MemoryRelationType], required=True)
+    relate_parser.add_argument("--target", required=True, help="Memory id the source relates to.")
+    relate_parser.add_argument("--reason", default="", help="Why this relationship should guide retrieval.")
+    relate_parser.set_defaults(func=cmd_relate)
+
+    relations_parser = subparsers.add_parser("relations", help="Inspect graph relationships for one memory.")
+    relations_parser.add_argument("memory_id", help="Memory id to inspect.")
+    relations_parser.set_defaults(func=cmd_relations)
 
     preflight_parser = subparsers.add_parser("preflight", help="Run a task-start CMU preflight.")
     preflight_parser.add_argument("prompt", nargs="*", help="Task prompt to check against memory.")
@@ -246,6 +257,67 @@ def cmd_list(args: argparse.Namespace, store: MemoryStore) -> int:
         return 0
     for memory in memories:
         print(f"{memory.id} [{memory.type.value}] L{memory.liability_score} C{memory.confidence:.2f} - {memory.title}")
+    return 0
+
+
+def cmd_relate(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    source = find_memory(memories, args.source_id)
+    target = find_memory(memories, args.target)
+    relation_type = MemoryRelationType(args.type)
+    for relationship in source.relationships:
+        if relationship.type == relation_type and relationship.target_id == target.id:
+            print("CMU Memory Relationship Not Applied")
+            print(f"Reason: relationship already exists from {source.id} to {target.id} as {relation_type.value}")
+            return 0
+    source.relationships.append(
+        MemoryRelationship(
+            type=relation_type,
+            target_id=target.id,
+            reason=args.reason.strip(),
+        )
+    )
+    store.update(source)
+    print("CMU Memory Relationship Applied")
+    print(f"Source: {source.id} {source.title}")
+    print(f"Type: {relation_type.value}")
+    print(f"Target: {target.id} {target.title}")
+    if args.reason.strip():
+        print(f"Reason: {args.reason.strip()}")
+    return 0
+
+
+def cmd_relations(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    memory = find_memory(memories, args.memory_id)
+    memory_by_id = {item.id: item for item in memories}
+    lines = [
+        "CMU Memory Relationships",
+        f"Memory: {memory.id} {memory.title}",
+        "Outgoing:",
+    ]
+    if not memory.relationships:
+        lines.append("- None")
+    else:
+        for relationship in memory.relationships:
+            target = memory_by_id.get(relationship.target_id)
+            label = f"{target.id} {target.title}" if target is not None else relationship.target_id
+            reason = f" - {relationship.reason}" if relationship.reason else ""
+            lines.append(f"- {relationship.type.value} -> {label}{reason}")
+    incoming = [
+        (source, relationship)
+        for source in memories
+        for relationship in source.relationships
+        if relationship.target_id == memory.id
+    ]
+    lines.append("Incoming:")
+    if not incoming:
+        lines.append("- None")
+    else:
+        for source, relationship in incoming:
+            reason = f" - {relationship.reason}" if relationship.reason else ""
+            lines.append(f"- {relationship.type.value} <- {source.id} {source.title}{reason}")
+    print("\n".join(lines))
     return 0
 
 
@@ -525,3 +597,10 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def project_root() -> Path:
     return Path.cwd()
+
+
+def find_memory(memories: list[Memory], memory_id: str) -> Memory:
+    for memory in memories:
+        if memory.id == memory_id:
+            return memory
+    raise SystemExit(f"Memory not found: {memory_id}")
