@@ -233,7 +233,69 @@ class PreflightTests(unittest.TestCase):
 
         graph_match = next(match for match in matches if match.memory.id == practice.id)
         self.assertIn("graph:related_practice", graph_match.matched_terms)
+        self.assertEqual(graph_match.graph_source_id, situation.id)
+        self.assertEqual(graph_match.graph_source_title, "Webhook timeout root cause")
+        self.assertEqual(graph_match.graph_relation_type, "related_practice")
+        self.assertEqual(graph_match.graph_relation_reason, "Timeout debugging should lead to the retry budget practice.")
         self.assertGreaterEqual(graph_match.score, 1.6)
+
+    def test_cli_preflight_explains_graph_expanded_matches(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use retry budget",
+                summary="Outbound attempts should respect bounded failure handling.",
+                use_this_path="Check the retry budget before changing retry behavior.",
+                scope=MemoryScope(code=["reliability/budget.md"], workflow=["resilience"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Webhook timeout root cause",
+                summary="Webhook timeouts came from unbounded retries during dependency failures.",
+                signals=["webhook", "timeout", "retries"],
+                scope=MemoryScope(code=["billing/webhook.py"], workflow=["debugging"]),
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="Timeout debugging should lead to the retry budget practice.",
+                    )
+                ],
+                liability_score=3,
+                confidence=0.75,
+            )
+            store.add(practice)
+            store.add(situation)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Investigate billing webhook timeout",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--file",
+                        "billing/webhook.py",
+                        "--risk",
+                        "medium",
+                        "--show-matches",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn(f"match", rendered)
+            self.assertIn(f"via: {situation.id} Webhook timeout root cause", rendered)
+            self.assertIn("relation: related_practice", rendered)
+            self.assertIn("reason: Timeout debugging should lead to the retry budget practice.", rendered)
 
     def test_rank_memories_does_not_expand_graph_from_actor_only_match(self) -> None:
         practice = Memory.create(

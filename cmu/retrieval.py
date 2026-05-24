@@ -73,6 +73,13 @@ class Match:
     memory: Memory
     score: float
     matched_terms: list[str]
+    graph_source_id: str = ""
+    graph_source_title: str = ""
+    graph_relation_type: str = ""
+    graph_relation_reason: str = ""
+
+    def is_graph_expanded(self) -> bool:
+        return bool(self.graph_relation_type and self.graph_source_id)
 
 
 def preflight(memories: list[Memory], query: PreflightQuery) -> ActionNote | None:
@@ -129,6 +136,10 @@ def expand_graph_matches(memories: list[Memory], matches: list[Match]) -> list[M
                 memory=target,
                 score=graph_score,
                 matched_terms=[f"graph:{relationship.type.value}", f"via:{match.memory.id}"],
+                graph_source_id=match.memory.id,
+                graph_source_title=match.memory.title,
+                graph_relation_type=relationship.type.value,
+                graph_relation_reason=relationship.reason,
             )
             expanded.append(graph_match)
             match_by_id[target.id] = graph_match

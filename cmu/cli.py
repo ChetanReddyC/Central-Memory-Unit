@@ -341,7 +341,7 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
     note = build_action_note(matches[0]) if matches else None
     if args.show_matches:
         for match in matches[:5]:
-            print(f"match {match.score}: {match.memory.id} - {match.memory.title}")
+            print(format_preflight_match(match))
         if note:
             print()
     if note is None:
@@ -597,6 +597,16 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def project_root() -> Path:
     return Path.cwd()
+
+
+def format_preflight_match(match) -> str:
+    lines = [f"match {match.score}: {match.memory.id} - {match.memory.title}"]
+    if match.is_graph_expanded():
+        lines.append(f"  via: {match.graph_source_id} {match.graph_source_title}")
+        lines.append(f"  relation: {match.graph_relation_type}")
+        if match.graph_relation_reason:
+            lines.append(f"  reason: {match.graph_relation_reason}")
+    return "\n".join(lines)
 
 
 def find_memory(memories: list[Memory], memory_id: str) -> Memory:

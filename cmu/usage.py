@@ -1199,6 +1199,10 @@ def apply_usage_adjustments(matches: list[Match], receipts: list[MemoryUseReceip
                 memory=match.memory,
                 score=round(max(0.0, match.score + adjustment), 3),
                 matched_terms=match.matched_terms,
+                graph_source_id=match.graph_source_id,
+                graph_source_title=match.graph_source_title,
+                graph_relation_type=match.graph_relation_type,
+                graph_relation_reason=match.graph_relation_reason,
             )
         )
     return sorted(adjusted, key=lambda item: item.score, reverse=True)
