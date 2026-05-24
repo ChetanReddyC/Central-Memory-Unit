@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .models import ActionNote, Memory, MemoryType
+from .models import ActionNote, Memory, MemoryRelationType, MemoryRelationship, MemoryType
 
 
 STOP_WORDS = {
@@ -44,6 +44,15 @@ TYPE_WEIGHT = {
     MemoryType.SITUATION: 1.0,
     MemoryType.QUESTION: 0.9,
     MemoryType.CANDIDATE: 0.75,
+}
+
+GRAPH_LINK_WEIGHT = {
+    MemoryRelationType.RELATED_PRACTICE: 1.1,
+    MemoryRelationType.EXCEPTION_TO: 0.95,
+    MemoryRelationType.SUPPORTS: 0.8,
+    MemoryRelationType.SAME_SITUATION: 0.75,
+    MemoryRelationType.DERIVED_FROM: 0.65,
+    MemoryRelationType.CHALLENGES: 0.55,
 }
 
 
@@ -100,7 +109,36 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
         confidence_bonus = memory.confidence * 0.3
         score = (text_score + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
         matches.append(Match(memory=memory, score=round(score, 3), matched_terms=overlap[:8]))
+    matches = expand_graph_matches(memories, matches)
     return sorted(matches, key=lambda item: item.score, reverse=True)
+
+
+def expand_graph_matches(memories: list[Memory], matches: list[Match]) -> list[Match]:
+    if not matches:
+        return matches
+    memory_by_id = {memory.id: memory for memory in memories}
+    match_by_id = {match.memory.id: match for match in matches}
+    expanded = list(matches)
+    for match in sorted(matches, key=lambda item: item.score, reverse=True):
+        for relationship in match.memory.relationships:
+            target = memory_by_id.get(relationship.target_id)
+            if target is None or target.id in match_by_id:
+                continue
+            graph_score = graph_expansion_score(match, target, relationship)
+            graph_match = Match(
+                memory=target,
+                score=graph_score,
+                matched_terms=[f"graph:{relationship.type.value}", f"via:{match.memory.id}"],
+            )
+            expanded.append(graph_match)
+            match_by_id[target.id] = graph_match
+    return expanded
+
+
+def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRelationship) -> float:
+    link_weight = GRAPH_LINK_WEIGHT[relationship.type]
+    score = (match.score * 0.55) + (link_weight * TYPE_WEIGHT[target.type])
+    return round(max(0.1, score), 3)
 
 
 def build_action_note(match: Match) -> ActionNote:

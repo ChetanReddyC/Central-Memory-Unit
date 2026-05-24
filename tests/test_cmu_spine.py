@@ -8,10 +8,10 @@ from tempfile import TemporaryDirectory
 
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
-from cmu.models import Memory, MemoryScope, MemoryStatus, MemoryType
+from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.promotion import promote_memory, review_promotion
 from cmu.remembering import RememberRequest, remember_candidate
-from cmu.retrieval import PreflightQuery, preflight
+from cmu.retrieval import PreflightQuery, preflight, rank_memories
 from cmu.store import MemoryStore
 from cmu.usage import (
     CommitLinkRequest,
@@ -42,6 +42,34 @@ class MemoryStoreTests(unittest.TestCase):
             loaded = store.list()
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].title, "Migration order matters")
+
+    def test_store_round_trips_memory_relationships(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use retry budget",
+                summary="Retries should respect an explicit budget.",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Webhook timeout root cause",
+                summary="Webhook timeout debugging revealed the retry budget practice.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="This situation teaches the retry budget practice.",
+                    )
+                ],
+            )
+
+            store.add(practice)
+            store.add(situation)
+
+            loaded = {memory.id: memory for memory in store.list()}
+            self.assertEqual(loaded[situation.id].relationships[0].type, MemoryRelationType.RELATED_PRACTICE)
+            self.assertEqual(loaded[situation.id].relationships[0].target_id, practice.id)
 
 
 class PreflightTests(unittest.TestCase):
@@ -91,6 +119,74 @@ class PreflightTests(unittest.TestCase):
         )
 
         self.assertIsNone(note)
+
+    def test_rank_memories_expands_direct_graph_relationship_after_grounded_match(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Use retry budget",
+            summary="Outbound attempts should respect bounded failure handling.",
+            use_this_path="Check the retry budget before changing retry behavior.",
+            scope=MemoryScope(code=["reliability/budget.md"], workflow=["resilience"], actor=["agent"]),
+            liability_score=4,
+            confidence=0.8,
+        )
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Webhook timeout root cause",
+            summary="Webhook timeouts came from unbounded retries during dependency failures.",
+            signals=["webhook", "timeout", "retries"],
+            scope=MemoryScope(code=["billing/webhook.py"], workflow=["debugging"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                    reason="Timeout debugging should lead to the retry budget practice.",
+                )
+            ],
+            liability_score=3,
+            confidence=0.75,
+        )
+
+        matches = rank_memories(
+            [situation, practice],
+            PreflightQuery(
+                prompt="Investigate billing webhook timeout",
+                actor="agent",
+                area="billing",
+                files=["billing/webhook.py"],
+                risk="medium",
+            ),
+        )
+
+        graph_match = next(match for match in matches if match.memory.id == practice.id)
+        self.assertIn("graph:related_practice", graph_match.matched_terms)
+        self.assertGreaterEqual(graph_match.score, 1.6)
+
+    def test_rank_memories_does_not_expand_graph_from_actor_only_match(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Use retry budget",
+            summary="Retries should respect an explicit retry budget.",
+        )
+        actor_only = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Agent-only guidance",
+            summary="This memory only shares actor scope with the query.",
+            scope=MemoryScope(actor=["agent"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                )
+            ],
+        )
+
+        matches = rank_memories(
+            [actor_only, practice],
+            PreflightQuery(prompt="Change CSS spacing", actor="agent", area="frontend", risk="low"),
+        )
+
+        self.assertEqual(matches, [])
 
     def test_cli_preflight_creates_use_receipt_when_memory_surfaces(self) -> None:
         with TemporaryDirectory() as tmp:

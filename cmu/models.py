@@ -22,6 +22,15 @@ class MemoryStatus(str, Enum):
     RETIRED = "retired"
 
 
+class MemoryRelationType(str, Enum):
+    SUPPORTS = "supports"
+    CHALLENGES = "challenges"
+    EXCEPTION_TO = "exception_to"
+    DERIVED_FROM = "derived_from"
+    SAME_SITUATION = "same_situation"
+    RELATED_PRACTICE = "related_practice"
+
+
 @dataclass
 class MemoryScope:
     ownership: list[str] = field(default_factory=list)
@@ -39,6 +48,28 @@ class MemoryScope:
 
 
 @dataclass
+class MemoryRelationship:
+    type: MemoryRelationType
+    target_id: str
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "type": self.type.value,
+            "target_id": self.target_id,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MemoryRelationship":
+        return cls(
+            type=MemoryRelationType(data["type"]),
+            target_id=data["target_id"],
+            reason=data.get("reason", ""),
+        )
+
+
+@dataclass
 class Memory:
     id: str
     type: MemoryType
@@ -50,6 +81,7 @@ class Memory:
     use_this_path: str
     avoid_this: str
     challenge_only_if: str
+    relationships: list[MemoryRelationship] = field(default_factory=list)
     liability_score: int = 1
     confidence: float = 0.6
     approved_by: str = ""
@@ -70,6 +102,7 @@ class Memory:
         use_this_path: str = "",
         avoid_this: str = "",
         challenge_only_if: str = "",
+        relationships: list[MemoryRelationship] | None = None,
         liability_score: int = 1,
         confidence: float = 0.6,
         approved_by: str = "",
@@ -85,6 +118,7 @@ class Memory:
             use_this_path=use_this_path.strip(),
             avoid_this=avoid_this.strip(),
             challenge_only_if=challenge_only_if.strip(),
+            relationships=relationships or [],
             liability_score=max(1, min(liability_score, 5)),
             confidence=max(0.0, min(confidence, 1.0)),
             approved_by=approved_by.strip(),
@@ -94,6 +128,7 @@ class Memory:
         data = asdict(self)
         data["type"] = self.type.value
         data["status"] = self.status.value
+        data["relationships"] = [relationship.to_dict() for relationship in self.relationships]
         return data
 
     @classmethod
@@ -109,6 +144,10 @@ class Memory:
             use_this_path=data.get("use_this_path", ""),
             avoid_this=data.get("avoid_this", ""),
             challenge_only_if=data.get("challenge_only_if", ""),
+            relationships=[
+                MemoryRelationship.from_dict(item)
+                for item in data.get("relationships", [])
+            ],
             liability_score=int(data.get("liability_score", 1)),
             confidence=float(data.get("confidence", 0.6)),
             approved_by=data.get("approved_by", ""),
