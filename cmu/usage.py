@@ -42,6 +42,8 @@ class MemoryUseReceipt:
     files: list[str]
     risk: str
     match_score: float
+    workflow: list[str] = field(default_factory=list)
+    environment: list[str] = field(default_factory=list)
     surfaced_at: str = field(default_factory=utc_now)
     commit_hash: str = ""
     commit_message: str = ""
@@ -64,6 +66,8 @@ class MemoryUseReceipt:
             actor=query.actor.strip(),
             area=query.area.strip(),
             files=[item.strip() for item in query.files or [] if item.strip()],
+            workflow=[item.strip() for item in query.workflow or [] if item.strip()],
+            environment=[item.strip() for item in query.environment or [] if item.strip()],
             risk=query.risk.strip(),
             match_score=match.score,
         )
@@ -81,6 +85,8 @@ class MemoryUseReceipt:
             actor=data.get("actor", ""),
             area=data.get("area", ""),
             files=list(data.get("files", [])),
+            workflow=list(data.get("workflow", [])),
+            environment=list(data.get("environment", [])),
             risk=data.get("risk", ""),
             match_score=float(data.get("match_score", 0.0)),
             surfaced_at=data.get("surfaced_at", utc_now()),

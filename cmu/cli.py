@@ -80,6 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--actor", default="developer")
     preflight_parser.add_argument("--area", default="")
     preflight_parser.add_argument("--file", action="append", default=[])
+    preflight_parser.add_argument("--workflow", action="append", default=[])
+    preflight_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
     preflight_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     preflight_parser.add_argument("--show-matches", action="store_true")
     preflight_parser.set_defaults(func=cmd_preflight)
@@ -330,6 +332,8 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
         actor=args.actor,
         area=args.area,
         files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
         risk=args.risk,
     )
     memories = store.list()

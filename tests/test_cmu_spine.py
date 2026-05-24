@@ -199,7 +199,7 @@ class PreflightTests(unittest.TestCase):
             title="Use retry budget",
             summary="Outbound attempts should respect bounded failure handling.",
             use_this_path="Check the retry budget before changing retry behavior.",
-            scope=MemoryScope(code=["reliability/budget.md"], workflow=["resilience"], actor=["agent"]),
+            scope=MemoryScope(code=["billing/reliability"], workflow=["resilience"], actor=["agent"]),
             liability_score=4,
             confidence=0.8,
         )
@@ -247,7 +247,7 @@ class PreflightTests(unittest.TestCase):
                 title="Use retry budget",
                 summary="Outbound attempts should respect bounded failure handling.",
                 use_this_path="Check the retry budget before changing retry behavior.",
-                scope=MemoryScope(code=["reliability/budget.md"], workflow=["resilience"], actor=["agent"]),
+                scope=MemoryScope(code=["billing/reliability"], workflow=["resilience"], actor=["agent"]),
                 liability_score=4,
                 confidence=0.8,
             )
@@ -357,7 +357,7 @@ class PreflightTests(unittest.TestCase):
             type=MemoryType.PRACTICE,
             title="Use retry budget",
             summary="Retries should respect an explicit retry budget.",
-            scope=MemoryScope(actor=["developer"]),
+            scope=MemoryScope(code=["billing"], actor=["developer"]),
         )
         source = Memory.create(
             type=MemoryType.SITUATION,
@@ -376,6 +376,131 @@ class PreflightTests(unittest.TestCase):
         matches = rank_memories(
             [source, practice],
             PreflightQuery(prompt="Investigate billing webhook timeout", actor="agent", files=["billing/webhook.py"], risk="medium"),
+        )
+
+        self.assertTrue(any(match.memory.id == source.id for match in matches))
+        self.assertFalse(any(match.memory.id == practice.id for match in matches))
+
+    def test_rank_memories_does_not_expand_graph_when_target_code_scope_conflicts(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Use auth retry budget",
+            summary="Auth retries should respect an explicit retry budget.",
+            scope=MemoryScope(code=["auth/tokens.py"]),
+        )
+        source = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Webhook timeout root cause",
+            summary="Webhook timeouts came from unbounded retries during dependency failures.",
+            signals=["webhook", "timeout", "retries"],
+            scope=MemoryScope(code=["billing/webhook.py"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                )
+            ],
+        )
+
+        matches = rank_memories(
+            [source, practice],
+            PreflightQuery(prompt="Investigate billing webhook timeout", files=["billing/webhook.py"], risk="medium"),
+        )
+
+        self.assertTrue(any(match.memory.id == source.id for match in matches))
+        self.assertFalse(any(match.memory.id == practice.id for match in matches))
+
+    def test_rank_memories_does_not_expand_graph_when_target_workflow_scope_conflicts(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Deploy migration first",
+            summary="Deploy work should check migration order first.",
+            scope=MemoryScope(code=["billing"], workflow=["deployment"]),
+        )
+        source = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Webhook timeout root cause",
+            summary="Webhook timeout debugging revealed retry behavior.",
+            signals=["webhook", "timeout", "retries"],
+            scope=MemoryScope(code=["billing/webhook.py"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                )
+            ],
+        )
+
+        matches = rank_memories(
+            [source, practice],
+            PreflightQuery(
+                prompt="Investigate billing webhook timeout",
+                files=["billing/webhook.py"],
+                workflow=["debugging"],
+                risk="medium",
+            ),
+        )
+
+        self.assertTrue(any(match.memory.id == source.id for match in matches))
+        self.assertFalse(any(match.memory.id == practice.id for match in matches))
+
+    def test_rank_memories_does_not_expand_graph_when_target_environment_scope_conflicts(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Use production rollout gate",
+            summary="Production rollout changes must use the release gate.",
+            scope=MemoryScope(code=["billing"], environment=["production"]),
+        )
+        source = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Local billing timeout root cause",
+            summary="Local billing timeout debugging revealed rollout-sensitive behavior.",
+            signals=["billing", "timeout", "retries"],
+            scope=MemoryScope(code=["billing/webhook.py"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                )
+            ],
+        )
+
+        matches = rank_memories(
+            [source, practice],
+            PreflightQuery(
+                prompt="Investigate local billing webhook timeout",
+                files=["billing/webhook.py"],
+                environment=["local"],
+                risk="medium",
+            ),
+        )
+
+        self.assertTrue(any(match.memory.id == source.id for match in matches))
+        self.assertFalse(any(match.memory.id == practice.id for match in matches))
+
+    def test_rank_memories_does_not_expand_graph_to_unscoped_stable_memory(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Use retry budget",
+            summary="Retries should respect an explicit retry budget.",
+        )
+        source = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Webhook timeout root cause",
+            summary="Webhook timeouts came from unbounded retries during dependency failures.",
+            signals=["webhook", "timeout", "retries"],
+            scope=MemoryScope(code=["billing/webhook.py"]),
+            relationships=[
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                )
+            ],
+        )
+
+        matches = rank_memories(
+            [source, practice],
+            PreflightQuery(prompt="Investigate billing webhook timeout", files=["billing/webhook.py"], risk="medium"),
         )
 
         self.assertTrue(any(match.memory.id == source.id for match in matches))

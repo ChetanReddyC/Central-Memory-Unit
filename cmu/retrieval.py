@@ -78,10 +78,20 @@ class PreflightQuery:
     actor: str = "developer"
     area: str = ""
     files: list[str] | None = None
+    workflow: list[str] | None = None
+    environment: list[str] | None = None
     risk: str = "medium"
 
     def text(self) -> str:
-        return " ".join([self.prompt, self.area, " ".join(self.files or [])])
+        return " ".join(
+            [
+                self.prompt,
+                self.area,
+                " ".join(self.files or []),
+                " ".join(self.workflow or []),
+                " ".join(self.environment or []),
+            ]
+        )
 
 
 @dataclass
@@ -120,6 +130,8 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
     query_terms = tokenize(query.text())
     matches: list[Match] = []
     for memory in memories:
+        if scope_conflicts_with_query(memory, query):
+            continue
         memory_terms = tokenize(memory_text(memory))
         overlap = sorted(query_terms & memory_terms)
         context_bonus = context_signal_score(memory, query)
@@ -147,11 +159,24 @@ def expand_graph_matches(memories: list[Memory], matches: list[Match], query: Pr
             continue
         for relationship in match.memory.relationships:
             target = memory_by_id.get(relationship.target_id)
-            if target is None or target.id in match_by_id:
+            if target is None:
                 continue
             if not graph_relationship_can_expand(target, relationship, query):
                 continue
             graph_score = graph_expansion_score(match, target, relationship)
+            existing_match = match_by_id.get(target.id)
+            if existing_match is not None:
+                if not existing_match.is_graph_expanded():
+                    existing_match.matched_terms = existing_match.matched_terms[:6] + [
+                        f"graph:{relationship.type.value}",
+                        f"via:{match.memory.id}",
+                    ]
+                    existing_match.graph_source_id = match.memory.id
+                    existing_match.graph_source_title = match.memory.title
+                    existing_match.graph_relation_type = relationship.type.value
+                    existing_match.graph_relation_reason = relationship.reason
+                existing_match.score = max(existing_match.score, graph_score)
+                continue
             graph_match = Match(
                 memory=target,
                 score=graph_score,
@@ -171,14 +196,62 @@ def graph_relationship_can_expand(target: Memory, relationship: MemoryRelationsh
         return False
     if target.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and relationship.type not in STABLE_GRAPH_RELATIONS:
         return False
+    if target.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and not stable_scope_is_grounded(target, query):
+        return False
     return not scope_conflicts_with_query(target, query)
 
 
 def scope_conflicts_with_query(memory: Memory, query: PreflightQuery) -> bool:
-    actor_scope = [item.lower() for item in memory.scope.actor]
-    if actor_scope and query.actor and not any(query.actor.lower() in item or item in query.actor.lower() for item in actor_scope):
+    if axis_conflicts(memory.scope.actor, [query.actor]):
+        return True
+    if axis_conflicts(memory.scope.code, query_code_signals(query)):
+        return True
+    if axis_conflicts(memory.scope.workflow, query.workflow or []):
+        return True
+    if axis_conflicts(memory.scope.environment, query.environment or []):
         return True
     return False
+
+
+def stable_scope_is_grounded(memory: Memory, query: PreflightQuery) -> bool:
+    action_scope = memory.scope.code + memory.scope.workflow + memory.scope.environment
+    if not action_scope:
+        return False
+    query_action_scope = query_code_signals(query) + (query.workflow or []) + (query.environment or [])
+    if not query_action_scope:
+        return False
+    return (
+        axis_overlaps(memory.scope.code, query_code_signals(query))
+        or axis_overlaps(memory.scope.workflow, query.workflow or [])
+        or axis_overlaps(memory.scope.environment, query.environment or [])
+    )
+
+
+def query_code_signals(query: PreflightQuery) -> list[str]:
+    signals = list(query.files or [])
+    if query.area:
+        signals.append(query.area)
+    return signals
+
+
+def axis_conflicts(memory_values: list[str], query_values: list[str]) -> bool:
+    clean_memory_values = clean_axis_values(memory_values)
+    clean_query_values = clean_axis_values(query_values)
+    return bool(clean_memory_values and clean_query_values and not axis_overlaps(clean_memory_values, clean_query_values))
+
+
+def axis_overlaps(memory_values: list[str], query_values: list[str]) -> bool:
+    clean_memory_values = clean_axis_values(memory_values)
+    clean_query_values = clean_axis_values(query_values)
+    return any(axis_value_matches(memory_value, query_value) for memory_value in clean_memory_values for query_value in clean_query_values)
+
+
+def clean_axis_values(values: list[str]) -> list[str]:
+    return [value.strip().lower() for value in values if value and value.strip()]
+
+
+def axis_value_matches(memory_value: str, query_value: str) -> bool:
+    return memory_value in query_value or query_value in memory_value
 
 
 def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRelationship) -> float:
