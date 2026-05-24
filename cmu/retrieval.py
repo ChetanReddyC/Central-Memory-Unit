@@ -55,6 +55,22 @@ GRAPH_LINK_WEIGHT = {
     MemoryRelationType.CHALLENGES: 0.55,
 }
 
+RELATION_TARGET_TYPES = {
+    MemoryRelationType.RELATED_PRACTICE: {MemoryType.PRACTICE},
+    MemoryRelationType.EXCEPTION_TO: {MemoryType.PRACTICE, MemoryType.ANCHOR},
+    MemoryRelationType.CHALLENGES: {MemoryType.PRACTICE, MemoryType.ANCHOR},
+    MemoryRelationType.DERIVED_FROM: set(MemoryType),
+    MemoryRelationType.SAME_SITUATION: set(MemoryType),
+    MemoryRelationType.SUPPORTS: set(MemoryType),
+}
+
+STABLE_GRAPH_RELATIONS = {
+    MemoryRelationType.RELATED_PRACTICE,
+    MemoryRelationType.EXCEPTION_TO,
+    MemoryRelationType.SUPPORTS,
+    MemoryRelationType.SAME_SITUATION,
+}
+
 
 @dataclass
 class PreflightQuery:
@@ -116,20 +132,24 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
         confidence_bonus = memory.confidence * 0.3
         score = (text_score + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
         matches.append(Match(memory=memory, score=round(score, 3), matched_terms=overlap[:8]))
-    matches = expand_graph_matches(memories, matches)
+    matches = expand_graph_matches(memories, matches, query)
     return sorted(matches, key=lambda item: item.score, reverse=True)
 
 
-def expand_graph_matches(memories: list[Memory], matches: list[Match]) -> list[Match]:
+def expand_graph_matches(memories: list[Memory], matches: list[Match], query: PreflightQuery) -> list[Match]:
     if not matches:
         return matches
     memory_by_id = {memory.id: memory for memory in memories}
     match_by_id = {match.memory.id: match for match in matches}
     expanded = list(matches)
     for match in sorted(matches, key=lambda item: item.score, reverse=True):
+        if match.score < action_threshold(query.risk):
+            continue
         for relationship in match.memory.relationships:
             target = memory_by_id.get(relationship.target_id)
             if target is None or target.id in match_by_id:
+                continue
+            if not graph_relationship_can_expand(target, relationship, query):
                 continue
             graph_score = graph_expansion_score(match, target, relationship)
             graph_match = Match(
@@ -144,6 +164,21 @@ def expand_graph_matches(memories: list[Memory], matches: list[Match]) -> list[M
             expanded.append(graph_match)
             match_by_id[target.id] = graph_match
     return expanded
+
+
+def graph_relationship_can_expand(target: Memory, relationship: MemoryRelationship, query: PreflightQuery) -> bool:
+    if target.type not in RELATION_TARGET_TYPES[relationship.type]:
+        return False
+    if target.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and relationship.type not in STABLE_GRAPH_RELATIONS:
+        return False
+    return not scope_conflicts_with_query(target, query)
+
+
+def scope_conflicts_with_query(memory: Memory, query: PreflightQuery) -> bool:
+    actor_scope = [item.lower() for item in memory.scope.actor]
+    if actor_scope and query.actor and not any(query.actor.lower() in item or item in query.actor.lower() for item in actor_scope):
+        return True
+    return False
 
 
 def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRelationship) -> float:
