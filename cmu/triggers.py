@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .retrieval import PreflightQuery
@@ -66,8 +67,8 @@ def must_call_reasons(
     irreversible: bool,
 ) -> list[str]:
     reasons: list[str] = []
-    text = trigger_text(query)
-    matched_terms = sorted(term for term in HIGH_RISK_TERMS if term in text)
+    terms = trigger_terms(query)
+    matched_terms = sorted(term for term in HIGH_RISK_TERMS if term in terms)
     if query.risk == "high":
         reasons.append("high risk task")
     if matched_terms:
@@ -92,6 +93,13 @@ def should_call_reasons(query: PreflightQuery, *, uncertainty: bool, unfamiliar:
     if len(query.files or []) >= 3:
         reasons.append("multi-file task")
     return reasons
+
+
+def trigger_terms(query: PreflightQuery) -> set[str]:
+    text = trigger_text(query)
+    terms = set(re.findall(r"[a-z0-9_./-]+", text))
+    terms.update(re.findall(r"[a-z0-9]+", text))
+    return terms
 
 
 def trigger_text(query: PreflightQuery) -> str:

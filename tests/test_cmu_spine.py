@@ -185,6 +185,26 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertEqual(len(anchors), 1)
             self.assertEqual(anchors[0].approved_by, "security owner")
 
+    def test_cli_add_rejects_unapproved_stable_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as raised:
+                main(
+                    [
+                        "--root",
+                        tmp,
+                        "add",
+                        "--type",
+                        "anchor",
+                        "--title",
+                        "Credential rotation lock ordering",
+                        "--summary",
+                        "Credential rotation must hold the lock before updating active secrets.",
+                    ]
+                )
+
+            self.assertIn("requires --approved-by", str(raised.exception))
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.ANCHOR), [])
+
 
 class PreflightTests(unittest.TestCase):
     def test_preflight_returns_action_note_for_relevant_memory(self) -> None:
@@ -1597,6 +1617,33 @@ class TriggerDecisionTests(unittest.TestCase):
         self.assertEqual(decision.level, "silent-skip")
         self.assertEqual(decision.reasons, ["small/local/low-risk with no trigger signals"])
 
+    def test_trigger_decision_does_not_match_high_risk_terms_inside_words(self) -> None:
+        decision = decide_trigger(
+            PreflightQuery(
+                prompt="document approved anchor authoring",
+                actor="agent",
+                area="cmu",
+                files=["cmu/cli.py"],
+                risk="low",
+            )
+        )
+
+        self.assertEqual(decision.level, "silent-skip")
+        self.assertNotIn("high-risk area: auth", decision.reasons)
+
+    def test_trigger_decision_matches_high_risk_terms_in_file_paths(self) -> None:
+        decision = decide_trigger(
+            PreflightQuery(
+                prompt="change token rotation helper",
+                actor="agent",
+                files=["auth/tokens.py"],
+                risk="low",
+            )
+        )
+
+        self.assertEqual(decision.level, "must-call")
+        self.assertIn("high-risk area: auth", decision.reasons)
+
     def test_cli_trigger_renders_must_call_decision(self) -> None:
         output = StringIO()
         with redirect_stdout(output):
@@ -1647,6 +1694,124 @@ class TriggerDecisionTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("Level: silent-skip", rendered)
         self.assertIn("small/local/low-risk", rendered)
+
+
+class WorkCycleStartTests(unittest.TestCase):
+    def test_cli_start_silent_skip_does_not_run_memory_or_create_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "start",
+                        "adjust button spacing",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "frontend",
+                        "--file",
+                        "settings.css",
+                        "--workflow",
+                        "styling",
+                        "--risk",
+                        "low",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Start", rendered)
+            self.assertIn("Level: silent-skip", rendered)
+            self.assertIn("Work Cycle: silent-skip", rendered)
+            self.assertNotIn("CMU Onboarding Seed", rendered)
+            self.assertNotIn("CMU Action Note", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_start_should_call_returns_fallback_seed_without_receipt_when_no_memory_matches(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "start",
+                        "refactor settings flow",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "frontend",
+                        "--file",
+                        "settings/a.py",
+                        "--file",
+                        "settings/b.py",
+                        "--file",
+                        "settings/c.py",
+                        "--risk",
+                        "medium",
+                        "--uncertainty",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Level: should-call", rendered)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("Confidence: no matching memory", rendered)
+            self.assertIn("CMU stayed quiet: no memory crossed the action threshold.", rendered)
+            self.assertNotIn("CMU Action Note", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_start_must_call_surfaces_action_note_and_creates_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["preflight", "quiet"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "start",
+                        "implement CMU preflight behavior",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            receipts = MemoryUseStore(tmp).list()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Level: must-call", rendered)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertIn("Use Receipt: use_", rendered)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].memory_id, memory.id)
+            self.assertEqual(receipts[0].prompt, "implement CMU preflight behavior")
 
 
 class MemoryUseTests(unittest.TestCase):

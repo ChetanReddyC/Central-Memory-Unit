@@ -126,6 +126,28 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_parser.add_argument("--unfamiliar", action="store_true")
     trigger_parser.set_defaults(func=cmd_trigger)
 
+    start_parser = subparsers.add_parser("start", help="Run the task-start CMU Work Cycle entrypoint.")
+    start_parser.add_argument("prompt", nargs="*", help="Task prompt to start against.")
+    start_parser.add_argument("--actor", default="developer")
+    start_parser.add_argument("--area", default="")
+    start_parser.add_argument("--file", action="append", default=[])
+    start_parser.add_argument("--workflow", action="append", default=[])
+    start_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    start_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    start_parser.add_argument("--repeated-error", action="store_true")
+    start_parser.add_argument("--uncertainty", action="store_true")
+    start_parser.add_argument("--shared-contract", action="store_true")
+    start_parser.add_argument("--irreversible", action="store_true")
+    start_parser.add_argument("--unfamiliar", action="store_true")
+    start_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    start_parser.add_argument("--show-matches", action="store_true")
+    start_parser.set_defaults(func=cmd_start)
+
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
     remember_parser.add_argument("--title", default="")
@@ -266,8 +288,11 @@ def cmd_init(args: argparse.Namespace, store: MemoryStore) -> int:
 
 
 def cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
+    memory_type = MemoryType(args.type)
+    if memory_type in {MemoryType.ANCHOR, MemoryType.PRACTICE} and not args.approved_by.strip():
+        raise SystemExit(f"add --type {memory_type.value} requires --approved-by")
     memory = Memory.create(
-        type=MemoryType(args.type),
+        type=memory_type,
         title=args.title,
         summary=args.summary,
         signals=args.signal,
@@ -368,24 +393,11 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
         raise SystemExit("preflight requires a task prompt")
-    query = PreflightQuery(
-        prompt=prompt,
-        actor=args.actor,
-        area=args.area,
-        files=args.file,
-        workflow=args.workflow,
-        environment=args.environment,
-        risk=args.risk,
-    )
+    query = build_query(args, prompt)
     memories = store.list()
     use_store = MemoryUseStore(args.root)
-    threshold = action_threshold(query.risk)
-    semantic_index = None
-    if args.semantic == "local":
-        semantic_index = PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
-    raw_matches = rank_memories(memories, query, semantic_index=semantic_index)
-    actionable_matches = [match for match in raw_matches if match.score >= threshold]
-    matches = apply_usage_adjustments(actionable_matches, use_store.list())
+    semantic_index = load_semantic_index(args, memories)
+    matches = actionable_matches(memories, query, use_store, semantic_index)
     note = build_action_note(matches[0]) if matches else None
     if args.show_matches:
         for match in matches[:5]:
@@ -407,19 +419,9 @@ def cmd_onboard(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
         raise SystemExit("onboard requires a task prompt")
-    query = PreflightQuery(
-        prompt=prompt,
-        actor=args.actor,
-        area=args.area,
-        files=args.file,
-        workflow=args.workflow,
-        environment=args.environment,
-        risk=args.risk,
-    )
+    query = build_query(args, prompt)
     memories = store.list()
-    semantic_index = None
-    if args.semantic == "local":
-        semantic_index = PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
+    semantic_index = load_semantic_index(args, memories)
     seed = build_onboarding_seed(memories, query, semantic_index=semantic_index)
     print(seed.render())
     return 0
@@ -429,24 +431,46 @@ def cmd_trigger(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
         raise SystemExit("trigger requires a task prompt")
-    query = PreflightQuery(
-        prompt=prompt,
-        actor=args.actor,
-        area=args.area,
-        files=args.file,
-        workflow=args.workflow,
-        environment=args.environment,
-        risk=args.risk,
-    )
-    decision = decide_trigger(
-        query,
-        repeated_error=args.repeated_error,
-        uncertainty=args.uncertainty,
-        shared_contract=args.shared_contract,
-        irreversible=args.irreversible,
-        unfamiliar=args.unfamiliar,
-    )
+    query = build_query(args, prompt)
+    decision = trigger_decision_from_args(args, query)
     print(decision.render())
+    return 0
+
+
+def cmd_start(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("start requires a task prompt")
+    query = build_query(args, prompt)
+    decision = trigger_decision_from_args(args, query)
+    print("CMU Start")
+    print(decision.render())
+    if decision.level == "silent-skip":
+        print("Work Cycle: silent-skip; no onboarding seed, Action Note, or receipt created.")
+        return 0
+
+    memories = store.list()
+    use_store = MemoryUseStore(args.root)
+    semantic_index = load_semantic_index(args, memories)
+    seed = build_onboarding_seed(memories, query, semantic_index=semantic_index)
+    print()
+    print(seed.render())
+
+    matches = actionable_matches(memories, query, use_store, semantic_index)
+    note = build_action_note(matches[0]) if matches else None
+    if args.show_matches:
+        print()
+        for match in matches[:5]:
+            print(format_preflight_match(match))
+    if note is None:
+        print()
+        print("CMU stayed quiet: no memory crossed the action threshold.")
+        return 0
+    print()
+    print(note.render())
+    receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0])
+    use_store.add(receipt)
+    print(f"Use Receipt: {receipt.id}")
     return 0
 
 
@@ -688,6 +712,42 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
     report = use_review(use_store.list(), store.list(), args.memory_id or "")
     print(report.render())
     return 0
+
+
+def build_query(args: argparse.Namespace, prompt: str) -> PreflightQuery:
+    return PreflightQuery(
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+    )
+
+
+def load_semantic_index(args: argparse.Namespace, memories: list[Memory]):
+    if getattr(args, "semantic", "off") == "local":
+        return PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
+    return None
+
+
+def actionable_matches(memories: list[Memory], query: PreflightQuery, use_store: MemoryUseStore, semantic_index):
+    threshold = action_threshold(query.risk)
+    raw_matches = rank_memories(memories, query, semantic_index=semantic_index)
+    actionable = [match for match in raw_matches if match.score >= threshold]
+    return apply_usage_adjustments(actionable, use_store.list())
+
+
+def trigger_decision_from_args(args: argparse.Namespace, query: PreflightQuery):
+    return decide_trigger(
+        query,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+    )
 
 
 def project_root() -> Path:
