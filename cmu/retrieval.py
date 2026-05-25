@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from hashlib import sha256
+from json import JSONDecodeError
+import json
+from math import sqrt
+from pathlib import Path
 
 from .models import ActionNote, Memory, MemoryRelationType, MemoryRelationship, MemoryType
 
@@ -85,6 +90,109 @@ class SemanticSignal:
 class SemanticIndex:
     def score(self, memory: Memory, query: "PreflightQuery") -> SemanticSignal:
         return SemanticSignal(label="unavailable")
+
+
+class HashingEmbeddingProvider:
+    def __init__(self, *, dimensions: int = 64, label: str = "local hashing embeddings") -> None:
+        if dimensions < 8:
+            raise ValueError("embedding dimensions must be at least 8")
+        self.dimensions = dimensions
+        self.label = label
+
+    def embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        for token in tokenize(text):
+            digest = sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.dimensions
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[index] += sign
+        return normalize_vector(vector)
+
+
+class PersistentSemanticIndex(SemanticIndex):
+    def __init__(self, path: Path | str, provider: HashingEmbeddingProvider | None = None) -> None:
+        self.path = Path(path)
+        self.provider = provider or HashingEmbeddingProvider()
+        self.vectors: dict[str, list[float]] = {}
+        self.fingerprints: dict[str, str] = {}
+        self._load()
+
+    @classmethod
+    def load_or_build(
+        cls,
+        path: Path | str,
+        memories: list[Memory],
+        provider: HashingEmbeddingProvider | None = None,
+    ) -> "PersistentSemanticIndex":
+        index = cls(path, provider=provider)
+        index.refresh(memories)
+        return index
+
+    def refresh(self, memories: list[Memory]) -> None:
+        active_ids = {memory.id for memory in memories}
+        changed = False
+        for memory_id in list(self.vectors):
+            if memory_id not in active_ids:
+                self.vectors.pop(memory_id, None)
+                self.fingerprints.pop(memory_id, None)
+                changed = True
+        for memory in memories:
+            fingerprint = memory_fingerprint(memory)
+            if self.fingerprints.get(memory.id) == fingerprint:
+                continue
+            self.vectors[memory.id] = self.provider.embed(memory_text(memory))
+            self.fingerprints[memory.id] = fingerprint
+            changed = True
+        if changed:
+            self.save()
+
+    def score(self, memory: Memory, query: "PreflightQuery") -> SemanticSignal:
+        vector = self.vectors.get(memory.id)
+        if vector is None:
+            return SemanticSignal(label=f"{self.provider.label} missing vector")
+        query_vector = self.provider.embed(query.text())
+        similarity = cosine_similarity(query_vector, vector)
+        score = max(0.0, similarity) * 1.5
+        return SemanticSignal(label=self.provider.label, score=round(score, 3), available=True)
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, JSONDecodeError):
+            return
+        if data.get("provider") != self.provider.label or data.get("dimensions") != self.provider.dimensions:
+            return
+        self.vectors = {
+            memory_id: [float(value) for value in vector]
+            for memory_id, vector in data.get("vectors", {}).items()
+            if isinstance(vector, list)
+        }
+        self.fingerprints = {
+            memory_id: str(fingerprint)
+            for memory_id, fingerprint in data.get("fingerprints", {}).items()
+        }
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = self.path.with_suffix(".tmp")
+        with temp_file.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "version": 1,
+                    "provider": self.provider.label,
+                    "dimensions": self.provider.dimensions,
+                    "fingerprints": self.fingerprints,
+                    "vectors": self.vectors,
+                },
+                handle,
+                indent=2,
+                ensure_ascii=True,
+            )
+            handle.write("\n")
+        temp_file.replace(self.path)
 
 
 class InMemorySemanticIndex(SemanticIndex):
@@ -316,6 +424,24 @@ def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRela
 
 def semantic_signal_score(memory: Memory, query: PreflightQuery, semantic_index: SemanticIndex) -> SemanticSignal:
     return semantic_index.score(memory, query)
+
+
+def memory_fingerprint(memory: Memory) -> str:
+    payload = "\n".join([memory.id, memory.updated_at, memory_text(memory)])
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def normalize_vector(vector: list[float]) -> list[float]:
+    magnitude = sqrt(sum(value * value for value in vector))
+    if magnitude == 0:
+        return vector
+    return [value / magnitude for value in vector]
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return sum(left_value * right_value for left_value, right_value in zip(left, right))
 
 
 def direct_score_breakdown(

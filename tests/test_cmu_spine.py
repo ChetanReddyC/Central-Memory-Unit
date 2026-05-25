@@ -11,7 +11,15 @@ from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.promotion import promote_memory, review_promotion
 from cmu.remembering import RememberRequest, remember_candidate
-from cmu.retrieval import InMemorySemanticIndex, PreflightQuery, SemanticSignal, preflight, rank_memories
+from cmu.retrieval import (
+    HashingEmbeddingProvider,
+    InMemorySemanticIndex,
+    PersistentSemanticIndex,
+    PreflightQuery,
+    SemanticSignal,
+    preflight,
+    rank_memories,
+)
 from cmu.store import MemoryStore
 from cmu.usage import (
     CommitLinkRequest,
@@ -426,6 +434,152 @@ class PreflightTests(unittest.TestCase):
         )
 
         self.assertEqual(matches, [])
+
+    def test_persistent_semantic_index_refreshes_scores_and_persists_vectors(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback failure pattern",
+                summary="Checkout rollbacks should verify release markers before retrying deployment.",
+                signals=["checkout", "rollback", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            index_path = Path(tmp) / ".cmu" / "semantic_index.json"
+            provider = HashingEmbeddingProvider(dimensions=32)
+            index = PersistentSemanticIndex.load_or_build(index_path, [memory], provider=provider)
+
+            query = PreflightQuery(
+                prompt="Fix checkout rollback release marker deployment failure",
+                actor="agent",
+                area="checkout",
+                files=["checkout/deploy.py"],
+                workflow=["deployment"],
+                risk="high",
+            )
+            signal = index.score(memory, query)
+
+            self.assertTrue(index_path.exists())
+            self.assertTrue(signal.available)
+            self.assertEqual(signal.label, "local hashing embeddings")
+            self.assertGreater(signal.score, 0.0)
+            reloaded = PersistentSemanticIndex(index_path, provider=provider)
+            self.assertIn(memory.id, reloaded.vectors)
+            self.assertEqual(reloaded.fingerprints[memory.id], index.fingerprints[memory.id])
+
+    def test_persistent_semantic_index_improves_grounded_ranking_explainably(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback release markers",
+                summary="Rollback debugging found stale release markers blocking checkout deployment retries.",
+                signals=["checkout", "rollback", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            query = PreflightQuery(
+                prompt="Fix checkout rollback release marker deployment failure",
+                actor="agent",
+                area="checkout",
+                files=["checkout/deploy.py"],
+                workflow=["deployment"],
+                risk="high",
+            )
+            baseline = rank_memories([memory], query)
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=32),
+            )
+            boosted = rank_memories([memory], query, semantic_index=semantic_index)
+
+            self.assertEqual(len(baseline), 1)
+            self.assertEqual(len(boosted), 1)
+            self.assertGreater(boosted[0].score, baseline[0].score)
+            breakdown = "\n".join(boosted[0].score_breakdown)
+            self.assertIn("semantic signal: local hashing embeddings -> +", breakdown)
+            self.assertNotIn("semantic signal: unavailable", breakdown)
+
+    def test_persistent_semantic_index_cannot_surface_semantic_only_match(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth token rotation",
+                summary="Token rotation has a lock ordering constraint.",
+                signals=["auth", "token"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=32),
+            )
+
+            matches = rank_memories(
+                [memory],
+                PreflightQuery(
+                    prompt="Change CSS spacing on settings page",
+                    actor="agent",
+                    area="frontend",
+                    files=["frontend/settings.css"],
+                    workflow=["styling"],
+                    risk="low",
+                ),
+                semantic_index=semantic_index,
+            )
+
+            self.assertEqual(matches, [])
+
+    def test_cli_preflight_local_semantic_writes_index_and_explains_score(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback release markers",
+                summary="Rollback debugging found stale release markers blocking checkout deployment retries.",
+                signals=["checkout", "rollback", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Retry succeeded after clearing stale release marker state."],
+                use_this_path="Verify release markers before retrying checkout deployment.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Fix checkout rollback release marker deployment failure",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "checkout",
+                        "--file",
+                        "checkout/deploy.py",
+                        "--workflow",
+                        "deployment",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-matches",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((Path(tmp) / ".cmu" / "semantic_index.json").exists())
+            self.assertIn("semantic signal: local hashing embeddings -> +", rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertIn("Checkout rollback release markers", rendered)
 
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(

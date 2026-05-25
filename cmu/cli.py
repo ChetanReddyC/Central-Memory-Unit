@@ -7,7 +7,7 @@ from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_sta
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
 from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
-from .retrieval import PreflightQuery, action_threshold, build_action_note, rank_memories
+from .retrieval import PersistentSemanticIndex, PreflightQuery, action_threshold, build_action_note, rank_memories
 from .store import MemoryStore
 from .usage import (
     CommitLinkRequest,
@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--workflow", action="append", default=[])
     preflight_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
     preflight_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    preflight_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
     preflight_parser.add_argument("--show-matches", action="store_true")
     preflight_parser.set_defaults(func=cmd_preflight)
 
@@ -339,7 +345,10 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
     memories = store.list()
     use_store = MemoryUseStore(args.root)
     threshold = action_threshold(query.risk)
-    raw_matches = rank_memories(memories, query)
+    semantic_index = None
+    if args.semantic == "local":
+        semantic_index = PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
+    raw_matches = rank_memories(memories, query, semantic_index=semantic_index)
     actionable_matches = [match for match in raw_matches if match.score >= threshold]
     matches = apply_usage_adjustments(actionable_matches, use_store.list())
     note = build_action_note(matches[0]) if matches else None
