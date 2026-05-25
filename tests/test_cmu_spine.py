@@ -1427,6 +1427,92 @@ class OnboardingSeedTests(unittest.TestCase):
         self.assertIn("Confidence: no matching memory", rendered)
         self.assertNotIn(memory.id, rendered)
 
+    def test_cli_onboard_renders_matching_onboarding_seed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["preflight", "quiet"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "onboard",
+                        "implement CMU preflight behavior",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("Default Path: Run preflight at task start", rendered)
+            self.assertIn(f"Source Memory: {memory.id}", rendered)
+
+    def test_cli_onboard_can_use_local_semantic_proposal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                avoid_this="Do not retry rollout before checking release marker state.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "onboard",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("Default Path: Check stale releasemarkers", rendered)
+            self.assertIn(f"Source Memory: {memory.id}", rendered)
+
 
 class MemoryUseTests(unittest.TestCase):
     def test_link_commit_marks_mixed_commit_with_lower_confidence(self) -> None:

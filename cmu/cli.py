@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
+from .onboarding import build_onboarding_seed
 from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import PersistentSemanticIndex, PreflightQuery, action_threshold, build_action_note, rank_memories
@@ -92,6 +93,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preflight_parser.add_argument("--show-matches", action="store_true")
     preflight_parser.set_defaults(func=cmd_preflight)
+
+    onboard_parser = subparsers.add_parser("onboard", help="Generate a tiny task-bound CMU Onboarding Seed.")
+    onboard_parser.add_argument("prompt", nargs="*", help="Task prompt to onboard against.")
+    onboard_parser.add_argument("--actor", default="developer")
+    onboard_parser.add_argument("--area", default="")
+    onboard_parser.add_argument("--file", action="append", default=[])
+    onboard_parser.add_argument("--workflow", action="append", default=[])
+    onboard_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    onboard_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    onboard_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    onboard_parser.set_defaults(func=cmd_onboard)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
@@ -367,6 +384,28 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
         receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0])
         use_store.add(receipt)
         print(f"Use Receipt: {receipt.id}")
+    return 0
+
+
+def cmd_onboard(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("onboard requires a task prompt")
+    query = PreflightQuery(
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+    )
+    memories = store.list()
+    semantic_index = None
+    if args.semantic == "local":
+        semantic_index = PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
+    seed = build_onboarding_seed(memories, query, semantic_index=semantic_index)
+    print(seed.render())
     return 0
 
 
