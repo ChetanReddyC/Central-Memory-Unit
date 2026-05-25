@@ -10,6 +10,7 @@ from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import PersistentSemanticIndex, PreflightQuery, action_threshold, build_action_note, rank_memories
 from .store import MemoryStore
+from .triggers import decide_trigger
 from .usage import (
     CommitLinkRequest,
     DEFAULT_AUTO_LINK_MIN_SCORE,
@@ -109,6 +110,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
     onboard_parser.set_defaults(func=cmd_onboard)
+
+    trigger_parser = subparsers.add_parser("trigger", help="Decide whether the task should call CMU memory.")
+    trigger_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate.")
+    trigger_parser.add_argument("--actor", default="developer")
+    trigger_parser.add_argument("--area", default="")
+    trigger_parser.add_argument("--file", action="append", default=[])
+    trigger_parser.add_argument("--workflow", action="append", default=[])
+    trigger_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    trigger_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    trigger_parser.add_argument("--repeated-error", action="store_true")
+    trigger_parser.add_argument("--uncertainty", action="store_true")
+    trigger_parser.add_argument("--shared-contract", action="store_true")
+    trigger_parser.add_argument("--irreversible", action="store_true")
+    trigger_parser.add_argument("--unfamiliar", action="store_true")
+    trigger_parser.set_defaults(func=cmd_trigger)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
@@ -406,6 +422,31 @@ def cmd_onboard(args: argparse.Namespace, store: MemoryStore) -> int:
         semantic_index = PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
     seed = build_onboarding_seed(memories, query, semantic_index=semantic_index)
     print(seed.render())
+    return 0
+
+
+def cmd_trigger(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("trigger requires a task prompt")
+    query = PreflightQuery(
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+    )
+    decision = decide_trigger(
+        query,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+    )
+    print(decision.render())
     return 0
 
 

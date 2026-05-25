@@ -1597,6 +1597,57 @@ class TriggerDecisionTests(unittest.TestCase):
         self.assertEqual(decision.level, "silent-skip")
         self.assertEqual(decision.reasons, ["small/local/low-risk with no trigger signals"])
 
+    def test_cli_trigger_renders_must_call_decision(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "trigger",
+                    "rotate production credentials",
+                    "--actor",
+                    "agent",
+                    "--area",
+                    "auth",
+                    "--workflow",
+                    "deployment",
+                    "--risk",
+                    "high",
+                    "--irreversible",
+                ]
+            )
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("CMU Trigger Decision", rendered)
+        self.assertIn("Level: must-call", rendered)
+        self.assertIn("high risk task", rendered)
+        self.assertIn("hard-to-rollback change", rendered)
+
+    def test_cli_trigger_renders_silent_skip_decision(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "trigger",
+                    "adjust button spacing",
+                    "--actor",
+                    "agent",
+                    "--area",
+                    "frontend",
+                    "--file",
+                    "settings.css",
+                    "--workflow",
+                    "styling",
+                    "--risk",
+                    "low",
+                ]
+            )
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Level: silent-skip", rendered)
+        self.assertIn("small/local/low-risk", rendered)
+
 
 class MemoryUseTests(unittest.TestCase):
     def test_link_commit_marks_mixed_commit_with_lower_confidence(self) -> None:
