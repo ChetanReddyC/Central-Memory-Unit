@@ -76,6 +76,8 @@ STABLE_GRAPH_RELATIONS = {
     MemoryRelationType.SAME_SITUATION,
 }
 
+SEMANTIC_PROPOSAL_MIN_SCORE = 0.35
+
 
 @dataclass(frozen=True)
 class SemanticSignal:
@@ -102,10 +104,9 @@ class HashingEmbeddingProvider:
     def embed(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
         for token in tokenize(text):
-            digest = sha256(token.encode("utf-8")).digest()
-            index = int.from_bytes(digest[:4], "big") % self.dimensions
-            sign = 1.0 if digest[4] % 2 == 0 else -1.0
-            vector[index] += sign
+            add_hashed_feature(vector, f"token:{token}", weight=1.0)
+            for feature in token_character_features(token):
+                add_hashed_feature(vector, feature, weight=0.35)
         return normalize_vector(vector)
 
 
@@ -277,21 +278,23 @@ def rank_memories(memories: list[Memory], query: PreflightQuery, semantic_index:
         memory_terms = tokenize(memory_text(memory))
         overlap = sorted(query_terms & memory_terms)
         context_bonus = context_signal_score(memory, query)
-        if not overlap and context_bonus <= 0:
+        semantic_signal = semantic_signal_score(memory, query, semantic_index)
+        semantic_bonus = semantic_signal.contribution()
+        proposal_grounding = semantic_proposal_grounding(memory, query, semantic_signal) if not overlap and context_bonus <= 0 else []
+        if not overlap and context_bonus <= 0 and not proposal_grounding:
             continue
         actor_bonus = actor_signal_score(memory, query) if overlap or context_bonus > 0 else 0.0
         hard_signal_bonus = context_bonus + actor_bonus
-        semantic_signal = semantic_signal_score(memory, query, semantic_index)
-        semantic_bonus = semantic_signal.contribution()
+        proposal_bonus = semantic_proposal_bonus(proposal_grounding)
         text_score = len(overlap) * 0.5
         liability_bonus = memory.liability_score * 0.2
         confidence_bonus = memory.confidence * 0.3
-        score = (text_score + semantic_bonus + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
+        score = (text_score + semantic_bonus + hard_signal_bonus + proposal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
         matches.append(
             Match(
                 memory=memory,
                 score=round(score, 3),
-                matched_terms=overlap[:8],
+                matched_terms=overlap[:8] if overlap else [f"semantic:{item}" for item in proposal_grounding[:3]],
                 score_breakdown=direct_score_breakdown(
                     memory=memory,
                     overlap=overlap,
@@ -299,6 +302,8 @@ def rank_memories(memories: list[Memory], query: PreflightQuery, semantic_index:
                     semantic_signal=semantic_signal,
                     context_bonus=context_bonus,
                     actor_bonus=actor_bonus,
+                    proposal_grounding=proposal_grounding,
+                    proposal_bonus=proposal_bonus,
                     liability_bonus=liability_bonus,
                     confidence_bonus=confidence_bonus,
                 ),
@@ -426,9 +431,54 @@ def semantic_signal_score(memory: Memory, query: PreflightQuery, semantic_index:
     return semantic_index.score(memory, query)
 
 
+def semantic_proposal_grounding(memory: Memory, query: PreflightQuery, semantic_signal: SemanticSignal) -> list[str]:
+    if not semantic_signal.available or semantic_signal.contribution() < SEMANTIC_PROPOSAL_MIN_SCORE:
+        return []
+    grounding: list[str] = []
+    if axis_overlaps(memory.scope.code, query_code_signals(query)):
+        grounding.append("code scope")
+    if axis_overlaps(memory.scope.workflow, query.workflow or []):
+        grounding.append("workflow scope")
+    if axis_overlaps(memory.scope.environment, query.environment or []):
+        grounding.append("environment scope")
+    if memory.evidence:
+        grounding.append("evidence")
+    if memory.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and memory.approved_by:
+        grounding.append("authority")
+    if memory.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and "authority" not in grounding:
+        return []
+    if not any(item in grounding for item in ("code scope", "workflow scope", "environment scope")):
+        return []
+    if "evidence" not in grounding and "authority" not in grounding:
+        return []
+    return grounding
+
+
+def semantic_proposal_bonus(proposal_grounding: list[str]) -> float:
+    if not proposal_grounding:
+        return 0.0
+    scope_bonus = 0.45 if any(item in proposal_grounding for item in ("code scope", "workflow scope", "environment scope")) else 0.0
+    evidence_bonus = 0.25 if "evidence" in proposal_grounding else 0.0
+    authority_bonus = 0.2 if "authority" in proposal_grounding else 0.0
+    return scope_bonus + evidence_bonus + authority_bonus
+
+
 def memory_fingerprint(memory: Memory) -> str:
     payload = "\n".join([memory.id, memory.updated_at, memory_text(memory)])
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def add_hashed_feature(vector: list[float], feature: str, *, weight: float) -> None:
+    digest = sha256(feature.encode("utf-8")).digest()
+    index = int.from_bytes(digest[:4], "big") % len(vector)
+    vector[index] += weight
+
+
+def token_character_features(token: str) -> list[str]:
+    compact = token.replace("_", "").replace("-", "").replace(".", "").replace("/", "")
+    if len(compact) < 4:
+        return []
+    return [f"chars:{compact[index:index + 4]}" for index in range(len(compact) - 3)]
 
 
 def normalize_vector(vector: list[float]) -> list[float]:
@@ -452,6 +502,8 @@ def direct_score_breakdown(
     semantic_signal: SemanticSignal,
     context_bonus: float,
     actor_bonus: float,
+    proposal_grounding: list[str],
+    proposal_bonus: float,
     liability_bonus: float,
     confidence_bonus: float,
 ) -> list[str]:
@@ -465,6 +517,8 @@ def direct_score_breakdown(
     breakdown.append(semantic_score_breakdown(semantic_signal))
     if context_bonus:
         breakdown.append(f"hard scope signals -> +{context_bonus:.2f}")
+    if proposal_grounding:
+        breakdown.append(f"semantic proposal grounded by {', '.join(proposal_grounding)} -> +{proposal_bonus:.2f}")
     if actor_bonus:
         breakdown.append(f"actor signal: {', '.join(memory.scope.actor[:2])} -> +{actor_bonus:.2f}")
     return breakdown

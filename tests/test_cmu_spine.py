@@ -534,6 +534,102 @@ class PreflightTests(unittest.TestCase):
 
             self.assertEqual(matches, [])
 
+    def test_persistent_semantic_index_can_propose_candidate_when_grounded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            query = PreflightQuery(
+                prompt="roll back release marker problem",
+                actor="agent",
+                workflow=["deploy"],
+                risk="high",
+            )
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=64),
+            )
+
+            matches = rank_memories([memory], query, semantic_index=semantic_index)
+
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].memory.id, memory.id)
+            self.assertEqual(matches[0].matched_terms, ["semantic:workflow scope", "semantic:evidence"])
+            breakdown = "\n".join(matches[0].score_breakdown)
+            self.assertIn("semantic signal: local hashing embeddings -> +", breakdown)
+            self.assertIn("semantic proposal grounded by workflow scope, evidence", breakdown)
+            self.assertNotIn("text overlap:", breakdown)
+
+    def test_persistent_semantic_index_rejects_proposal_without_scope_grounding(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                liability_score=4,
+                confidence=0.8,
+            )
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=64),
+            )
+
+            matches = rank_memories(
+                [memory],
+                PreflightQuery(
+                    prompt="roll back release marker problem",
+                    actor="agent",
+                    workflow=["styling"],
+                    risk="high",
+                ),
+                semantic_index=semantic_index,
+            )
+
+            self.assertEqual(matches, [])
+
+    def test_persistent_semantic_index_rejects_proposal_without_evidence_or_authority(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=64),
+            )
+
+            matches = rank_memories(
+                [memory],
+                PreflightQuery(
+                    prompt="roll back release marker problem",
+                    actor="agent",
+                    workflow=["deploy"],
+                    risk="high",
+                ),
+                semantic_index=semantic_index,
+            )
+
+            self.assertEqual(matches, [])
+
     def test_cli_preflight_local_semantic_writes_index_and_explains_score(self) -> None:
         with TemporaryDirectory() as tmp:
             store = MemoryStore(tmp)
@@ -580,6 +676,48 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("semantic signal: local hashing embeddings -> +", rendered)
             self.assertIn("CMU Action Note", rendered)
             self.assertIn("Checkout rollback release markers", rendered)
+
+    def test_cli_preflight_local_semantic_can_surface_grounded_proposal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-matches",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("semantic proposal grounded by workflow scope, evidence", rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertIn("Rollback releasemarker cleanup", rendered)
 
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(
