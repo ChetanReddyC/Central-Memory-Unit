@@ -22,6 +22,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.store import MemoryStore
+from cmu.triggers import decide_trigger
 from cmu.usage import (
     CommitLinkRequest,
     MemoryUseReceipt,
@@ -1544,6 +1545,57 @@ class OnboardingSeedTests(unittest.TestCase):
         self.assertLessEqual(word_count(rendered), NORMAL_SEED_WORD_LIMIT)
         self.assertIn("Default Path: step0 step1", rendered)
         self.assertIn("...", rendered)
+
+
+class TriggerDecisionTests(unittest.TestCase):
+    def test_trigger_decision_must_call_for_high_risk_domain(self) -> None:
+        decision = decide_trigger(
+            PreflightQuery(
+                prompt="rotate production credentials",
+                actor="agent",
+                area="auth",
+                workflow=["deployment"],
+                risk="high",
+            ),
+            irreversible=True,
+        )
+
+        self.assertEqual(decision.level, "must-call")
+        self.assertIn("high risk task", decision.reasons)
+        self.assertIn("hard-to-rollback change", decision.reasons)
+        self.assertTrue(any(reason.startswith("high-risk area") for reason in decision.reasons))
+
+    def test_trigger_decision_should_call_for_uncertain_medium_task(self) -> None:
+        decision = decide_trigger(
+            PreflightQuery(
+                prompt="refactor settings flow",
+                actor="agent",
+                area="frontend",
+                files=["settings/a.py", "settings/b.py", "settings/c.py"],
+                risk="medium",
+            ),
+            uncertainty=True,
+        )
+
+        self.assertEqual(decision.level, "should-call")
+        self.assertIn("medium risk task", decision.reasons)
+        self.assertIn("requirements or implementation uncertainty", decision.reasons)
+        self.assertIn("multi-file task", decision.reasons)
+
+    def test_trigger_decision_silent_skip_for_low_risk_local_task(self) -> None:
+        decision = decide_trigger(
+            PreflightQuery(
+                prompt="adjust button spacing",
+                actor="agent",
+                area="frontend",
+                files=["settings.css"],
+                workflow=["styling"],
+                risk="low",
+            )
+        )
+
+        self.assertEqual(decision.level, "silent-skip")
+        self.assertEqual(decision.reasons, ["small/local/low-risk with no trigger signals"])
 
 
 class MemoryUseTests(unittest.TestCase):
