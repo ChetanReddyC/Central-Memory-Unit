@@ -82,6 +82,28 @@ class SemanticSignal:
         return self.score if self.available else 0.0
 
 
+class SemanticIndex:
+    def score(self, memory: Memory, query: "PreflightQuery") -> SemanticSignal:
+        return SemanticSignal(label="unavailable")
+
+
+class InMemorySemanticIndex(SemanticIndex):
+    def __init__(self, signals: dict[str, SemanticSignal | float], label: str = "in-memory semantic index") -> None:
+        self.signals = signals
+        self.label = label
+
+    def score(self, memory: Memory, query: "PreflightQuery") -> SemanticSignal:
+        signal = self.signals.get(memory.id)
+        if signal is None:
+            return SemanticSignal(label="unavailable")
+        if isinstance(signal, SemanticSignal):
+            return signal
+        return SemanticSignal(label=self.label, score=signal, available=True)
+
+
+DEFAULT_SEMANTIC_INDEX = SemanticIndex()
+
+
 @dataclass
 class PreflightQuery:
     prompt: str
@@ -119,8 +141,8 @@ class Match:
         return bool(self.graph_relation_type and self.graph_source_id)
 
 
-def preflight(memories: list[Memory], query: PreflightQuery) -> ActionNote | None:
-    matches = rank_memories(memories, query)
+def preflight(memories: list[Memory], query: PreflightQuery, semantic_index: SemanticIndex | None = None) -> ActionNote | None:
+    matches = rank_memories(memories, query, semantic_index=semantic_index)
     if not matches:
         return None
     best = matches[0]
@@ -137,9 +159,10 @@ def action_threshold(risk: str) -> float:
     return 1.6
 
 
-def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
+def rank_memories(memories: list[Memory], query: PreflightQuery, semantic_index: SemanticIndex | None = None) -> list[Match]:
     query_terms = tokenize(query.text())
     matches: list[Match] = []
+    semantic_index = semantic_index or DEFAULT_SEMANTIC_INDEX
     for memory in memories:
         if scope_conflicts_with_query(memory, query):
             continue
@@ -150,7 +173,7 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
             continue
         actor_bonus = actor_signal_score(memory, query) if overlap or context_bonus > 0 else 0.0
         hard_signal_bonus = context_bonus + actor_bonus
-        semantic_signal = semantic_signal_score(memory, query)
+        semantic_signal = semantic_signal_score(memory, query, semantic_index)
         semantic_bonus = semantic_signal.contribution()
         text_score = len(overlap) * 0.5
         liability_bonus = memory.liability_score * 0.2
@@ -291,8 +314,8 @@ def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRela
     return round(max(0.1, score), 3)
 
 
-def semantic_signal_score(memory: Memory, query: PreflightQuery) -> SemanticSignal:
-    return SemanticSignal(label="unavailable")
+def semantic_signal_score(memory: Memory, query: PreflightQuery, semantic_index: SemanticIndex) -> SemanticSignal:
+    return semantic_index.score(memory, query)
 
 
 def direct_score_breakdown(

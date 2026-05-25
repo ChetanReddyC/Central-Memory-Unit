@@ -11,7 +11,7 @@ from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.promotion import promote_memory, review_promotion
 from cmu.remembering import RememberRequest, remember_candidate
-from cmu.retrieval import PreflightQuery, preflight, rank_memories
+from cmu.retrieval import InMemorySemanticIndex, PreflightQuery, SemanticSignal, preflight, rank_memories
 from cmu.store import MemoryStore
 from cmu.usage import (
     CommitLinkRequest,
@@ -361,6 +361,71 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].score, 7.798)
         self.assertIn("semantic signal: unavailable -> +0.00", matches[0].score_breakdown)
+
+    def test_rank_memories_uses_real_semantic_index_for_grounded_candidate(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Billing deployment migration order",
+            summary="Billing deploys should check migration order before rollout.",
+            signals=["billing", "deploy"],
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=4,
+            confidence=0.8,
+        )
+        query = PreflightQuery(
+            prompt="Fix billing deployment failure",
+            actor="agent",
+            area="billing",
+            files=["billing/deploy.py"],
+            workflow=["deployment"],
+            risk="high",
+        )
+
+        baseline = rank_memories([memory], query)
+        boosted = rank_memories(
+            [memory],
+            query,
+            semantic_index=InMemorySemanticIndex(
+                {
+                    memory.id: SemanticSignal(
+                        label="deterministic semantic match",
+                        score=1.25,
+                        available=True,
+                    )
+                }
+            ),
+        )
+
+        self.assertEqual(len(baseline), 1)
+        self.assertEqual(len(boosted), 1)
+        self.assertEqual(boosted[0].score, round(baseline[0].score + 1.25, 3))
+        self.assertIn("semantic signal: deterministic semantic match -> +1.25", boosted[0].score_breakdown)
+
+    def test_rank_memories_does_not_surface_semantic_only_match(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Auth token rotation",
+            summary="Token rotation has a lock ordering constraint.",
+            signals=["auth", "token"],
+            scope=MemoryScope(code=["auth"], workflow=["credential rotation"]),
+            liability_score=4,
+            confidence=0.8,
+        )
+
+        matches = rank_memories(
+            [memory],
+            PreflightQuery(
+                prompt="Change CSS spacing on settings page",
+                actor="agent",
+                area="frontend",
+                files=["frontend/settings.css"],
+                workflow=["styling"],
+                risk="low",
+            ),
+            semantic_index=InMemorySemanticIndex({memory.id: 5.0}),
+        )
+
+        self.assertEqual(matches, [])
 
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(
