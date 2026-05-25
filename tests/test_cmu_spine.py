@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
+from cmu.onboarding import build_onboarding_seed
 from cmu.promotion import promote_memory, review_promotion
 from cmu.remembering import RememberRequest, remember_candidate
 from cmu.retrieval import (
@@ -1361,6 +1362,70 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("CMU stayed quiet", output.getvalue())
             self.assertNotIn("Use Receipt:", output.getvalue())
+
+class OnboardingSeedTests(unittest.TestCase):
+    def test_onboarding_seed_uses_matching_memory_without_dumping_context(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Task-start preflight stays quiet unless useful",
+            summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+            signals=["preflight", "quiet"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+            use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+            avoid_this="Do not dump memory into context just because it exists.",
+            challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+            liability_score=4,
+            confidence=0.9,
+            approved_by="CMU core owner",
+        )
+
+        seed = build_onboarding_seed(
+            [memory],
+            PreflightQuery(
+                prompt="implement CMU preflight behavior",
+                actor="agent",
+                area="cmu",
+                workflow=["implementation"],
+                risk="high",
+            ),
+        )
+
+        rendered = seed.render()
+        self.assertIn("CMU Onboarding Seed", rendered)
+        self.assertIn("Where Working: cmu, implementation, agent", rendered)
+        self.assertIn("Default Path: Run preflight at task start", rendered)
+        self.assertIn("Trap To Avoid: Do not dump memory into context", rendered)
+        self.assertIn(f"Source Memory: {memory.id}", rendered)
+        self.assertLess(len(rendered.split()), 120)
+
+    def test_onboarding_seed_falls_back_when_memory_stays_quiet(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Auth token rotation",
+            summary="Token rotation has a lock ordering constraint.",
+            signals=["auth"],
+            scope=MemoryScope(code=["auth"]),
+            liability_score=4,
+        )
+
+        seed = build_onboarding_seed(
+            [memory],
+            PreflightQuery(
+                prompt="Change CSS spacing on settings page",
+                actor="agent",
+                area="frontend",
+                files=["frontend/settings.css"],
+                workflow=["styling"],
+                risk="low",
+            ),
+        )
+
+        rendered = seed.render()
+        self.assertIn("Where Working: frontend, frontend/settings.css, styling", rendered)
+        self.assertIn("Must Not Violate: Do not invent project rules", rendered)
+        self.assertIn("Confidence: no matching memory", rendered)
+        self.assertNotIn(memory.id, rendered)
 
 
 class MemoryUseTests(unittest.TestCase):
