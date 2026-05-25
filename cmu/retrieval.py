@@ -72,6 +72,16 @@ STABLE_GRAPH_RELATIONS = {
 }
 
 
+@dataclass(frozen=True)
+class SemanticSignal:
+    label: str
+    score: float = 0.0
+    available: bool = False
+
+    def contribution(self) -> float:
+        return self.score if self.available else 0.0
+
+
 @dataclass
 class PreflightQuery:
     prompt: str
@@ -140,10 +150,12 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
             continue
         actor_bonus = actor_signal_score(memory, query) if overlap or context_bonus > 0 else 0.0
         hard_signal_bonus = context_bonus + actor_bonus
+        semantic_signal = semantic_signal_score(memory, query)
+        semantic_bonus = semantic_signal.contribution()
         text_score = len(overlap) * 0.5
         liability_bonus = memory.liability_score * 0.2
         confidence_bonus = memory.confidence * 0.3
-        score = (text_score + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
+        score = (text_score + semantic_bonus + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
         matches.append(
             Match(
                 memory=memory,
@@ -153,6 +165,7 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
                     memory=memory,
                     overlap=overlap,
                     text_score=text_score,
+                    semantic_signal=semantic_signal,
                     context_bonus=context_bonus,
                     actor_bonus=actor_bonus,
                     liability_bonus=liability_bonus,
@@ -278,11 +291,16 @@ def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRela
     return round(max(0.1, score), 3)
 
 
+def semantic_signal_score(memory: Memory, query: PreflightQuery) -> SemanticSignal:
+    return SemanticSignal(label="unavailable")
+
+
 def direct_score_breakdown(
     *,
     memory: Memory,
     overlap: list[str],
     text_score: float,
+    semantic_signal: SemanticSignal,
     context_bonus: float,
     actor_bonus: float,
     liability_bonus: float,
@@ -295,11 +313,19 @@ def direct_score_breakdown(
     ]
     if overlap:
         breakdown.insert(0, f"text overlap: {', '.join(overlap[:6])} -> +{text_score:.2f}")
+    breakdown.append(semantic_score_breakdown(semantic_signal))
     if context_bonus:
         breakdown.append(f"hard scope signals -> +{context_bonus:.2f}")
     if actor_bonus:
         breakdown.append(f"actor signal: {', '.join(memory.scope.actor[:2])} -> +{actor_bonus:.2f}")
     return breakdown
+
+
+def semantic_score_breakdown(signal: SemanticSignal) -> str:
+    if not signal.available:
+        return f"semantic signal: {signal.label} -> +0.00"
+    sign = "+" if signal.score >= 0 else ""
+    return f"semantic signal: {signal.label} -> {sign}{signal.score:.2f}"
 
 
 def graph_score_breakdown(match: Match, target: Memory, relationship: MemoryRelationship) -> list[str]:
