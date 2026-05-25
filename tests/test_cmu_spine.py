@@ -152,6 +152,37 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertIn("related_practice <-", rendered)
             self.assertIn(situation.title, rendered)
 
+    def test_cli_add_can_store_approved_stable_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "add",
+                        "--type",
+                        "anchor",
+                        "--title",
+                        "Credential rotation lock ordering",
+                        "--summary",
+                        "Credential rotation must hold the lock before updating active secrets.",
+                        "--scope-code",
+                        "auth",
+                        "--scope-workflow",
+                        "credential rotation",
+                        "--scope-actor",
+                        "agent",
+                        "--approved-by",
+                        "security owner",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            anchors = MemoryStore(tmp).list(type=MemoryType.ANCHOR)
+            self.assertEqual(len(anchors), 1)
+            self.assertEqual(anchors[0].approved_by, "security owner")
+
 
 class PreflightTests(unittest.TestCase):
     def test_preflight_returns_action_note_for_relevant_memory(self) -> None:
@@ -698,6 +729,100 @@ class PreflightTests(unittest.TestCase):
             )
 
             self.assertEqual(matches, [])
+
+    def test_persistent_semantic_index_can_propose_approved_anchor_by_authority(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Locksequence anchor",
+                summary="Protected-value locksequence prevents cycling races.",
+                signals=["credential", "locksequence"],
+                scope=MemoryScope(workflow=["credential-rotation"], actor=["agent"]),
+                use_this_path="Check the locksequence before updating active credentials.",
+                liability_score=5,
+                confidence=0.9,
+                approved_by="security owner",
+            )
+            semantic_index = PersistentSemanticIndex.load_or_build(
+                Path(tmp) / ".cmu" / "semantic_index.json",
+                [memory],
+                provider=HashingEmbeddingProvider(dimensions=64),
+            )
+
+            matches = rank_memories(
+                [memory],
+                PreflightQuery(
+                    prompt="secret lock order cycle race",
+                    actor="agent",
+                    workflow=["rotation"],
+                    risk="high",
+                ),
+                semantic_index=semantic_index,
+            )
+
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].memory.id, memory.id)
+            self.assertEqual(matches[0].matched_terms, ["semantic:workflow scope", "semantic:authority"])
+            breakdown = "\n".join(matches[0].score_breakdown)
+            self.assertIn("semantic proposal grounded by workflow scope, authority", breakdown)
+
+    def test_cli_preflight_local_semantic_can_surface_approved_anchor_from_add(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with redirect_stdout(StringIO()):
+                main(
+                    [
+                        "--root",
+                        tmp,
+                        "add",
+                        "--type",
+                        "anchor",
+                        "--title",
+                        "Locksequence anchor",
+                        "--summary",
+                        "Protected-value locksequence prevents cycling races.",
+                        "--signal",
+                        "credential",
+                        "--signal",
+                        "locksequence",
+                        "--scope-workflow",
+                        "credential-rotation",
+                        "--scope-actor",
+                        "agent",
+                        "--use-path",
+                        "Check the locksequence before updating active credentials.",
+                        "--liability",
+                        "5",
+                        "--confidence",
+                        "0.9",
+                        "--approved-by",
+                        "security owner",
+                    ]
+                )
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "secret lock order cycle race",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "rotation",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-matches",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("semantic proposal grounded by workflow scope, authority", rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertIn("Locksequence anchor", rendered)
 
     def test_cli_preflight_local_semantic_writes_index_and_explains_score(self) -> None:
         with TemporaryDirectory() as tmp:

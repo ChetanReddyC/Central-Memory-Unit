@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--challenge", default="")
     add_parser.add_argument("--liability", type=int, default=1)
     add_parser.add_argument("--confidence", type=float, default=0.6)
+    add_parser.add_argument("--approved-by", default="", help="Owner or team approving a stable Practice/Anchor memory.")
     add_parser.set_defaults(func=cmd_add)
 
     list_parser = subparsers.add_parser("list", help="List stored CMU memories.")
@@ -251,6 +252,7 @@ def cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
         challenge_only_if=args.challenge,
         liability_score=args.liability,
         confidence=args.confidence,
+        approved_by=args.approved_by,
     )
     store.add(memory)
     print(f"Added {memory.type.value} memory {memory.id}: {memory.title}")
