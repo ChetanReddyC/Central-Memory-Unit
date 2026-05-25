@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .models import ActionNote, Memory, MemoryRelationType, MemoryRelationship, MemoryType
 
@@ -99,6 +99,7 @@ class Match:
     memory: Memory
     score: float
     matched_terms: list[str]
+    score_breakdown: list[str] = field(default_factory=list)
     graph_source_id: str = ""
     graph_source_title: str = ""
     graph_relation_type: str = ""
@@ -143,7 +144,22 @@ def rank_memories(memories: list[Memory], query: PreflightQuery) -> list[Match]:
         liability_bonus = memory.liability_score * 0.2
         confidence_bonus = memory.confidence * 0.3
         score = (text_score + hard_signal_bonus + liability_bonus + confidence_bonus) * TYPE_WEIGHT[memory.type]
-        matches.append(Match(memory=memory, score=round(score, 3), matched_terms=overlap[:8]))
+        matches.append(
+            Match(
+                memory=memory,
+                score=round(score, 3),
+                matched_terms=overlap[:8],
+                score_breakdown=direct_score_breakdown(
+                    memory=memory,
+                    overlap=overlap,
+                    text_score=text_score,
+                    context_bonus=context_bonus,
+                    actor_bonus=actor_bonus,
+                    liability_bonus=liability_bonus,
+                    confidence_bonus=confidence_bonus,
+                ),
+            )
+        )
     matches = expand_graph_matches(memories, matches, query)
     return sorted(matches, key=lambda item: item.score, reverse=True)
 
@@ -175,12 +191,14 @@ def expand_graph_matches(memories: list[Memory], matches: list[Match], query: Pr
                     existing_match.graph_source_title = match.memory.title
                     existing_match.graph_relation_type = relationship.type.value
                     existing_match.graph_relation_reason = relationship.reason
+                    existing_match.score_breakdown.extend(graph_score_breakdown(match, target, relationship))
                 existing_match.score = max(existing_match.score, graph_score)
                 continue
             graph_match = Match(
                 memory=target,
                 score=graph_score,
                 matched_terms=[f"graph:{relationship.type.value}", f"via:{match.memory.id}"],
+                score_breakdown=graph_score_breakdown(match, target, relationship),
                 graph_source_id=match.memory.id,
                 graph_source_title=match.memory.title,
                 graph_relation_type=relationship.type.value,
@@ -258,6 +276,38 @@ def graph_expansion_score(match: Match, target: Memory, relationship: MemoryRela
     link_weight = GRAPH_LINK_WEIGHT[relationship.type]
     score = (match.score * 0.55) + (link_weight * TYPE_WEIGHT[target.type])
     return round(max(0.1, score), 3)
+
+
+def direct_score_breakdown(
+    *,
+    memory: Memory,
+    overlap: list[str],
+    text_score: float,
+    context_bonus: float,
+    actor_bonus: float,
+    liability_bonus: float,
+    confidence_bonus: float,
+) -> list[str]:
+    breakdown = [
+        f"type weight: {memory.type.value} x{TYPE_WEIGHT[memory.type]}",
+        f"liability: {memory.liability_score}/5 -> +{liability_bonus:.2f}",
+        f"confidence: {memory.confidence:.2f} -> +{confidence_bonus:.2f}",
+    ]
+    if overlap:
+        breakdown.insert(0, f"text overlap: {', '.join(overlap[:6])} -> +{text_score:.2f}")
+    if context_bonus:
+        breakdown.append(f"hard scope signals -> +{context_bonus:.2f}")
+    if actor_bonus:
+        breakdown.append(f"actor signal: {', '.join(memory.scope.actor[:2])} -> +{actor_bonus:.2f}")
+    return breakdown
+
+
+def graph_score_breakdown(match: Match, target: Memory, relationship: MemoryRelationship) -> list[str]:
+    return [
+        f"graph link: {relationship.type.value} via {match.memory.id} -> +{GRAPH_LINK_WEIGHT[relationship.type]:.2f}",
+        f"source score carry: {match.score} x0.55",
+        f"target type weight: {target.type.value} x{TYPE_WEIGHT[target.type]}",
+    ]
 
 
 def build_action_note(match: Match) -> ActionNote:

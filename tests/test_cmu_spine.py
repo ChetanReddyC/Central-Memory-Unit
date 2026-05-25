@@ -293,9 +293,45 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             rendered = output.getvalue()
             self.assertIn(f"match", rendered)
+            self.assertIn("score:", rendered)
+            self.assertIn("text overlap:", rendered)
+            self.assertIn("hard scope signals", rendered)
+            self.assertIn("graph link: related_practice", rendered)
             self.assertIn(f"via: {situation.id} Webhook timeout root cause", rendered)
             self.assertIn("relation: related_practice", rendered)
             self.assertIn("reason: Timeout debugging should lead to the retry budget practice.", rendered)
+
+    def test_rank_memories_records_explainable_score_breakdown(self) -> None:
+        memory = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Do migration before deploy",
+            summary="Deploys should respect database migration order.",
+            signals=["migration", "deploy"],
+            scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+            liability_score=5,
+            confidence=0.9,
+        )
+
+        matches = rank_memories(
+            [memory],
+            PreflightQuery(
+                prompt="Fix billing deployment migration failure",
+                actor="agent",
+                area="billing",
+                files=["billing/deploy.py"],
+                workflow=["deployment"],
+                risk="high",
+            ),
+        )
+
+        self.assertEqual(len(matches), 1)
+        breakdown = "\n".join(matches[0].score_breakdown)
+        self.assertIn("text overlap:", breakdown)
+        self.assertIn("hard scope signals", breakdown)
+        self.assertIn("actor signal:", breakdown)
+        self.assertIn("liability: 5/5", breakdown)
+        self.assertIn("confidence: 0.90", breakdown)
+        self.assertIn("type weight: practice", breakdown)
 
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(

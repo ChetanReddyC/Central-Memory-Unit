@@ -1205,6 +1205,7 @@ def apply_usage_adjustments(matches: list[Match], receipts: list[MemoryUseReceip
                 memory=match.memory,
                 score=round(max(0.0, match.score + adjustment), 3),
                 matched_terms=match.matched_terms,
+                score_breakdown=match.score_breakdown + usage_adjustment_breakdown(adjustment),
                 graph_source_id=match.graph_source_id,
                 graph_source_title=match.graph_source_title,
                 graph_relation_type=match.graph_relation_type,
@@ -1212,6 +1213,13 @@ def apply_usage_adjustments(matches: list[Match], receipts: list[MemoryUseReceip
             )
         )
     return sorted(adjusted, key=lambda item: item.score, reverse=True)
+
+
+def usage_adjustment_breakdown(adjustment: float) -> list[str]:
+    if adjustment == 0:
+        return []
+    sign = "+" if adjustment > 0 else ""
+    return [f"use evidence adjustment: {sign}{adjustment:.2f}"]
 
 
 def usage_adjustment(receipts: list[MemoryUseReceipt]) -> float:

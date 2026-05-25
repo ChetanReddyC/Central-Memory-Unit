@@ -605,6 +605,10 @@ def project_root() -> Path:
 
 def format_preflight_match(match) -> str:
     lines = [f"match {match.score}: {match.memory.id} - {match.memory.title}"]
+    if match.score_breakdown:
+        lines.append("  score:")
+        for item in match.score_breakdown[:8]:
+            lines.append(f"    - {item}")
     if match.is_graph_expanded():
         lines.append(f"  via: {match.graph_source_id} {match.graph_source_title}")
         lines.append(f"  relation: {match.graph_relation_type}")
