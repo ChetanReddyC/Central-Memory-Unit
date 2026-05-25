@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
-from cmu.onboarding import build_onboarding_seed
+from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.promotion import promote_memory, review_promotion
 from cmu.remembering import RememberRequest, remember_candidate
 from cmu.retrieval import (
@@ -1512,6 +1512,38 @@ class OnboardingSeedTests(unittest.TestCase):
             self.assertIn("CMU Onboarding Seed", rendered)
             self.assertIn("Default Path: Check stale releasemarkers", rendered)
             self.assertIn(f"Source Memory: {memory.id}", rendered)
+
+    def test_onboarding_seed_enforces_compact_normal_budget(self) -> None:
+        long_text = " ".join(f"step{index}" for index in range(80))
+        memory = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Verbose implementation situation",
+            summary=long_text,
+            signals=["verbose", "implementation"],
+            scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+            evidence=["Long evidence should not make onboarding verbose."],
+            use_this_path=long_text,
+            avoid_this=long_text,
+            challenge_only_if=long_text,
+            liability_score=4,
+            confidence=0.8,
+        )
+
+        seed = build_onboarding_seed(
+            [memory],
+            PreflightQuery(
+                prompt="verbose implementation work",
+                actor="agent",
+                area="cmu",
+                workflow=["implementation"],
+                risk="medium",
+            ),
+        )
+
+        rendered = seed.render()
+        self.assertLessEqual(word_count(rendered), NORMAL_SEED_WORD_LIMIT)
+        self.assertIn("Default Path: step0 step1", rendered)
+        self.assertIn("...", rendered)
 
 
 class MemoryUseTests(unittest.TestCase):

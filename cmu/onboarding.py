@@ -6,6 +6,11 @@ from .models import Memory
 from .retrieval import PreflightQuery, SemanticIndex, action_threshold, rank_memories, scope_summary
 
 
+NORMAL_SEED_WORD_LIMIT = 220
+HIGH_RISK_SEED_WORD_LIMIT = 350
+FIELD_WORD_LIMIT = 28
+
+
 @dataclass
 class OnboardingSeed:
     where_working: str
@@ -43,25 +48,31 @@ def build_onboarding_seed(
         return fallback_seed(query)
     match = actionable[0]
     memory = match.memory
-    return OnboardingSeed(
-        where_working=compact(scope_summary(memory), fallback=query_area_summary(query)),
-        must_not_violate=compact(memory.challenge_only_if or "Stay inside the stated scope unless evidence shows it changed."),
-        default_path=compact(memory.use_this_path or memory.summary),
-        trap_to_avoid=compact(memory.avoid_this or "Do not generalize this memory beyond its evidence."),
-        call_cmu_again=call_again_guidance(query, matched=True),
-        source_memory_id=memory.id,
-        confidence=f"{round(memory.confidence * 100)}% (score {match.score})",
+    return enforce_seed_budget(
+        OnboardingSeed(
+            where_working=compact(scope_summary(memory), fallback=query_area_summary(query)),
+            must_not_violate=compact(memory.challenge_only_if or "Stay inside the stated scope unless evidence shows it changed."),
+            default_path=compact(memory.use_this_path or memory.summary),
+            trap_to_avoid=compact(memory.avoid_this or "Do not generalize this memory beyond its evidence."),
+            call_cmu_again=call_again_guidance(query, matched=True),
+            source_memory_id=memory.id,
+            confidence=f"{round(memory.confidence * 100)}% (score {match.score})",
+        ),
+        query,
     )
 
 
 def fallback_seed(query: PreflightQuery) -> OnboardingSeed:
-    return OnboardingSeed(
-        where_working=query_area_summary(query),
-        must_not_violate="Do not invent project rules without a matching memory or local evidence.",
-        default_path="Inspect the local code and existing patterns before changing behavior.",
-        trap_to_avoid="Do not turn a low-risk local task into a broad memory or practice.",
-        call_cmu_again=call_again_guidance(query, matched=False),
-        confidence="no matching memory",
+    return enforce_seed_budget(
+        OnboardingSeed(
+            where_working=query_area_summary(query),
+            must_not_violate="Do not invent project rules without a matching memory or local evidence.",
+            default_path="Inspect the local code and existing patterns before changing behavior.",
+            trap_to_avoid="Do not turn a low-risk local task into a broad memory or practice.",
+            call_cmu_again=call_again_guidance(query, matched=False),
+            confidence="no matching memory",
+        ),
+        query,
     )
 
 
@@ -88,3 +99,27 @@ def compact(text: str, *, fallback: str = "narrow task scope", limit: int = 180)
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3].rstrip() + "..."
+
+
+def enforce_seed_budget(seed: OnboardingSeed, query: PreflightQuery) -> OnboardingSeed:
+    seed.where_working = compact_words(seed.where_working, FIELD_WORD_LIMIT)
+    seed.must_not_violate = compact_words(seed.must_not_violate, FIELD_WORD_LIMIT)
+    seed.default_path = compact_words(seed.default_path, FIELD_WORD_LIMIT)
+    seed.trap_to_avoid = compact_words(seed.trap_to_avoid, FIELD_WORD_LIMIT)
+    seed.call_cmu_again = compact_words(seed.call_cmu_again, FIELD_WORD_LIMIT)
+    limit = HIGH_RISK_SEED_WORD_LIMIT if query.risk == "high" else NORMAL_SEED_WORD_LIMIT
+    if word_count(seed.render()) <= limit:
+        return seed
+    seed.confidence = compact_words(seed.confidence, 8)
+    return seed
+
+
+def compact_words(text: str, limit: int) -> str:
+    words = text.split()
+    if len(words) <= limit:
+        return text
+    return " ".join(words[:limit]).rstrip(" .,;:") + "..."
+
+
+def word_count(text: str) -> int:
+    return len(text.split())
