@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .challenges import ChallengeRequest, challenge_stable_memory
+from .json_store import read_json, update_json
 from .models import Memory, MemoryScope, MemoryType, utc_now
 from .retrieval import Match, PreflightQuery
 
@@ -42,6 +43,7 @@ class MemoryUseReceipt:
     files: list[str]
     risk: str
     match_score: float
+    source_command: str = "preflight"
     workflow: list[str] = field(default_factory=list)
     environment: list[str] = field(default_factory=list)
     surfaced_at: str = field(default_factory=utc_now)
@@ -57,7 +59,14 @@ class MemoryUseReceipt:
     note: str = ""
 
     @classmethod
-    def create(cls, memory: Memory, query: PreflightQuery, match: Match) -> "MemoryUseReceipt":
+    def create(
+        cls,
+        memory: Memory,
+        query: PreflightQuery,
+        match: Match,
+        *,
+        source_command: str = "preflight",
+    ) -> "MemoryUseReceipt":
         return cls(
             id=f"use_{uuid4().hex[:12]}",
             memory_id=memory.id,
@@ -70,6 +79,7 @@ class MemoryUseReceipt:
             environment=[item.strip() for item in query.environment or [] if item.strip()],
             risk=query.risk.strip(),
             match_score=match.score,
+            source_command=source_command.strip() or "preflight",
         )
 
     def to_dict(self) -> dict:
@@ -89,6 +99,7 @@ class MemoryUseReceipt:
             environment=list(data.get("environment", [])),
             risk=data.get("risk", ""),
             match_score=float(data.get("match_score", 0.0)),
+            source_command=data.get("source_command", "preflight"),
             surfaced_at=data.get("surfaced_at", utc_now()),
             commit_hash=data.get("commit_hash", ""),
             commit_message=data.get("commit_message", ""),
@@ -437,15 +448,15 @@ class MemoryUseStore:
     def init(self) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
         self.store_dir.mkdir(parents=True, exist_ok=True)
-        if not self.store_file.exists():
-            self._write({"version": 1, "uses": []})
+        read_json(self.store_file, {"version": 1, "uses": []})
         return self.store_file
 
     def add(self, receipt: MemoryUseReceipt) -> MemoryUseReceipt:
-        data = self._read()
-        data["uses"].append(receipt.to_dict())
-        self._write(data)
-        return receipt
+        return update_json(
+            self.store_file,
+            {"version": 1, "uses": []},
+            lambda data: append_receipt(data, receipt),
+        )
 
     def list(self) -> list[MemoryUseReceipt]:
         return sorted(
@@ -461,30 +472,31 @@ class MemoryUseStore:
         raise KeyError(f"Use receipt not found: {use_id}")
 
     def update(self, receipt: MemoryUseReceipt) -> MemoryUseReceipt:
-        data = self._read()
-        uses = data["uses"]
-        for index, current in enumerate(uses):
-            if current["id"] == receipt.id:
-                uses[index] = receipt.to_dict()
-                self._write(data)
-                return receipt
-        raise KeyError(f"Use receipt not found: {receipt.id}")
+        return update_json(
+            self.store_file,
+            {"version": 1, "uses": []},
+            lambda data: replace_receipt(data, receipt),
+        )
 
     def list_for_memory(self, memory_id: str) -> list[MemoryUseReceipt]:
         return [receipt for receipt in self.list() if receipt.memory_id == memory_id]
 
     def _read(self) -> dict:
-        self.init()
-        with self.store_file.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+        return read_json(self.store_file, {"version": 1, "uses": []})
 
-    def _write(self, data: dict) -> None:
-        self.store_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = self.store_file.with_suffix(".tmp")
-        with temp_file.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=True)
-            handle.write("\n")
-        temp_file.replace(self.store_file)
+
+def append_receipt(data: dict, receipt: MemoryUseReceipt) -> MemoryUseReceipt:
+    data["uses"].append(receipt.to_dict())
+    return receipt
+
+
+def replace_receipt(data: dict, receipt: MemoryUseReceipt) -> MemoryUseReceipt:
+    uses = data["uses"]
+    for index, current in enumerate(uses):
+        if current["id"] == receipt.id:
+            uses[index] = receipt.to_dict()
+            return receipt
+    raise KeyError(f"Use receipt not found: {receipt.id}")
 
 
 def link_commit(receipt: MemoryUseReceipt, request: CommitLinkRequest) -> CommitLinkDecision:

@@ -409,7 +409,7 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
         return 0
     print(note.render())
     if matches:
-        receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0])
+        receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0], source_command="preflight")
         use_store.add(receipt)
         print(f"Use Receipt: {receipt.id}")
     return 0
@@ -468,7 +468,7 @@ def cmd_start(args: argparse.Namespace, store: MemoryStore) -> int:
         return 0
     print()
     print(note.render())
-    receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0])
+    receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0], source_command="start")
     use_store.add(receipt)
     print(f"Use Receipt: {receipt.id}")
     return 0
@@ -655,7 +655,7 @@ def cmd_use_list(args: argparse.Namespace, store: MemoryStore) -> int:
     for receipt in receipts:
         commit = receipt.commit_hash or "unlinked"
         outcome = receipt.outcome_signal or "surfaced"
-        print(f"{receipt.id} {outcome} {commit} - {receipt.memory_id} {receipt.memory_title}")
+        print(f"{receipt.id} {receipt.source_command} {outcome} {commit} - {receipt.memory_id} {receipt.memory_title}")
     return 0
 
 

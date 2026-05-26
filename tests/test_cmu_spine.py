@@ -1,5 +1,6 @@
 import subprocess
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -204,6 +205,29 @@ class MemoryStoreTests(unittest.TestCase):
 
             self.assertIn("requires --approved-by", str(raised.exception))
             self.assertEqual(MemoryStore(tmp).list(type=MemoryType.ANCHOR), [])
+
+    def test_memory_store_preserves_concurrent_adds(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+
+            def add_memory(index: int) -> str:
+                memory = Memory.create(
+                    type=MemoryType.SITUATION,
+                    title=f"Concurrent situation {index}",
+                    summary=f"Concurrent memory write {index}",
+                    evidence=[f"Evidence {index}"],
+                    scope=MemoryScope(code=["cmu"]),
+                    challenge_only_if="The concurrent write no longer matters.",
+                    use_this_path="Keep every concurrent memory.",
+                )
+                store.add(memory)
+                return memory.id
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                expected_ids = set(executor.map(add_memory, range(24)))
+
+            loaded_ids = {memory.id for memory in MemoryStore(tmp).list()}
+            self.assertEqual(loaded_ids, expected_ids)
 
 
 class PreflightTests(unittest.TestCase):
@@ -1254,6 +1278,7 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(len(receipts), 1)
             self.assertEqual(receipts[0].memory_id, memory.id)
             self.assertEqual(receipts[0].files, ["billing/deploy.py"])
+            self.assertEqual(receipts[0].source_command, "preflight")
 
     def test_cli_preflight_does_not_create_use_receipt_when_quiet(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1812,9 +1837,60 @@ class WorkCycleStartTests(unittest.TestCase):
             self.assertEqual(len(receipts), 1)
             self.assertEqual(receipts[0].memory_id, memory.id)
             self.assertEqual(receipts[0].prompt, "implement CMU preflight behavior")
+            self.assertEqual(receipts[0].source_command, "start")
+
+            use_list = StringIO()
+            with redirect_stdout(use_list):
+                list_exit = main(["--root", tmp, "use-list"])
+
+            self.assertEqual(list_exit, 0)
+            self.assertIn(f"{receipts[0].id} start surfaced unlinked", use_list.getvalue())
 
 
 class MemoryUseTests(unittest.TestCase):
+    def test_memory_use_receipt_defaults_old_records_to_preflight_source(self) -> None:
+        receipt = MemoryUseReceipt.from_dict(
+            {
+                "id": "use_old",
+                "memory_id": "mem_old",
+                "memory_title": "Old receipt",
+                "prompt": "Fix billing deploy",
+                "actor": "agent",
+                "area": "billing",
+                "files": ["billing/deploy.py"],
+                "risk": "high",
+                "match_score": 2.5,
+            }
+        )
+
+        self.assertEqual(receipt.source_command, "preflight")
+
+    def test_memory_use_store_preserves_concurrent_adds(self) -> None:
+        with TemporaryDirectory() as tmp:
+            use_store = MemoryUseStore(tmp)
+
+            def add_receipt(index: int) -> str:
+                receipt = MemoryUseReceipt(
+                    id=f"use_concurrent_{index}",
+                    memory_id=f"mem_{index}",
+                    memory_title=f"Memory {index}",
+                    prompt=f"Concurrent task {index}",
+                    actor="agent",
+                    area="cmu",
+                    files=["cmu/cli.py"],
+                    risk="high",
+                    match_score=2.5,
+                    source_command="start",
+                )
+                use_store.add(receipt)
+                return receipt.id
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                expected_ids = set(executor.map(add_receipt, range(24)))
+
+            loaded_ids = {receipt.id for receipt in MemoryUseStore(tmp).list()}
+            self.assertEqual(loaded_ids, expected_ids)
+
     def test_link_commit_marks_mixed_commit_with_lower_confidence(self) -> None:
         memory = Memory.create(
             type=MemoryType.PRACTICE,

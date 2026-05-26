@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from .json_store import read_json, update_json
 from .models import Memory, MemoryStatus, MemoryType, utc_now
 
 
@@ -19,15 +19,15 @@ class MemoryStore:
     def init(self) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
         self.store_dir.mkdir(parents=True, exist_ok=True)
-        if not self.store_file.exists():
-            self._write({"version": 1, "memories": []})
+        read_json(self.store_file, {"version": 1, "memories": []})
         return self.store_file
 
     def add(self, memory: Memory) -> Memory:
-        data = self._read()
-        data["memories"].append(memory.to_dict())
-        self._write(data)
-        return memory
+        return update_json(
+            self.store_file,
+            {"version": 1, "memories": []},
+            lambda data: append_memory(data, memory),
+        )
 
     def list(
         self,
@@ -42,25 +42,25 @@ class MemoryStore:
         return sorted(filtered, key=lambda item: item.updated_at, reverse=True)
 
     def update(self, memory: Memory) -> Memory:
-        data = self._read()
         memory.updated_at = utc_now()
-        memories = data["memories"]
-        for index, current in enumerate(memories):
-            if current["id"] == memory.id:
-                memories[index] = memory.to_dict()
-                self._write(data)
-                return memory
-        raise KeyError(f"Memory not found: {memory.id}")
+        return update_json(
+            self.store_file,
+            {"version": 1, "memories": []},
+            lambda data: replace_memory(data, memory),
+        )
 
     def _read(self) -> dict:
-        self.init()
-        with self.store_file.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+        return read_json(self.store_file, {"version": 1, "memories": []})
 
-    def _write(self, data: dict) -> None:
-        self.store_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = self.store_file.with_suffix(".tmp")
-        with temp_file.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=True)
-            handle.write("\n")
-        temp_file.replace(self.store_file)
+def append_memory(data: dict, memory: Memory) -> Memory:
+    data["memories"].append(memory.to_dict())
+    return memory
+
+
+def replace_memory(data: dict, memory: Memory) -> Memory:
+    memories = data["memories"]
+    for index, current in enumerate(memories):
+        if current["id"] == memory.id:
+            memories[index] = memory.to_dict()
+            return memory
+    raise KeyError(f"Memory not found: {memory.id}")
