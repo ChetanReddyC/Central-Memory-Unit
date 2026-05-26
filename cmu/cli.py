@@ -8,7 +8,15 @@ from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope,
 from .onboarding import build_onboarding_seed
 from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
-from .retrieval import PersistentSemanticIndex, PreflightQuery, action_threshold, build_action_note, rank_memories
+from .retrieval import (
+    PersistentSemanticIndex,
+    PreflightQuery,
+    action_threshold,
+    build_action_note,
+    rank_memories,
+    semantic_index_status,
+    semantic_proposal_diagnostics,
+)
 from .store import MemoryStore
 from .triggers import decide_trigger
 from .usage import (
@@ -93,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
     preflight_parser.add_argument("--show-matches", action="store_true")
+    preflight_parser.add_argument(
+        "--show-semantic-proposals",
+        action="store_true",
+        help="Show diagnostic-only semantic proposal decisions without changing retrieval or receipts.",
+    )
     preflight_parser.set_defaults(func=cmd_preflight)
 
     onboard_parser = subparsers.add_parser("onboard", help="Generate a tiny task-bound CMU Onboarding Seed.")
@@ -109,7 +122,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
+    onboard_parser.add_argument(
+        "--show-semantic-proposals",
+        action="store_true",
+        help="Show diagnostic-only semantic proposal decisions without creating receipts.",
+    )
     onboard_parser.set_defaults(func=cmd_onboard)
+
+    semantic_status_parser = subparsers.add_parser(
+        "semantic-status",
+        help="Inspect the local semantic index without refreshing or changing retrieval behavior.",
+    )
+    semantic_status_parser.set_defaults(func=cmd_semantic_status)
 
     trigger_parser = subparsers.add_parser("trigger", help="Decide whether the task should call CMU memory.")
     trigger_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate.")
@@ -146,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
     start_parser.add_argument("--show-matches", action="store_true")
+    start_parser.add_argument(
+        "--show-semantic-proposals",
+        action="store_true",
+        help="Show diagnostic-only semantic proposal decisions without changing retrieval or receipts.",
+    )
     start_parser.set_defaults(func=cmd_start)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
@@ -404,12 +433,22 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
             print(format_preflight_match(match))
         if note:
             print()
+    if args.show_semantic_proposals:
+        print_semantic_proposal_diagnostics(memories, query, semantic_index)
+        if note:
+            print()
     if note is None:
         print("CMU stayed quiet: no memory crossed the action threshold.")
         return 0
     print(note.render())
     if matches:
-        receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0], source_command="preflight")
+        receipt = MemoryUseReceipt.create(
+            matches[0].memory,
+            query,
+            matches[0],
+            source_command="preflight",
+            semantic_mode=getattr(args, "semantic", "off"),
+        )
         use_store.add(receipt)
         print(f"Use Receipt: {receipt.id}")
     return 0
@@ -424,6 +463,16 @@ def cmd_onboard(args: argparse.Namespace, store: MemoryStore) -> int:
     semantic_index = load_semantic_index(args, memories)
     seed = build_onboarding_seed(memories, query, semantic_index=semantic_index)
     print(seed.render())
+    if args.show_semantic_proposals:
+        print()
+        print_semantic_proposal_diagnostics(memories, query, semantic_index)
+    return 0
+
+
+def cmd_semantic_status(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    path = Path(args.root) / ".cmu" / "semantic_index.json"
+    print(semantic_index_status(path, memories).render())
     return 0
 
 
@@ -462,13 +511,22 @@ def cmd_start(args: argparse.Namespace, store: MemoryStore) -> int:
         print()
         for match in matches[:5]:
             print(format_preflight_match(match))
+    if args.show_semantic_proposals:
+        print()
+        print_semantic_proposal_diagnostics(memories, query, semantic_index)
     if note is None:
         print()
         print("CMU stayed quiet: no memory crossed the action threshold.")
         return 0
     print()
     print(note.render())
-    receipt = MemoryUseReceipt.create(matches[0].memory, query, matches[0], source_command="start")
+    receipt = MemoryUseReceipt.create(
+        matches[0].memory,
+        query,
+        matches[0],
+        source_command="start",
+        semantic_mode=getattr(args, "semantic", "off"),
+    )
     use_store.add(receipt)
     print(f"Use Receipt: {receipt.id}")
     return 0
@@ -655,7 +713,8 @@ def cmd_use_list(args: argparse.Namespace, store: MemoryStore) -> int:
     for receipt in receipts:
         commit = receipt.commit_hash or "unlinked"
         outcome = receipt.outcome_signal or "surfaced"
-        print(f"{receipt.id} {receipt.source_command} {outcome} {commit} - {receipt.memory_id} {receipt.memory_title}")
+        semantic = f" semantic={receipt.semantic_mode}" if receipt.semantic_mode and receipt.semantic_mode != "off" else ""
+        print(f"{receipt.id} {receipt.source_command} {outcome} {commit} - {receipt.memory_id} {receipt.memory_title}{semantic}")
     return 0
 
 
@@ -766,6 +825,16 @@ def format_preflight_match(match) -> str:
         if match.graph_relation_reason:
             lines.append(f"  reason: {match.graph_relation_reason}")
     return "\n".join(lines)
+
+
+def print_semantic_proposal_diagnostics(memories: list[Memory], query: PreflightQuery, semantic_index) -> None:
+    print("CMU Semantic Proposal Diagnostics")
+    diagnostics = semantic_proposal_diagnostics(memories, query, semantic_index)
+    if not diagnostics:
+        print("No available semantic proposal signal. Enable --semantic local to inspect proposal behavior.")
+        return
+    for diagnostic in diagnostics:
+        print(diagnostic.render())
 
 
 def find_memory(memories: list[Memory], memory_id: str) -> Memory:

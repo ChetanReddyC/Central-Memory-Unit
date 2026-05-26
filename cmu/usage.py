@@ -44,6 +44,10 @@ class MemoryUseReceipt:
     risk: str
     match_score: float
     source_command: str = "preflight"
+    semantic_mode: str = "off"
+    semantic_label: str = "unavailable"
+    semantic_score: float = 0.0
+    semantic_proposal_status: str = ""
     workflow: list[str] = field(default_factory=list)
     environment: list[str] = field(default_factory=list)
     surfaced_at: str = field(default_factory=utc_now)
@@ -66,6 +70,7 @@ class MemoryUseReceipt:
         match: Match,
         *,
         source_command: str = "preflight",
+        semantic_mode: str = "off",
     ) -> "MemoryUseReceipt":
         return cls(
             id=f"use_{uuid4().hex[:12]}",
@@ -80,6 +85,10 @@ class MemoryUseReceipt:
             risk=query.risk.strip(),
             match_score=match.score,
             source_command=source_command.strip() or "preflight",
+            semantic_mode=semantic_mode.strip() or "off",
+            semantic_label=getattr(match, "semantic_label", "unavailable"),
+            semantic_score=getattr(match, "semantic_score", 0.0),
+            semantic_proposal_status=getattr(match, "semantic_proposal_status", ""),
         )
 
     def to_dict(self) -> dict:
@@ -100,6 +109,10 @@ class MemoryUseReceipt:
             risk=data.get("risk", ""),
             match_score=float(data.get("match_score", 0.0)),
             source_command=data.get("source_command", "preflight"),
+            semantic_mode=data.get("semantic_mode", "off"),
+            semantic_label=data.get("semantic_label", "unavailable"),
+            semantic_score=float(data.get("semantic_score", 0.0)),
+            semantic_proposal_status=data.get("semantic_proposal_status", ""),
             surfaced_at=data.get("surfaced_at", utc_now()),
             commit_hash=data.get("commit_hash", ""),
             commit_message=data.get("commit_message", ""),
@@ -170,6 +183,8 @@ class MemoryUseSummary:
     low_confidence: int = 0
     mixed: int = 0
     source_counts: dict[str, int] = field(default_factory=dict)
+    semantic_mode_counts: dict[str, int] = field(default_factory=dict)
+    semantic_match_counts: dict[str, int] = field(default_factory=dict)
     average_confidence: float = 0.0
     retrieval_adjustment: float = 0.0
 
@@ -185,6 +200,8 @@ class MemoryUseSummary:
                 f"Low Confidence: {self.low_confidence}",
                 f"Mixed Commits: {self.mixed}",
                 f"Sources: {format_source_counts(self.source_counts)}",
+                f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
+                f"Semantic Matches: {format_source_counts(self.semantic_match_counts)}",
                 f"Average Confidence: {self.average_confidence:.2f}",
                 f"Retrieval Adjustment: {self.retrieval_adjustment:+.2f}",
             ]
@@ -264,6 +281,10 @@ class UseReviewCard:
     why: str
     suggested_action: str
     source_counts: dict[str, int] = field(default_factory=dict)
+    semantic_mode_counts: dict[str, int] = field(default_factory=dict)
+    semantic_match_counts: dict[str, int] = field(default_factory=dict)
+    semantic_strong_committed: int = 0
+    semantic_drag_signals: int = 0
 
     def render(self) -> str:
         memory_label = f"{self.memory_id} {self.memory_title}".strip()
@@ -276,6 +297,8 @@ class UseReviewCard:
             f"Why: {self.why}",
             f"Signals: {self.signal_summary()}",
             f"Sources: {format_source_counts(self.source_counts)}",
+            f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
+            f"Semantic Matches: {format_source_counts(self.semantic_match_counts)}",
         ]
         interpretation = self.signal_interpretation()
         if interpretation:
@@ -298,14 +321,19 @@ class UseReviewCard:
         )
 
     def signal_interpretation(self) -> str:
+        semantic_note = ""
+        if self.semantic_drag_signals:
+            semantic_note = f"{self.semantic_drag_signals} drag signals came from semantic-assisted receipts; inspect semantic grounding before changing trust. "
+        elif self.semantic_strong_committed:
+            semantic_note = f"{self.semantic_strong_committed} strong committed uses came from semantic-assisted receipts; semantic retrieval has positive linked evidence. "
         if self.mixed:
-            return (
+            return semantic_note + (
                 "Mixed commits are weak evidence because the checkpoint changed much more than the receipt files; "
                 "inspect scope before tuning thresholds."
             )
         if self.drag_signals:
-            return "Drag signals mean the linked evidence is weak, reverted, or unrelated; review the memory before tuning thresholds."
-        return ""
+            return semantic_note + "Drag signals mean the linked evidence is weak, reverted, or unrelated; review the memory before tuning thresholds."
+        return semantic_note.strip()
 
 
 @dataclass
@@ -331,6 +359,8 @@ class UseThresholdMemoryDiagnostic:
     strong_committed: int
     drag_signals: int
     source_counts: dict[str, int]
+    semantic_mode_counts: dict[str, int]
+    semantic_match_counts: dict[str, int]
     retrieval_adjustment: float
     status: str
     suggested_action: str
@@ -340,7 +370,9 @@ class UseThresholdMemoryDiagnostic:
             f"- {self.memory_id} [{self.memory_type}] {self.memory_title}: {self.status}; "
             f"{self.linked_uses}/{self.total_uses} linked, {self.strong_committed} strong, "
             f"{self.drag_signals} drag, adjustment {self.retrieval_adjustment:+.2f}; "
-            f"sources {format_source_counts(self.source_counts)}; {self.suggested_action}"
+            f"sources {format_source_counts(self.source_counts)}; "
+            f"semantic {format_source_counts(self.semantic_mode_counts)} / {format_source_counts(self.semantic_match_counts)}; "
+            f"{self.suggested_action}"
         )
 
 
@@ -350,6 +382,8 @@ class UseThresholdReport:
     linked_receipts: int
     unlinked_receipts: int
     source_counts: dict[str, int]
+    semantic_mode_counts: dict[str, int]
+    semantic_match_counts: dict[str, int]
     diagnostics: list[UseThresholdMemoryDiagnostic]
 
     def render(self) -> str:
@@ -377,6 +411,8 @@ class UseThresholdReport:
             f"- Linked: {self.linked_receipts}",
             f"- Unlinked: {self.unlinked_receipts}",
             f"- Sources: {format_source_counts(self.source_counts)}",
+            f"- Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
+            f"- Semantic Matches: {format_source_counts(self.semantic_match_counts)}",
             "",
             "Evidence Readiness",
             f"- Functionality: {threshold_functionality_status(self.total_receipts, self.linked_receipts)}",
@@ -659,6 +695,8 @@ def use_summary(receipts: list[MemoryUseReceipt], memory_id: str) -> MemoryUseSu
         low_confidence=sum(1 for receipt in relevant if receipt.outcome_signal == "committed_low_confidence"),
         mixed=sum(1 for receipt in relevant if "mixed_commit" in receipt.flags),
         source_counts=source_counts(relevant),
+        semantic_mode_counts=semantic_mode_counts(relevant),
+        semantic_match_counts=semantic_match_counts(relevant),
         average_confidence=round(sum(confidences) / len(confidences), 2) if confidences else 0.0,
         retrieval_adjustment=usage_adjustment(relevant),
     )
@@ -702,6 +740,8 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
                 strong_committed=card.strong_committed,
                 drag_signals=card.drag_signals,
                 source_counts=source_counts(relevant),
+                semantic_mode_counts=semantic_mode_counts(relevant),
+                semantic_match_counts=semantic_match_counts(relevant),
                 retrieval_adjustment=usage_adjustment(relevant),
                 status=card.status,
                 suggested_action=card.suggested_action,
@@ -714,6 +754,8 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
         linked_receipts=len(linked),
         unlinked_receipts=len(receipts) - len(linked),
         source_counts=source_counts(receipts),
+        semantic_mode_counts=semantic_mode_counts(receipts),
+        semantic_match_counts=semantic_match_counts(receipts),
         diagnostics=diagnostics,
     )
 
@@ -730,6 +772,29 @@ def format_source_counts(counts: dict[str, int]) -> str:
     if not counts:
         return "none"
     return ", ".join(f"{source}={counts[source]}" for source in sorted(counts))
+
+
+def semantic_mode_counts(receipts: list[MemoryUseReceipt]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        mode = receipt.semantic_mode.strip() or "off"
+        counts[mode] = counts.get(mode, 0) + 1
+    return counts
+
+
+def semantic_match_counts(receipts: list[MemoryUseReceipt]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        if receipt.semantic_mode.strip() and receipt.semantic_mode.strip() != "off":
+            status = receipt.semantic_proposal_status.strip() or "unknown"
+        else:
+            status = "off"
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def is_semantic_assisted(receipt: MemoryUseReceipt) -> bool:
+    return bool(receipt.semantic_mode.strip() and receipt.semantic_mode.strip() != "off")
 
 
 def threshold_functionality_status(total_receipts: int, linked_receipts: int) -> str:
@@ -1105,6 +1170,10 @@ def build_use_review_card(memory: Memory | None, receipts: list[MemoryUseReceipt
         why=why,
         suggested_action=suggested_action,
         source_counts=source_counts(receipts),
+        semantic_mode_counts=semantic_mode_counts(receipts),
+        semantic_match_counts=semantic_match_counts(receipts),
+        semantic_strong_committed=sum(1 for receipt in strong_committed if is_semantic_assisted(receipt)),
+        semantic_drag_signals=sum(1 for receipt in drag if is_semantic_assisted(receipt)),
     )
 
 
@@ -1126,6 +1195,8 @@ def empty_use_review_card(memory: Memory | None, memory_id: str, title: str) -> 
         why="No Memory Use Receipts exist for this memory yet.",
         suggested_action="Let preflight create receipts and link them before reviewing usefulness.",
         source_counts={},
+        semantic_mode_counts={},
+        semantic_match_counts={},
     )
 
 
@@ -1244,6 +1315,9 @@ def apply_usage_adjustments(matches: list[Match], receipts: list[MemoryUseReceip
                 score=round(max(0.0, match.score + adjustment), 3),
                 matched_terms=match.matched_terms,
                 score_breakdown=match.score_breakdown + usage_adjustment_breakdown(adjustment),
+                semantic_label=match.semantic_label,
+                semantic_score=match.semantic_score,
+                semantic_proposal_status=match.semantic_proposal_status,
                 graph_source_id=match.graph_source_id,
                 graph_source_title=match.graph_source_title,
                 graph_relation_type=match.graph_relation_type,

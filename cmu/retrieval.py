@@ -241,6 +241,9 @@ class Match:
     score: float
     matched_terms: list[str]
     score_breakdown: list[str] = field(default_factory=list)
+    semantic_label: str = "unavailable"
+    semantic_score: float = 0.0
+    semantic_proposal_status: str = ""
     graph_source_id: str = ""
     graph_source_title: str = ""
     graph_relation_type: str = ""
@@ -248,6 +251,64 @@ class Match:
 
     def is_graph_expanded(self) -> bool:
         return bool(self.graph_relation_type and self.graph_source_id)
+
+
+@dataclass
+class SemanticProposalDiagnostic:
+    memory_id: str
+    title: str
+    memory_type: str
+    semantic_label: str
+    semantic_score: float
+    status: str
+    reason: str
+    grounding: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        lines = [
+            f"semantic {self.semantic_score:.3f}: {self.memory_id} - {self.title}",
+            f"  type: {self.memory_type}",
+            f"  signal: {self.semantic_label}",
+            f"  status: {self.status}",
+            f"  reason: {self.reason}",
+        ]
+        if self.grounding:
+            lines.append(f"  grounding: {', '.join(self.grounding)}")
+        return "\n".join(lines)
+
+
+@dataclass
+class SemanticIndexStatus:
+    path: str
+    exists: bool
+    provider: str
+    dimensions: int
+    memory_count: int
+    vector_count: int
+    missing_vectors: list[str] = field(default_factory=list)
+    stale_vectors: list[str] = field(default_factory=list)
+    extra_vectors: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        lines = [
+            "CMU Semantic Index Status",
+            f"Path: {self.path}",
+            f"Exists: {'yes' if self.exists else 'no'}",
+            f"Provider: {self.provider}",
+            f"Dimensions: {self.dimensions}",
+            f"Memories: {self.memory_count}",
+            f"Vectors: {self.vector_count}",
+            f"Missing Vectors: {len(self.missing_vectors)}",
+            f"Stale Vectors: {len(self.stale_vectors)}",
+            f"Extra Vectors: {len(self.extra_vectors)}",
+        ]
+        if self.missing_vectors:
+            lines.append(f"Missing: {', '.join(self.missing_vectors[:5])}")
+        if self.stale_vectors:
+            lines.append(f"Stale: {', '.join(self.stale_vectors[:5])}")
+        if self.extra_vectors:
+            lines.append(f"Extra: {', '.join(self.extra_vectors[:5])}")
+        return "\n".join(lines)
 
 
 def preflight(memories: list[Memory], query: PreflightQuery, semantic_index: SemanticIndex | None = None) -> ActionNote | None:
@@ -281,6 +342,11 @@ def rank_memories(memories: list[Memory], query: PreflightQuery, semantic_index:
         semantic_signal = semantic_signal_score(memory, query, semantic_index)
         semantic_bonus = semantic_signal.contribution()
         proposal_grounding = semantic_proposal_grounding(memory, query, semantic_signal) if not overlap and context_bonus <= 0 else []
+        proposal_status = ""
+        if not overlap and context_bonus <= 0 and proposal_grounding:
+            proposal_status = "admissible"
+        elif overlap or context_bonus > 0:
+            proposal_status = "direct-match"
         if not overlap and context_bonus <= 0 and not proposal_grounding:
             continue
         actor_bonus = actor_signal_score(memory, query) if overlap or context_bonus > 0 else 0.0
@@ -307,10 +373,73 @@ def rank_memories(memories: list[Memory], query: PreflightQuery, semantic_index:
                     liability_bonus=liability_bonus,
                     confidence_bonus=confidence_bonus,
                 ),
+                semantic_label=semantic_signal.label,
+                semantic_score=semantic_signal.contribution(),
+                semantic_proposal_status=proposal_status,
             )
         )
     matches = expand_graph_matches(memories, matches, query)
     return sorted(matches, key=lambda item: item.score, reverse=True)
+
+
+def semantic_proposal_diagnostics(
+    memories: list[Memory],
+    query: PreflightQuery,
+    semantic_index: SemanticIndex | None = None,
+    *,
+    limit: int = 5,
+) -> list[SemanticProposalDiagnostic]:
+    semantic_index = semantic_index or DEFAULT_SEMANTIC_INDEX
+    diagnostics: list[SemanticProposalDiagnostic] = []
+    query_terms = tokenize(query.text())
+    for memory in memories:
+        signal = semantic_signal_score(memory, query, semantic_index)
+        if not signal.available:
+            continue
+        memory_terms = tokenize(memory_text(memory))
+        overlap = sorted(query_terms & memory_terms)
+        context_bonus = context_signal_score(memory, query)
+        grounding = semantic_proposal_grounding(memory, query, signal)
+        status, reason = semantic_proposal_status(memory, query, signal, overlap, context_bonus, grounding)
+        diagnostics.append(
+            SemanticProposalDiagnostic(
+                memory_id=memory.id,
+                title=memory.title,
+                memory_type=memory.type.value,
+                semantic_label=signal.label,
+                semantic_score=signal.contribution(),
+                status=status,
+                reason=reason,
+                grounding=grounding,
+            )
+        )
+    return sorted(diagnostics, key=lambda item: item.semantic_score, reverse=True)[:limit]
+
+
+def semantic_index_status(path: Path | str, memories: list[Memory]) -> SemanticIndexStatus:
+    provider = HashingEmbeddingProvider()
+    index = PersistentSemanticIndex(path, provider=provider)
+    memory_by_id = {memory.id: memory for memory in memories}
+    memory_ids = set(memory_by_id)
+    vector_ids = set(index.vectors)
+    missing = sorted(memory_ids - vector_ids)
+    extra = sorted(vector_ids - memory_ids)
+    stale = sorted(
+        memory.id
+        for memory in memories
+        if memory.id in index.fingerprints and index.fingerprints[memory.id] != memory_fingerprint(memory)
+    )
+    return SemanticIndexStatus(
+        path=str(Path(path)),
+        exists=Path(path).exists(),
+        provider=provider.label,
+        dimensions=provider.dimensions,
+        memory_count=len(memories),
+        vector_count=len(index.vectors),
+        missing_vectors=missing,
+        stale_vectors=stale,
+        extra_vectors=extra,
+    )
 
 
 def expand_graph_matches(memories: list[Memory], matches: list[Match], query: PreflightQuery) -> list[Match]:
@@ -452,6 +581,30 @@ def semantic_proposal_grounding(memory: Memory, query: PreflightQuery, semantic_
     if "evidence" not in grounding and "authority" not in grounding:
         return []
     return grounding
+
+
+def semantic_proposal_status(
+    memory: Memory,
+    query: PreflightQuery,
+    semantic_signal: SemanticSignal,
+    overlap: list[str],
+    context_bonus: float,
+    grounding: list[str],
+) -> tuple[str, str]:
+    if scope_conflicts_with_query(memory, query):
+        return "rejected", "scope conflicts with the query actor, code, workflow, or environment"
+    if overlap or context_bonus > 0:
+        return "direct-match", "text or hard scope already grounds this memory before semantic proposal"
+    if semantic_signal.contribution() < SEMANTIC_PROPOSAL_MIN_SCORE:
+        return "rejected", f"semantic score below proposal threshold {SEMANTIC_PROPOSAL_MIN_SCORE:.2f}"
+    if memory.type in {MemoryType.PRACTICE, MemoryType.ANCHOR} and not memory.approved_by:
+        return "rejected", "stable Practice/Anchor semantic proposal requires explicit authority"
+    has_scope_grounding = any(item in grounding for item in ("code scope", "workflow scope", "environment scope"))
+    if not has_scope_grounding:
+        return "rejected", "missing grounded action scope"
+    if "evidence" not in grounding and "authority" not in grounding:
+        return "rejected", "missing evidence or authority"
+    return "admissible", "semantic proposal has grounded action scope plus evidence or authority"
 
 
 def semantic_proposal_bonus(proposal_grounding: list[str]) -> float:

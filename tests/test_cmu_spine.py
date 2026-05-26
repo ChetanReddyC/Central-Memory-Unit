@@ -917,6 +917,54 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("CMU Action Note", rendered)
             self.assertIn("Checkout rollback release markers", rendered)
 
+    def test_cli_semantic_status_inspects_local_index_without_refreshing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback release markers",
+                summary="Checkout rollback deploys should inspect stale release markers before retrying rollout.",
+                signals=["checkout", "rollback"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                evidence=["A stale release marker blocked checkout rollout retry."],
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            with redirect_stdout(StringIO()):
+                main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "Fix checkout rollback release marker deployment failure",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "checkout",
+                        "--workflow",
+                        "deployment",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                    ]
+                )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-status"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Semantic Index Status", rendered)
+            self.assertIn("Exists: yes", rendered)
+            self.assertIn("Provider: local hashing embeddings", rendered)
+            self.assertIn("Memories: 1", rendered)
+            self.assertIn("Vectors: 1", rendered)
+            self.assertIn("Missing Vectors: 0", rendered)
+
     def test_cli_preflight_local_semantic_can_surface_grounded_proposal(self) -> None:
         with TemporaryDirectory() as tmp:
             store = MemoryStore(tmp)
@@ -1000,6 +1048,92 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("semantic proposal grounded by workflow scope, authority", rendered)
             self.assertIn("CMU Action Note", rendered)
             self.assertIn("Releasemarker cleanup default", rendered)
+
+    def test_cli_preflight_semantic_proposal_diagnostics_explain_unapproved_stable_rejection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Releasemarker cleanup default",
+                summary="Stale releasemarkers can block rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                use_this_path="Check releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.9,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-semantic-proposals",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Semantic Proposal Diagnostics", rendered)
+            self.assertIn("status: rejected", rendered)
+            self.assertIn("stable Practice/Anchor semantic proposal requires explicit authority", rendered)
+            self.assertIn("CMU stayed quiet: no memory crossed the action threshold.", rendered)
+
+    def test_cli_preflight_semantic_proposal_diagnostics_label_grounded_match_as_direct(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle."],
+                use_this_path="Run preflight at task start.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "implement CMU preflight behavior",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-semantic-proposals",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("status: direct-match", rendered)
+            self.assertIn("text or hard scope already grounds this memory before semantic proposal", rendered)
+            self.assertIn("CMU Action Note", rendered)
 
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(
@@ -1563,6 +1697,49 @@ class OnboardingSeedTests(unittest.TestCase):
             self.assertIn("Default Path: Check stale releasemarkers", rendered)
             self.assertIn(f"Source Memory: {memory.id}", rendered)
 
+    def test_cli_onboard_can_show_semantic_proposal_diagnostics_without_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "onboard",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-semantic-proposals",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("CMU Semantic Proposal Diagnostics", rendered)
+            self.assertIn("status: admissible", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
     def test_onboarding_seed_enforces_compact_normal_budget(self) -> None:
         long_text = " ".join(f"step{index}" for index in range(80))
         memory = Memory.create(
@@ -1853,6 +2030,51 @@ class WorkCycleStartTests(unittest.TestCase):
             self.assertEqual(list_exit, 0)
             self.assertIn(f"{receipts[0].id} start surfaced unlinked", use_list.getvalue())
 
+    def test_cli_start_can_show_semantic_proposal_diagnostics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "start",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                        "--show-semantic-proposals",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Start", rendered)
+            self.assertIn("CMU Semantic Proposal Diagnostics", rendered)
+            self.assertIn("status: admissible", rendered)
+            self.assertIn("semantic proposal has grounded action scope plus evidence or authority", rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertEqual(len(MemoryUseStore(tmp).list()), 1)
+
 
 class MemoryUseTests(unittest.TestCase):
     def test_memory_use_receipt_defaults_old_records_to_preflight_source(self) -> None:
@@ -1871,6 +2093,59 @@ class MemoryUseTests(unittest.TestCase):
         )
 
         self.assertEqual(receipt.source_command, "preflight")
+        self.assertEqual(receipt.semantic_mode, "off")
+        self.assertEqual(receipt.semantic_label, "unavailable")
+        self.assertEqual(receipt.semantic_score, 0.0)
+
+    def test_cli_preflight_records_semantic_receipt_provenance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "preflight",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                    ]
+                )
+
+            receipts = MemoryUseStore(tmp).list()
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].semantic_mode, "local")
+            self.assertEqual(receipts[0].semantic_label, "local hashing embeddings")
+            self.assertGreater(receipts[0].semantic_score, 0.0)
+            self.assertEqual(receipts[0].semantic_proposal_status, "admissible")
+
+            use_list = StringIO()
+            with redirect_stdout(use_list):
+                list_exit = main(["--root", tmp, "use-list"])
+
+            self.assertEqual(list_exit, 0)
+            self.assertIn("semantic=local", use_list.getvalue())
 
     def test_memory_use_store_preserves_concurrent_adds(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -2535,6 +2810,45 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Total Uses: 3", rendered)
             self.assertIn("Sources: preflight=1, start=2", rendered)
 
+    def test_cli_use_summary_renders_semantic_provenance_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+            )
+            off_receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix rollout"),
+                match=type("MatchStub", (), {"score": 3.1})(),
+            )
+            semantic_receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="roll back release marker problem"),
+                match=type(
+                    "MatchStub",
+                    (),
+                    {
+                        "score": 3.8,
+                        "semantic_label": "local hashing embeddings",
+                        "semantic_score": 0.72,
+                        "semantic_proposal_status": "admissible",
+                    },
+                )(),
+                semantic_mode="local",
+            )
+            MemoryUseStore(tmp).add(off_receipt)
+            MemoryUseStore(tmp).add(semantic_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-summary", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic Modes: local=1, off=1", rendered)
+            self.assertIn("Semantic Matches: admissible=1, off=1", rendered)
+
     def test_cli_use_review_surfaces_strong_usefulness_card(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -2590,6 +2904,45 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Sources: preflight=1, start=2", rendered)
             self.assertIn("Needs linked evidence", rendered)
 
+    def test_cli_use_review_interprets_semantic_strong_usefulness(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=type(
+                        "MatchStub",
+                        (),
+                        {
+                            "score": 3.8,
+                            "semantic_label": "local hashing embeddings",
+                            "semantic_score": 0.7,
+                            "semantic_proposal_status": "admissible",
+                        },
+                    )(),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semantic{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic Modes: local=2", rendered)
+            self.assertIn("Semantic Matches: admissible=2", rendered)
+            self.assertIn("2 strong committed uses came from semantic-assisted receipts", rendered)
+
     def test_cli_use_review_surfaces_drag_card_for_stable_memory(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -2623,6 +2976,47 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("2 drag signals across 2 linked uses", rendered)
             self.assertIn("challenge or retirement", rendered)
             self.assertIn("Do Not Auto-Mutate", rendered)
+
+    def test_cli_use_review_interprets_semantic_drag_signals(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker cleanup practice.",
+            )
+            MemoryStore(tmp).add(memory)
+            for index, signal in enumerate(["reverted", "committed_low_confidence"]):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=type(
+                        "MatchStub",
+                        (),
+                        {
+                            "score": 3.8,
+                            "semantic_label": "local hashing embeddings",
+                            "semantic_score": 0.72,
+                            "semantic_proposal_status": "admissible",
+                        },
+                    )(),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticdrag{index}"
+                receipt.outcome_signal = signal
+                receipt.flags = ["reverted_after_use"] if signal == "reverted" else ["no_file_overlap"]
+                receipt.link_confidence = 0.2
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic Modes: local=2", rendered)
+            self.assertIn("Semantic Matches: admissible=2", rendered)
+            self.assertIn("2 drag signals came from semantic-assisted receipts", rendered)
+            self.assertIn("inspect semantic grounding before changing trust", rendered)
 
     def test_cli_use_review_explains_mixed_commit_drag(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -2824,6 +3218,44 @@ class MemoryUseTests(unittest.TestCase):
             rendered = output.getvalue()
             self.assertIn("- Sources: preflight=1, start=2", rendered)
             self.assertIn("sources preflight=1, start=2", rendered)
+
+    def test_cli_use_review_thresholds_shows_semantic_provenance_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="roll back release marker problem"),
+                match=type(
+                    "MatchStub",
+                    (),
+                    {
+                        "score": 3.8,
+                        "semantic_label": "local hashing embeddings",
+                        "semantic_score": 0.72,
+                        "semantic_proposal_status": "admissible",
+                    },
+                )(),
+                semantic_mode="local",
+            )
+            receipt.commit_hash = "semanticstrong"
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.85
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", "--thresholds"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("- Semantic Modes: local=1", rendered)
+            self.assertIn("- Semantic Matches: admissible=1", rendered)
+            self.assertIn("semantic local=1 / admissible=1", rendered)
 
     def test_cli_use_review_thresholds_rejects_mutating_options(self) -> None:
         with TemporaryDirectory() as tmp:
