@@ -3413,6 +3413,60 @@ class MemoryUseTests(unittest.TestCase):
             [loaded] = MemoryStore(tmp).list()
             self.assertEqual(loaded.evidence, [])
 
+    def test_cli_use_review_prepare_strengthen_apply_persists_semantic_provenance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                confidence=0.72,
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=Match(
+                        memory=memory,
+                        score=3.8,
+                        matched_terms=["semantic:workflow scope"],
+                        semantic_label="local hashing embeddings",
+                        semantic_score=0.72,
+                        semantic_proposal_status="admissible",
+                    ),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticstrong{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-review",
+                        memory.id,
+                        "--prepare",
+                        "strengthen",
+                        "--apply",
+                        "--approved-by",
+                        "CMU owner",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Review Follow-Up Applied", rendered)
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", rendered)
+            [loaded] = MemoryStore(tmp).list()
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", loaded.evidence)
+            self.assertIn("Semantic-assisted strong committed uses: 2.", loaded.evidence)
+            self.assertIn("Use-review evidence approved by: CMU owner", loaded.evidence)
+            self.assertGreater(loaded.confidence, 0.72)
+
     def test_cli_use_review_prepare_challenge_apply_saves_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
