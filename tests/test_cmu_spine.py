@@ -16,6 +16,7 @@ from cmu.remembering import RememberRequest, remember_candidate
 from cmu.retrieval import (
     HashingEmbeddingProvider,
     InMemorySemanticIndex,
+    Match,
     PersistentSemanticIndex,
     PreflightQuery,
     SemanticSignal,
@@ -3373,6 +3374,45 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Use-review evidence approved by: CMU owner", loaded.evidence)
             self.assertGreater(loaded.confidence, 0.75)
 
+    def test_cli_use_review_prepare_strengthen_includes_semantic_provenance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                confidence=0.7,
+            )
+            MemoryStore(tmp).add(memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=Match(
+                        memory=memory,
+                        score=3.8,
+                        matched_terms=["semantic:workflow scope"],
+                        semantic_label="local hashing embeddings",
+                        semantic_score=0.72,
+                        semantic_proposal_status="admissible",
+                    ),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticstrong{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "strengthen"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", rendered)
+            self.assertIn("Semantic-assisted strong committed uses: 2.", rendered)
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.evidence, [])
+
     def test_cli_use_review_prepare_challenge_apply_saves_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -3409,6 +3449,47 @@ class MemoryUseTests(unittest.TestCase):
             practices = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
             self.assertEqual(len(practices), 1)
 
+    def test_cli_use_review_prepare_challenge_includes_semantic_provenance_in_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker cleanup practice.",
+            )
+            MemoryStore(tmp).add(memory)
+            for index, signal in enumerate(["reverted", "committed_low_confidence"]):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=Match(
+                        memory=memory,
+                        score=3.8,
+                        matched_terms=["semantic:workflow scope"],
+                        semantic_label="local hashing embeddings",
+                        semantic_score=0.72,
+                        semantic_proposal_status="admissible",
+                    ),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticdrag{index}"
+                receipt.outcome_signal = signal
+                receipt.flags = ["reverted_after_use"] if signal == "reverted" else ["no_file_overlap"]
+                receipt.link_confidence = 0.2
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "challenge", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", rendered)
+            self.assertIn("Semantic-assisted drag signals: 2.", rendered)
+            candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(candidates), 1)
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", candidates[0].evidence)
+            self.assertIn("Semantic-assisted drag signals: 2.", candidates[0].evidence)
+
     def test_cli_use_review_prepare_scope_review_is_proposal_only(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -3427,6 +3508,46 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Current scope: billing, deployment", output.getvalue())
             [loaded] = MemoryStore(tmp).list()
             self.assertEqual(loaded.scope.code, ["billing"])
+
+    def test_cli_use_review_prepare_scope_review_includes_semantic_provenance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker cleanup practice.",
+                scope=MemoryScope(workflow=["deployment"]),
+            )
+            MemoryStore(tmp).add(memory)
+            for index, signal in enumerate(["reverted", "committed_low_confidence"]):
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=Match(
+                        memory=memory,
+                        score=3.8,
+                        matched_terms=["semantic:workflow scope"],
+                        semantic_label="local hashing embeddings",
+                        semantic_score=0.72,
+                        semantic_proposal_status="admissible",
+                    ),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticscope{index}"
+                receipt.outcome_signal = signal
+                receipt.flags = ["reverted_after_use"] if signal == "reverted" else ["no_file_overlap"]
+                receipt.link_confidence = 0.2
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id, "--prepare", "scope-review"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Semantic provenance: modes local=2; matches admissible=2.", rendered)
+            self.assertIn("Semantic-assisted drag signals: 2.", rendered)
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.scope.workflow, ["deployment"])
 
     def test_cli_use_review_prepare_scope_review_apply_requires_approval(self) -> None:
         with TemporaryDirectory() as tmp:

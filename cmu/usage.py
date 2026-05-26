@@ -997,6 +997,7 @@ def prepare_scope_review_followup(
     evidence = [
         f"Scope-review prompt from use-review: {card.drag_signals} drag signals across {card.linked_uses} linked uses.",
         f"Current scope: {format_list(current_scope.flattened())}",
+        *semantic_followup_evidence(card),
     ]
     if scope_changes:
         evidence.append(f"Proposed scope: {format_list(new_scope.flattened())}")
@@ -1254,6 +1255,7 @@ def strengthen_evidence(card: UseReviewCard, approved_by: str) -> list[str]:
     evidence = [
         f"Use-review strengthened evidence: {card.strong_committed} high-confidence committed uses across {card.linked_uses} linked uses.",
         f"Use-review signal summary: {card.signal_summary()}",
+        *semantic_followup_evidence(card),
     ]
     if approved_by.strip():
         evidence.append(f"Use-review evidence approved by: {approved_by.strip()}")
@@ -1280,7 +1282,22 @@ def challenge_followup_evidence(card: UseReviewCard) -> list[str]:
     return [
         f"Use-review challenge signal: {card.signal_summary()}",
         f"Use-review reason: {card.why}",
+        *semantic_followup_evidence(card),
     ]
+
+
+def semantic_followup_evidence(card: UseReviewCard) -> list[str]:
+    semantic_total = sum(count for mode, count in card.semantic_mode_counts.items() if mode != "off")
+    if semantic_total == 0:
+        return []
+    evidence = [
+        f"Semantic provenance: modes {format_source_counts(card.semantic_mode_counts)}; matches {format_source_counts(card.semantic_match_counts)}."
+    ]
+    if card.semantic_strong_committed:
+        evidence.append(f"Semantic-assisted strong committed uses: {card.semantic_strong_committed}.")
+    if card.semantic_drag_signals:
+        evidence.append(f"Semantic-assisted drag signals: {card.semantic_drag_signals}.")
+    return evidence
 
 
 def should_surface_review_card(card: UseReviewCard) -> bool:
