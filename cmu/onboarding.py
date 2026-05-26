@@ -51,7 +51,7 @@ def build_onboarding_seed(
     return enforce_seed_budget(
         OnboardingSeed(
             where_working=compact(scope_summary(memory), fallback=query_area_summary(query)),
-            must_not_violate=compact(memory.challenge_only_if or "Stay inside the stated scope unless evidence shows it changed."),
+            must_not_violate=compact(onboarding_guardrail(memory)),
             default_path=compact(memory.use_this_path or memory.summary),
             trap_to_avoid=compact(memory.avoid_this or "Do not generalize this memory beyond its evidence."),
             call_cmu_again=call_again_guidance(query, matched=True),
@@ -60,6 +60,13 @@ def build_onboarding_seed(
         ),
         query,
     )
+
+
+def onboarding_guardrail(memory: Memory) -> str:
+    scope = scope_summary(memory) or "matched task scope"
+    if memory.approved_by and memory.type.value in {"practice", "anchor"}:
+        return f"Respect approved {memory.type.value} memory within scope: {scope}."
+    return f"Stay inside matched {memory.type.value} memory scope: {scope}."
 
 
 def fallback_seed(query: PreflightQuery) -> OnboardingSeed:
