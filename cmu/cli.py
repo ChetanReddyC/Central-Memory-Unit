@@ -312,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
         "semantic-audit",
         help="Review semantic-assisted use evidence without mutating memories or receipts.",
     )
+    semantic_audit_parser.add_argument("--memory", default="", help="Limit semantic audit to one memory id.")
     semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
@@ -781,7 +782,7 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
 
 
 def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
-    report = semantic_audit(MemoryUseStore(args.root).list(), store.list())
+    report = semantic_audit(MemoryUseStore(args.root).list(), store.list(), args.memory)
     print(report.render())
     return 0
 

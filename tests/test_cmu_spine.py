@@ -3360,6 +3360,105 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn(f"{drag_memory.id} Retry marker cleanup default: 1 semantic-assisted drag signals", rendered)
             self.assertIn("Recommended Action: Semantic retrieval has positive linked evidence", rendered)
 
+    def test_cli_semantic_audit_memory_filters_to_one_memory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            target_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Credential rotation lock order",
+                summary="Credential rotation needs lock ordering before secret updates.",
+            )
+            other_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Release marker cleanup",
+                summary="Release retries should clean stale markers.",
+            )
+            store.add(target_memory)
+            store.add(other_memory)
+            strong_receipt = MemoryUseReceipt.create(
+                target_memory,
+                PreflightQuery(prompt="fix credential rotation race"),
+                match=Match(
+                    memory=target_memory,
+                    score=3.9,
+                    matched_terms=["semantic:scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.74,
+                    semantic_proposal_status="direct-match",
+                ),
+                semantic_mode="local",
+            )
+            strong_receipt.commit_hash = "targetstrong"
+            strong_receipt.outcome_signal = "committed"
+            strong_receipt.link_confidence = 0.9
+            MemoryUseStore(tmp).add(strong_receipt)
+            direct_receipt = MemoryUseReceipt.create(
+                target_memory,
+                PreflightQuery(prompt="direct credential check"),
+                match=Match(memory=target_memory, score=2.5, matched_terms=["credential"]),
+            )
+            MemoryUseStore(tmp).add(direct_receipt)
+            other_receipt = MemoryUseReceipt.create(
+                other_memory,
+                PreflightQuery(prompt="fix release marker retry"),
+                match=Match(
+                    memory=other_memory,
+                    score=3.8,
+                    matched_terms=["semantic:scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.71,
+                    semantic_proposal_status="admissible",
+                ),
+                semantic_mode="local",
+            )
+            other_receipt.commit_hash = "otherdrag"
+            other_receipt.outcome_signal = "committed_low_confidence"
+            other_receipt.flags = ["no_file_overlap"]
+            other_receipt.link_confidence = 0.2
+            MemoryUseStore(tmp).add(other_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit", "--memory", target_memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory: {target_memory.id} Credential rotation lock order", rendered)
+            self.assertIn("Total Receipts: 2", rendered)
+            self.assertIn("Semantic-Assisted Receipts: 1", rendered)
+            self.assertIn("Semantic-Assisted Linked: 1", rendered)
+            self.assertIn("Semantic-Assisted Strong Committed: 1", rendered)
+            self.assertIn("Semantic-Assisted Drag Signals: 0", rendered)
+            self.assertIn("Semantic Matches: direct-match=1", rendered)
+            self.assertIn(f"{target_memory.id} Credential rotation lock order: 1 semantic-assisted strong committed uses", rendered)
+            self.assertNotIn(other_memory.id, rendered)
+
+    def test_cli_semantic_audit_memory_reports_no_semantic_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Direct-only deploy memory",
+                summary="Deploy memory with only direct receipt evidence.",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="fix deploy"),
+                match=Match(memory=memory, score=2.8, matched_terms=["deploy"]),
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit", "--memory", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory: {memory.id} Direct-only deploy memory", rendered)
+            self.assertIn("Total Receipts: 1", rendered)
+            self.assertIn("Semantic-Assisted Receipts: 0", rendered)
+            self.assertIn("Recommended Action: No semantic-assisted receipts for this memory yet", rendered)
+
     def test_cli_use_review_prepare_strengthen_proposal_does_not_mutate(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
