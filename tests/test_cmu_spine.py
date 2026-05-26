@@ -3459,6 +3459,131 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Semantic-Assisted Receipts: 0", rendered)
             self.assertIn("Recommended Action: No semantic-assisted receipts for this memory yet", rendered)
 
+    def test_cli_semantic_audit_recommendations_groups_memory_actions(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            unlinked_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Unlinked semantic memory",
+                summary="Semantic receipts exist but are not linked.",
+            )
+            strong_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Strong semantic memory",
+                summary="Semantic receipts reached strong committed evidence.",
+            )
+            drag_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Drag semantic memory",
+                summary="Semantic receipts produced drag.",
+            )
+            neutral_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Neutral semantic memory",
+                summary="Semantic receipts are linked but not strong or drag.",
+            )
+            quiet_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Quiet semantic memory",
+                summary="No semantic receipt evidence exists.",
+            )
+            for memory in [unlinked_memory, strong_memory, drag_memory, neutral_memory, quiet_memory]:
+                store.add(memory)
+
+            unlinked_receipt = MemoryUseReceipt.create(
+                unlinked_memory,
+                PreflightQuery(prompt="semantic unlinked"),
+                match=Match(
+                    memory=unlinked_memory,
+                    score=3.2,
+                    matched_terms=["semantic"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.69,
+                    semantic_proposal_status="admissible",
+                ),
+                semantic_mode="local",
+            )
+            MemoryUseStore(tmp).add(unlinked_receipt)
+            strong_receipt = MemoryUseReceipt.create(
+                strong_memory,
+                PreflightQuery(prompt="semantic strong"),
+                match=Match(
+                    memory=strong_memory,
+                    score=3.4,
+                    matched_terms=["semantic"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.72,
+                    semantic_proposal_status="direct-match",
+                ),
+                semantic_mode="local",
+            )
+            strong_receipt.commit_hash = "strongsemantic"
+            strong_receipt.outcome_signal = "committed"
+            strong_receipt.link_confidence = 0.86
+            MemoryUseStore(tmp).add(strong_receipt)
+            drag_receipt = MemoryUseReceipt.create(
+                drag_memory,
+                PreflightQuery(prompt="semantic drag"),
+                match=Match(
+                    memory=drag_memory,
+                    score=3.1,
+                    matched_terms=["semantic"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.67,
+                    semantic_proposal_status="admissible",
+                ),
+                semantic_mode="local",
+            )
+            drag_receipt.commit_hash = "dragsemantic"
+            drag_receipt.outcome_signal = "committed_low_confidence"
+            drag_receipt.flags = ["no_file_overlap"]
+            drag_receipt.link_confidence = 0.2
+            MemoryUseStore(tmp).add(drag_receipt)
+            neutral_receipt = MemoryUseReceipt.create(
+                neutral_memory,
+                PreflightQuery(prompt="semantic neutral"),
+                match=Match(
+                    memory=neutral_memory,
+                    score=3.0,
+                    matched_terms=["semantic"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.65,
+                    semantic_proposal_status="direct-match",
+                ),
+                semantic_mode="local",
+            )
+            neutral_receipt.commit_hash = "neutralsemantic"
+            neutral_receipt.outcome_signal = "checkpoint"
+            neutral_receipt.link_confidence = 0.5
+            MemoryUseStore(tmp).add(neutral_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit", "--recommendations"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Semantic Audit Recommendations", rendered)
+            self.assertIn("Mode: read-only", rendered)
+            self.assertIn("Link Receipts First", rendered)
+            self.assertIn(f"{unlinked_memory.id} Unlinked semantic memory: link receipts first", rendered)
+            self.assertIn("Inspect Semantic Drag", rendered)
+            self.assertIn(f"{drag_memory.id} Drag semantic memory: inspect semantic grounding", rendered)
+            self.assertIn("Positive Semantic Signal", rendered)
+            self.assertIn(f"{strong_memory.id} Strong semantic memory: keep collecting focused evidence", rendered)
+            self.assertIn("Neutral Linked Semantic Evidence", rendered)
+            self.assertIn(f"{neutral_memory.id} Neutral semantic memory: keep observing", rendered)
+            self.assertIn("No Semantic Evidence", rendered)
+            self.assertIn(f"{quiet_memory.id} Quiet semantic memory: stay quiet", rendered)
+            self.assertIn("Do not tune thresholds or broaden semantic proposal behavior", rendered)
+
+    def test_cli_semantic_audit_recommendations_rejects_memory_filter(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as context:
+                main(["--root", tmp, "semantic-audit", "--recommendations", "--memory", "mem_123"])
+
+            self.assertIn("does not accept --memory", str(context.exception))
+
     def test_cli_use_review_prepare_strengthen_proposal_does_not_mutate(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(

@@ -515,6 +515,58 @@ class SemanticAuditReport:
 
 
 @dataclass
+class SemanticAuditRecommendationLine:
+    memory_id: str
+    memory_title: str
+    semantic_receipts: int
+    semantic_linked: int
+    semantic_strong_committed: int
+    semantic_drag_signals: int
+    action: str
+
+    def render(self) -> str:
+        memory_label = f"{self.memory_id} {self.memory_title}".strip()
+        return (
+            f"- {memory_label}: {self.action} "
+            f"({self.semantic_receipts} semantic receipts, {self.semantic_linked} linked, "
+            f"{self.semantic_strong_committed} strong, {self.semantic_drag_signals} drag)"
+        )
+
+
+@dataclass
+class SemanticAuditRecommendationsReport:
+    no_link: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    strong: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    drag: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    neutral: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    no_semantic: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+
+    def render(self) -> str:
+        lines = [
+            "CMU Semantic Audit Recommendations",
+            "Mode: read-only; no memory or receipt mutation.",
+            "",
+            "Link Receipts First",
+            *render_recommendation_group(self.no_link),
+            "",
+            "Inspect Semantic Drag",
+            *render_recommendation_group(self.drag),
+            "",
+            "Positive Semantic Signal",
+            *render_recommendation_group(self.strong),
+            "",
+            "Neutral Linked Semantic Evidence",
+            *render_recommendation_group(self.neutral),
+            "",
+            "No Semantic Evidence",
+            *render_recommendation_group(self.no_semantic),
+            "",
+            "Tuning Guidance: Do not tune thresholds or broaden semantic proposal behavior until linked per-memory evidence shows a repeated pattern.",
+        ]
+        return "\n".join(lines)
+
+
+@dataclass
 class UseReviewFollowUp:
     action: str
     applied: bool
@@ -868,6 +920,82 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
         strong_memories=semantic_audit_memory_lines(strong, memory_by_id, signal="strong"),
         drag_memories=semantic_audit_memory_lines(drag, memory_by_id, signal="drag"),
     )
+
+
+def semantic_audit_recommendations(
+    receipts: list[MemoryUseReceipt],
+    memories: list[Memory],
+) -> SemanticAuditRecommendationsReport:
+    memory_by_id = {memory.id: memory for memory in memories}
+    receipt_ids = {receipt.memory_id for receipt in receipts}
+    memory_ids = sorted(set(memory_by_id) | receipt_ids)
+    report = SemanticAuditRecommendationsReport()
+    for memory_id in memory_ids:
+        relevant = [receipt for receipt in receipts if receipt.memory_id == memory_id]
+        semantic_receipts = [receipt for receipt in relevant if is_semantic_assisted(receipt)]
+        linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
+        strong = [
+            receipt
+            for receipt in linked
+            if receipt.outcome_signal == "committed" and receipt.link_confidence >= STRONG_COMMIT_CONFIDENCE
+        ]
+        drag = [receipt for receipt in linked if is_drag_signal(receipt)]
+        memory = memory_by_id.get(memory_id)
+        title = memory.title if memory is not None else next((receipt.memory_title for receipt in relevant if receipt.memory_title), "")
+        line = SemanticAuditRecommendationLine(
+            memory_id=memory_id,
+            memory_title=title,
+            semantic_receipts=len(semantic_receipts),
+            semantic_linked=len(linked),
+            semantic_strong_committed=len(strong),
+            semantic_drag_signals=len(drag),
+            action=semantic_recommendation_action(len(semantic_receipts), len(linked), len(strong), len(drag)),
+        )
+        if not semantic_receipts:
+            report.no_semantic.append(line)
+        elif not linked:
+            report.no_link.append(line)
+        elif drag:
+            report.drag.append(line)
+        elif strong:
+            report.strong.append(line)
+        else:
+            report.neutral.append(line)
+    sort_recommendations(report.no_link)
+    sort_recommendations(report.drag)
+    sort_recommendations(report.strong)
+    sort_recommendations(report.neutral)
+    sort_recommendations(report.no_semantic)
+    return report
+
+
+def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: int, drag: int) -> str:
+    if semantic_receipts == 0:
+        return "stay quiet until semantic-assisted receipts exist"
+    if linked == 0:
+        return "link receipts first before judging semantic fit"
+    if drag:
+        return "inspect semantic grounding before broadening semantic behavior"
+    if strong:
+        return "keep collecting focused evidence; possible positive semantic signal"
+    return "keep observing; linked semantic evidence is not strong or drag yet"
+
+
+def sort_recommendations(lines: list[SemanticAuditRecommendationLine]) -> None:
+    lines.sort(
+        key=lambda item: (
+            -item.semantic_drag_signals,
+            -item.semantic_strong_committed,
+            -item.semantic_linked,
+            item.memory_title,
+        )
+    )
+
+
+def render_recommendation_group(lines: list[SemanticAuditRecommendationLine]) -> list[str]:
+    if not lines:
+        return ["- None"]
+    return [line.render() for line in lines]
 
 
 def semantic_audit_memory_lines(

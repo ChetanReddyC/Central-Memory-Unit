@@ -30,6 +30,7 @@ from .usage import (
     link_git_commit,
     prepare_use_review_followup,
     semantic_audit,
+    semantic_audit_recommendations,
     use_review,
     use_summary,
     use_threshold_report,
@@ -313,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Review semantic-assisted use evidence without mutating memories or receipts.",
     )
     semantic_audit_parser.add_argument("--memory", default="", help="Limit semantic audit to one memory id.")
+    semantic_audit_parser.add_argument("--recommendations", action="store_true", help="Group semantic audit evidence into read-only next-action recommendations.")
     semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
@@ -782,7 +784,14 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
 
 
 def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
-    report = semantic_audit(MemoryUseStore(args.root).list(), store.list(), args.memory)
+    use_store = MemoryUseStore(args.root)
+    if args.recommendations:
+        if args.memory:
+            raise SystemExit("semantic-audit --recommendations reviews all memories and does not accept --memory")
+        report = semantic_audit_recommendations(use_store.list(), store.list())
+        print(report.render())
+        return 0
+    report = semantic_audit(use_store.list(), store.list(), args.memory)
     print(report.render())
     return 0
 
