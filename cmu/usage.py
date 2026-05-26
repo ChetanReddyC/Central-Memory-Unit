@@ -439,6 +439,71 @@ class UseThresholdReport:
 
 
 @dataclass
+class SemanticAuditMemoryLine:
+    memory_id: str
+    memory_title: str
+    strong_committed: int = 0
+    drag_signals: int = 0
+
+    def render_strong(self) -> str:
+        return f"- {self.memory_id} {self.memory_title}: {self.strong_committed} semantic-assisted strong committed uses"
+
+    def render_drag(self) -> str:
+        return f"- {self.memory_id} {self.memory_title}: {self.drag_signals} semantic-assisted drag signals"
+
+
+@dataclass
+class SemanticAuditReport:
+    total_receipts: int
+    semantic_receipts: int
+    semantic_linked: int
+    semantic_strong_committed: int
+    semantic_drag_signals: int
+    semantic_mode_counts: dict[str, int]
+    semantic_match_counts: dict[str, int]
+    strong_memories: list[SemanticAuditMemoryLine] = field(default_factory=list)
+    drag_memories: list[SemanticAuditMemoryLine] = field(default_factory=list)
+
+    def render(self) -> str:
+        lines = [
+            "CMU Semantic Audit",
+            "Mode: read-only; no memory or receipt mutation.",
+            f"Total Receipts: {self.total_receipts}",
+            f"Semantic-Assisted Receipts: {self.semantic_receipts}",
+            f"Semantic-Assisted Linked: {self.semantic_linked}",
+            f"Semantic-Assisted Strong Committed: {self.semantic_strong_committed}",
+            f"Semantic-Assisted Drag Signals: {self.semantic_drag_signals}",
+            f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
+            f"Semantic Matches: {format_source_counts(self.semantic_match_counts)}",
+            "",
+            "Semantic Strong Evidence",
+        ]
+        if self.strong_memories:
+            lines.extend(line.render_strong() for line in self.strong_memories)
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append("Semantic Drag")
+        if self.drag_memories:
+            lines.extend(line.render_drag() for line in self.drag_memories)
+        else:
+            lines.append("- None")
+        lines.extend(["", f"Recommended Action: {self.recommended_action()}"])
+        return "\n".join(lines)
+
+    def recommended_action(self) -> str:
+        if self.semantic_receipts == 0:
+            return "No semantic-assisted receipts yet; keep semantic retrieval opt-in and collect evidence before tuning."
+        if self.semantic_linked == 0:
+            return "Link semantic-assisted receipts to commits before judging semantic usefulness or drag."
+        if self.semantic_drag_signals and self.semantic_drag_signals >= self.semantic_strong_committed:
+            return "Inspect semantic-assisted drag before broadening semantic retrieval or changing thresholds."
+        if self.semantic_strong_committed:
+            return "Semantic retrieval has positive linked evidence; keep collecting focused receipts before tuning thresholds."
+        return "Semantic retrieval has linked evidence but no strong or drag pattern yet; keep observing."
+
+
+@dataclass
 class UseReviewFollowUp:
     action: str
     applied: bool
@@ -758,6 +823,55 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
         semantic_match_counts=semantic_match_counts(receipts),
         diagnostics=diagnostics,
     )
+
+
+def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory]) -> SemanticAuditReport:
+    semantic_receipts = [receipt for receipt in receipts if is_semantic_assisted(receipt)]
+    linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
+    strong = [
+        receipt
+        for receipt in linked
+        if receipt.outcome_signal == "committed" and receipt.link_confidence >= STRONG_COMMIT_CONFIDENCE
+    ]
+    drag = [receipt for receipt in linked if is_drag_signal(receipt)]
+    memory_by_id = {memory.id: memory for memory in memories}
+    return SemanticAuditReport(
+        total_receipts=len(receipts),
+        semantic_receipts=len(semantic_receipts),
+        semantic_linked=len(linked),
+        semantic_strong_committed=len(strong),
+        semantic_drag_signals=len(drag),
+        semantic_mode_counts=semantic_mode_counts(semantic_receipts),
+        semantic_match_counts=semantic_match_counts(semantic_receipts),
+        strong_memories=semantic_audit_memory_lines(strong, memory_by_id, signal="strong"),
+        drag_memories=semantic_audit_memory_lines(drag, memory_by_id, signal="drag"),
+    )
+
+
+def semantic_audit_memory_lines(
+    receipts: list[MemoryUseReceipt],
+    memory_by_id: dict[str, Memory],
+    *,
+    signal: str,
+) -> list[SemanticAuditMemoryLine]:
+    counts: dict[str, int] = {}
+    titles: dict[str, str] = {}
+    for receipt in receipts:
+        counts[receipt.memory_id] = counts.get(receipt.memory_id, 0) + 1
+        memory = memory_by_id.get(receipt.memory_id)
+        titles[receipt.memory_id] = memory.title if memory is not None else receipt.memory_title
+    lines = [
+        SemanticAuditMemoryLine(
+            memory_id=memory_id,
+            memory_title=titles.get(memory_id, ""),
+            strong_committed=count if signal == "strong" else 0,
+            drag_signals=count if signal == "drag" else 0,
+        )
+        for memory_id, count in counts.items()
+    ]
+    if signal == "strong":
+        return sorted(lines, key=lambda item: (-item.strong_committed, item.memory_title))
+    return sorted(lines, key=lambda item: (-item.drag_signals, item.memory_title))
 
 
 def source_counts(receipts: list[MemoryUseReceipt]) -> dict[str, int]:

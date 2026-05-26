@@ -29,6 +29,7 @@ from .usage import (
     link_commit,
     link_git_commit,
     prepare_use_review_followup,
+    semantic_audit,
     use_review,
     use_summary,
     use_threshold_report,
@@ -306,6 +307,12 @@ def build_parser() -> argparse.ArgumentParser:
     use_review_parser.add_argument("--scope-actor", action="append", default=[], help="Replacement actor scope for approved scope-review apply.")
     use_review_parser.add_argument("--scope-time", action="append", default=[], help="Replacement time/version scope for approved scope-review apply.")
     use_review_parser.set_defaults(func=cmd_use_review)
+
+    semantic_audit_parser = subparsers.add_parser(
+        "semantic-audit",
+        help="Review semantic-assisted use evidence without mutating memories or receipts.",
+    )
+    semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
 
@@ -769,6 +776,12 @@ def cmd_use_review(args: argparse.Namespace, store: MemoryStore) -> int:
         print(followup.render())
         return 0
     report = use_review(use_store.list(), store.list(), args.memory_id or "")
+    print(report.render())
+    return 0
+
+
+def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = semantic_audit(MemoryUseStore(args.root).list(), store.list())
     print(report.render())
     return 0
 

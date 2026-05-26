@@ -3272,6 +3272,94 @@ class MemoryUseTests(unittest.TestCase):
                 main(["--root", tmp, "use-review", "mem_123", "--thresholds"])
             self.assertIn("does not accept a memory id", str(memory_context.exception))
 
+    def test_cli_semantic_audit_reports_no_semantic_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Semantic Audit", rendered)
+            self.assertIn("Mode: read-only", rendered)
+            self.assertIn("Semantic-Assisted Receipts: 0", rendered)
+            self.assertIn("Recommended Action: No semantic-assisted receipts yet", rendered)
+
+    def test_cli_semantic_audit_reports_strong_and_drag_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            strong_memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+            )
+            drag_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Retry marker cleanup default",
+                summary="A stale marker cleanup default.",
+            )
+            store.add(strong_memory)
+            store.add(drag_memory)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    strong_memory,
+                    PreflightQuery(prompt="roll back release marker problem"),
+                    match=Match(
+                        memory=strong_memory,
+                        score=3.8,
+                        matched_terms=["semantic:workflow scope"],
+                        semantic_label="local hashing embeddings",
+                        semantic_score=0.72,
+                        semantic_proposal_status="admissible",
+                    ),
+                    semantic_mode="local",
+                )
+                receipt.commit_hash = f"semanticstrong{index}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+            drag_receipt = MemoryUseReceipt.create(
+                drag_memory,
+                PreflightQuery(prompt="roll back release marker problem"),
+                match=Match(
+                    memory=drag_memory,
+                    score=3.6,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.68,
+                    semantic_proposal_status="admissible",
+                ),
+                semantic_mode="local",
+            )
+            drag_receipt.commit_hash = "semanticdrag"
+            drag_receipt.outcome_signal = "committed_low_confidence"
+            drag_receipt.flags = ["no_file_overlap"]
+            drag_receipt.link_confidence = 0.2
+            MemoryUseStore(tmp).add(drag_receipt)
+            off_receipt = MemoryUseReceipt.create(
+                strong_memory,
+                PreflightQuery(prompt="direct match"),
+                match=Match(memory=strong_memory, score=2.5, matched_terms=["direct"]),
+            )
+            MemoryUseStore(tmp).add(off_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Total Receipts: 4", rendered)
+            self.assertIn("Semantic-Assisted Receipts: 3", rendered)
+            self.assertIn("Semantic-Assisted Linked: 3", rendered)
+            self.assertIn("Semantic-Assisted Strong Committed: 2", rendered)
+            self.assertIn("Semantic-Assisted Drag Signals: 1", rendered)
+            self.assertIn("Semantic Modes: local=3", rendered)
+            self.assertIn("Semantic Matches: admissible=3", rendered)
+            self.assertIn(f"{strong_memory.id} Rollback releasemarker cleanup: 2 semantic-assisted strong committed uses", rendered)
+            self.assertIn(f"{drag_memory.id} Retry marker cleanup default: 1 semantic-assisted drag signals", rendered)
+            self.assertIn("Recommended Action: Semantic retrieval has positive linked evidence", rendered)
+
     def test_cli_use_review_prepare_strengthen_proposal_does_not_mutate(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
