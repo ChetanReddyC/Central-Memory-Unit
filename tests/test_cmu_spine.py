@@ -2503,6 +2503,31 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Committed: 1", rendered)
             self.assertIn("Reverted: 1", rendered)
 
+    def test_cli_use_summary_renders_persisted_source_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+            )
+            for source in ["preflight", "start", "start"]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Fix billing deploy"),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                    source_command=source,
+                )
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-summary", memory.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("Total Uses: 3", rendered)
+            self.assertIn("Sources: preflight=1, start=2", rendered)
+
     def test_cli_use_review_surfaces_strong_usefulness_card(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -3095,6 +3120,7 @@ class MemoryUseTests(unittest.TestCase):
         self.assertEqual(summary.committed, 1)
         self.assertEqual(summary.reverted, 1)
         self.assertEqual(summary.mixed, 1)
+        self.assertEqual(summary.source_counts, {"preflight": 2})
         self.assertLess(summary.retrieval_adjustment, 0.1)
 
 

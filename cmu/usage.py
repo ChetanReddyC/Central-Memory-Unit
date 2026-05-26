@@ -169,6 +169,7 @@ class MemoryUseSummary:
     reverted: int = 0
     low_confidence: int = 0
     mixed: int = 0
+    source_counts: dict[str, int] = field(default_factory=dict)
     average_confidence: float = 0.0
     retrieval_adjustment: float = 0.0
 
@@ -183,6 +184,7 @@ class MemoryUseSummary:
                 f"Reverted: {self.reverted}",
                 f"Low Confidence: {self.low_confidence}",
                 f"Mixed Commits: {self.mixed}",
+                f"Sources: {format_source_counts(self.source_counts)}",
                 f"Average Confidence: {self.average_confidence:.2f}",
                 f"Retrieval Adjustment: {self.retrieval_adjustment:+.2f}",
             ]
@@ -656,6 +658,7 @@ def use_summary(receipts: list[MemoryUseReceipt], memory_id: str) -> MemoryUseSu
         reverted=sum(1 for receipt in relevant if receipt.outcome_signal == "reverted"),
         low_confidence=sum(1 for receipt in relevant if receipt.outcome_signal == "committed_low_confidence"),
         mixed=sum(1 for receipt in relevant if "mixed_commit" in receipt.flags),
+        source_counts=source_counts(relevant),
         average_confidence=round(sum(confidences) / len(confidences), 2) if confidences else 0.0,
         retrieval_adjustment=usage_adjustment(relevant),
     )
