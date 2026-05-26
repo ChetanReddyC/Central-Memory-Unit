@@ -261,6 +261,7 @@ class UseReviewCard:
     status: str
     why: str
     suggested_action: str
+    source_counts: dict[str, int] = field(default_factory=dict)
 
     def render(self) -> str:
         memory_label = f"{self.memory_id} {self.memory_title}".strip()
@@ -272,6 +273,7 @@ class UseReviewCard:
             f"Status: {self.status}",
             f"Why: {self.why}",
             f"Signals: {self.signal_summary()}",
+            f"Sources: {format_source_counts(self.source_counts)}",
         ]
         interpretation = self.signal_interpretation()
         if interpretation:
@@ -326,6 +328,7 @@ class UseThresholdMemoryDiagnostic:
     linked_uses: int
     strong_committed: int
     drag_signals: int
+    source_counts: dict[str, int]
     retrieval_adjustment: float
     status: str
     suggested_action: str
@@ -335,7 +338,7 @@ class UseThresholdMemoryDiagnostic:
             f"- {self.memory_id} [{self.memory_type}] {self.memory_title}: {self.status}; "
             f"{self.linked_uses}/{self.total_uses} linked, {self.strong_committed} strong, "
             f"{self.drag_signals} drag, adjustment {self.retrieval_adjustment:+.2f}; "
-            f"{self.suggested_action}"
+            f"sources {format_source_counts(self.source_counts)}; {self.suggested_action}"
         )
 
 
@@ -344,6 +347,7 @@ class UseThresholdReport:
     total_receipts: int
     linked_receipts: int
     unlinked_receipts: int
+    source_counts: dict[str, int]
     diagnostics: list[UseThresholdMemoryDiagnostic]
 
     def render(self) -> str:
@@ -370,6 +374,7 @@ class UseThresholdReport:
             f"- Total: {self.total_receipts}",
             f"- Linked: {self.linked_receipts}",
             f"- Unlinked: {self.unlinked_receipts}",
+            f"- Sources: {format_source_counts(self.source_counts)}",
             "",
             "Evidence Readiness",
             f"- Functionality: {threshold_functionality_status(self.total_receipts, self.linked_receipts)}",
@@ -693,6 +698,7 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
                 linked_uses=card.linked_uses,
                 strong_committed=card.strong_committed,
                 drag_signals=card.drag_signals,
+                source_counts=source_counts(relevant),
                 retrieval_adjustment=usage_adjustment(relevant),
                 status=card.status,
                 suggested_action=card.suggested_action,
@@ -704,8 +710,23 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
         total_receipts=len(receipts),
         linked_receipts=len(linked),
         unlinked_receipts=len(receipts) - len(linked),
+        source_counts=source_counts(receipts),
         diagnostics=diagnostics,
     )
+
+
+def source_counts(receipts: list[MemoryUseReceipt]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        source = receipt.source_command.strip() or "preflight"
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def format_source_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{source}={counts[source]}" for source in sorted(counts))
 
 
 def threshold_functionality_status(total_receipts: int, linked_receipts: int) -> str:
@@ -1080,6 +1101,7 @@ def build_use_review_card(memory: Memory | None, receipts: list[MemoryUseReceipt
         status=status,
         why=why,
         suggested_action=suggested_action,
+        source_counts=source_counts(receipts),
     )
 
 
@@ -1100,6 +1122,7 @@ def empty_use_review_card(memory: Memory | None, memory_id: str, title: str) -> 
         status="No use evidence found",
         why="No Memory Use Receipts exist for this memory yet.",
         suggested_action="Let preflight create receipts and link them before reviewing usefulness.",
+        source_counts={},
     )
 
 

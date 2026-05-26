@@ -2532,6 +2532,32 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Strengthen evidence suggested", rendered)
             self.assertIn("2 high-confidence committed uses", rendered)
 
+    def test_cli_use_review_shows_receipt_source_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should surface memory only when it changes action.",
+            )
+            MemoryStore(tmp).add(memory)
+            for source in ["preflight", "start", "start"]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Implement CMU start", files=["cmu/cli.py"]),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                    source_command=source,
+                )
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", memory.id])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("Sources: preflight=1, start=2", rendered)
+            self.assertIn("Needs linked evidence", rendered)
+
     def test_cli_use_review_surfaces_drag_card_for_stable_memory(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -2734,7 +2760,38 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Accuracy: Enough linked evidence for a first-pass threshold review", rendered)
             self.assertIn("Billing deploy checks migration order: Strengthen evidence suggested", rendered)
             self.assertIn("Do migration before deploy: Review suggested", rendered)
+            self.assertIn("Sources: preflight=4", rendered)
+            self.assertIn("sources preflight=2", rendered)
             self.assertIn("Do Not Auto-Mutate", rendered)
+
+    def test_cli_use_review_thresholds_shows_mixed_source_counts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="CMU start work cycle",
+                summary="Start coordinates trigger, onboarding, and preflight.",
+            )
+            MemoryStore(tmp).add(memory)
+            for source in ["preflight", "start", "start"]:
+                receipt = MemoryUseReceipt.create(
+                    memory,
+                    PreflightQuery(prompt="Implement CMU start", files=["cmu/cli.py"]),
+                    match=type("MatchStub", (), {"score": 4.2})(),
+                    source_command=source,
+                )
+                receipt.commit_hash = f"{source}{len(MemoryUseStore(tmp).list())}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.85
+                MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "use-review", "--thresholds"])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("- Sources: preflight=1, start=2", rendered)
+            self.assertIn("sources preflight=1, start=2", rendered)
 
     def test_cli_use_review_thresholds_rejects_mutating_options(self) -> None:
         with TemporaryDirectory() as tmp:
