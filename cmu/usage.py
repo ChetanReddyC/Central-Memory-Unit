@@ -523,14 +523,79 @@ class SemanticAuditRecommendationLine:
     semantic_strong_committed: int
     semantic_drag_signals: int
     action: str
+    details: list["SemanticAuditReceiptDetail"] = field(default_factory=list)
 
     def render(self) -> str:
         memory_label = f"{self.memory_id} {self.memory_title}".strip()
-        return (
+        line = (
             f"- {memory_label}: {self.action} "
             f"({self.semantic_receipts} semantic receipts, {self.semantic_linked} linked, "
             f"{self.semantic_strong_committed} strong, {self.semantic_drag_signals} drag)"
         )
+        if not self.details:
+            return line
+        detail_lines: list[str] = []
+        for detail in self.details:
+            detail_lines.extend(detail.render())
+        return "\n".join([line, *detail_lines])
+
+
+@dataclass
+class SemanticAuditCommitCandidateDetail:
+    commit_hash: str
+    message: str
+    commit_time: str
+    files: list[str]
+    overlap: list[str]
+    score: float
+    reasons: list[str]
+
+    def render(self) -> str:
+        return (
+            f"    - {short_hash(self.commit_hash)} score {self.score:.2f}; "
+            f"message: {self.message or 'None'}; time: {self.commit_time or 'unknown'}; "
+            f"overlap: {format_list(self.overlap)}; files: {format_list(self.files[:5])}; "
+            f"reasons: {format_list(self.reasons)}"
+        )
+
+
+@dataclass
+class SemanticAuditReceiptDetail:
+    receipt_id: str
+    source_command: str
+    semantic_mode: str
+    semantic_status: str
+    semantic_score: float
+    linked: bool
+    commit_hash: str = ""
+    outcome_signal: str = ""
+    link_confidence: float = 0.0
+    auto_link_reason: str = ""
+    candidate_commits: list[SemanticAuditCommitCandidateDetail] = field(default_factory=list)
+
+    def render(self) -> list[str]:
+        state = "linked" if self.linked else "unlinked"
+        lines = [
+            (
+                f"  - {self.receipt_id} {self.source_command} {state}; "
+                f"semantic={self.semantic_mode}/{self.semantic_status or 'unknown'} "
+                f"score={self.semantic_score:.2f}"
+            )
+        ]
+        if self.linked:
+            lines.append(
+                f"    Linked Commit: {short_hash(self.commit_hash)}; "
+                f"outcome={self.outcome_signal or 'unknown'}; confidence={self.link_confidence:.2f}"
+            )
+            return lines
+        lines.append(f"    Auto-Link: {self.auto_link_reason or 'not inspected'}")
+        if self.candidate_commits:
+            lines.append(f"    Manual Link: cmu use-link {self.receipt_id} --commit <hash>")
+            lines.append("    Candidate Commits:")
+            for candidate in self.candidate_commits:
+                lines.append(candidate.render())
+                lines.append(f"      command: cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
+        return lines
 
 
 @dataclass
@@ -925,11 +990,24 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
 def semantic_audit_recommendations(
     receipts: list[MemoryUseReceipt],
     memories: list[Memory],
+    *,
+    root: Path | str = ".",
+    details: bool = False,
+    limit: int = 20,
+    hours: int = 72,
+    min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE,
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
     memory_ids = sorted(set(memory_by_id) | receipt_ids)
     report = SemanticAuditRecommendationsReport()
+    commits: list[GitCommitMetadata] = []
+    detail_error = ""
+    if details:
+        try:
+            commits = inspect_recent_git_commits(root, limit=limit)
+        except RuntimeError as error:
+            detail_error = str(error)
     for memory_id in memory_ids:
         relevant = [receipt for receipt in receipts if receipt.memory_id == memory_id]
         semantic_receipts = [receipt for receipt in relevant if is_semantic_assisted(receipt)]
@@ -950,6 +1028,16 @@ def semantic_audit_recommendations(
             semantic_strong_committed=len(strong),
             semantic_drag_signals=len(drag),
             action=semantic_recommendation_action(len(semantic_receipts), len(linked), len(strong), len(drag)),
+            details=semantic_receipt_details(
+                semantic_receipts,
+                memory,
+                commits=commits,
+                detail_error=detail_error,
+                hours=hours,
+                min_score=min_score,
+            )
+            if details and semantic_receipts
+            else [],
         )
         if not semantic_receipts:
             report.no_semantic.append(line)
@@ -967,6 +1055,109 @@ def semantic_audit_recommendations(
     sort_recommendations(report.neutral)
     sort_recommendations(report.no_semantic)
     return report
+
+
+def semantic_receipt_details(
+    receipts: list[MemoryUseReceipt],
+    memory: Memory | None,
+    *,
+    commits: list[GitCommitMetadata],
+    detail_error: str,
+    hours: int,
+    min_score: float,
+) -> list[SemanticAuditReceiptDetail]:
+    return [
+        semantic_receipt_detail(
+            receipt,
+            memory,
+            commits=commits,
+            detail_error=detail_error,
+            hours=hours,
+            min_score=min_score,
+        )
+        for receipt in sorted(receipts, key=lambda item: item.surfaced_at)
+    ]
+
+
+def semantic_receipt_detail(
+    receipt: MemoryUseReceipt,
+    memory: Memory | None,
+    *,
+    commits: list[GitCommitMetadata],
+    detail_error: str,
+    hours: int,
+    min_score: float,
+) -> SemanticAuditReceiptDetail:
+    if receipt.commit_hash or receipt.outcome_signal:
+        return SemanticAuditReceiptDetail(
+            receipt_id=receipt.id,
+            source_command=receipt.source_command,
+            semantic_mode=receipt.semantic_mode,
+            semantic_status=receipt.semantic_proposal_status,
+            semantic_score=receipt.semantic_score,
+            linked=True,
+            commit_hash=receipt.commit_hash,
+            outcome_signal=receipt.outcome_signal,
+            link_confidence=receipt.link_confidence,
+        )
+    if detail_error:
+        return SemanticAuditReceiptDetail(
+            receipt_id=receipt.id,
+            source_command=receipt.source_command,
+            semantic_mode=receipt.semantic_mode,
+            semantic_status=receipt.semantic_proposal_status,
+            semantic_score=receipt.semantic_score,
+            linked=False,
+            auto_link_reason=detail_error,
+        )
+    candidates = sorted(
+        [
+            candidate
+            for candidate in (score_auto_link_candidate(receipt, memory, commit, hours=hours) for commit in commits)
+            if candidate.score >= min_score
+        ],
+        key=lambda item: item.score,
+        reverse=True,
+    )
+    if not candidates:
+        return SemanticAuditReceiptDetail(
+            receipt_id=receipt.id,
+            source_command=receipt.source_command,
+            semantic_mode=receipt.semantic_mode,
+            semantic_status=receipt.semantic_proposal_status,
+            semantic_score=receipt.semantic_score,
+            linked=False,
+            auto_link_reason="no recent commit crossed the auto-link threshold",
+        )
+    best = candidates[0]
+    close = [candidate for candidate in candidates[1:] if best.score - candidate.score <= AUTO_LINK_AMBIGUITY_MARGIN]
+    shown = [best, *close] if close else [best]
+    reason = (
+        "multiple commits were plausible; leaving receipt unlinked"
+        if close
+        else "one commit currently crosses the auto-link threshold"
+    )
+    return SemanticAuditReceiptDetail(
+        receipt_id=receipt.id,
+        source_command=receipt.source_command,
+        semantic_mode=receipt.semantic_mode,
+        semantic_status=receipt.semantic_proposal_status,
+        semantic_score=receipt.semantic_score,
+        linked=False,
+        auto_link_reason=reason,
+        candidate_commits=[
+            SemanticAuditCommitCandidateDetail(
+                commit_hash=candidate.commit.commit_hash,
+                message=candidate.commit.message,
+                commit_time=candidate.commit.commit_time,
+                files=candidate.commit.files,
+                overlap=file_overlap(receipt.files, candidate.commit.files),
+                score=candidate.score,
+                reasons=candidate.reasons,
+            )
+            for candidate in shown
+        ],
+    )
 
 
 def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: int, drag: int) -> str:
