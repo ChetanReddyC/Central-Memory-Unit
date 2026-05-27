@@ -620,6 +620,20 @@ class SemanticAuditReceiptDetail:
     auto_link_reason: str = ""
     candidate_commits: list[SemanticAuditCommitCandidateDetail] = field(default_factory=list)
 
+    def command_lines(self) -> list[str]:
+        if self.linked or self.resolved_without_commit:
+            return []
+        lines = [f"# {self.receipt_id} {self.source_command} semantic={self.semantic_mode}/{self.semantic_status or 'unknown'}"]
+        for candidate in self.candidate_commits:
+            lines.append(f"cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
+        for outcome in sorted(RESOLVED_WITHOUT_COMMIT_OUTCOMES):
+            cli_outcome = outcome.replace("_", "-")
+            lines.append(
+                f'cmu use-resolve {self.receipt_id} --outcome {cli_outcome} '
+                '--note "<why no Git checkpoint should be linked>"'
+            )
+        return lines
+
     def render(self) -> list[str]:
         state = "resolved-without-commit" if self.resolved_without_commit else ("linked" if self.linked else "unlinked")
         lines = [
@@ -666,8 +680,11 @@ class SemanticAuditRecommendationsReport:
     neutral: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     no_semantic: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     open_only: bool = False
+    commands_only: bool = False
 
     def render(self) -> str:
+        if self.commands_only:
+            return self.render_commands_only()
         lines = [
             "CMU Semantic Audit Recommendations",
             "Mode: read-only; no memory or receipt mutation.",
@@ -698,6 +715,24 @@ class SemanticAuditRecommendationsReport:
                 "Tuning Guidance: Do not tune thresholds or broaden semantic proposal behavior until linked per-memory evidence shows a repeated pattern.",
             ]
         )
+        return "\n".join(lines)
+
+    def render_commands_only(self) -> str:
+        lines = [
+            "CMU Semantic Audit Closure Commands",
+            "Mode: read-only; no memory or receipt mutation.",
+            "Detail Filter: open semantic receipts only.",
+        ]
+        command_lines: list[str] = []
+        for group in [self.no_link, self.partial, self.drag, self.strong, self.neutral]:
+            for item in group:
+                for detail in item.details:
+                    command_lines.extend(detail.command_lines())
+        if not command_lines:
+            lines.append("No unresolved semantic receipt commands found.")
+        else:
+            lines.extend(command_lines)
+        lines.append("Review before running: choose either one use-link command or one use-resolve command per receipt.")
         return "\n".join(lines)
 
 
@@ -1114,11 +1149,12 @@ def semantic_audit_recommendations(
     hours: int = 72,
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE,
     open_only: bool = False,
+    commands_only: bool = False,
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
     memory_ids = sorted(set(memory_by_id) | receipt_ids)
-    report = SemanticAuditRecommendationsReport(open_only=open_only)
+    report = SemanticAuditRecommendationsReport(open_only=open_only, commands_only=commands_only)
     commits: list[GitCommitMetadata] = []
     detail_error = ""
     if details:
