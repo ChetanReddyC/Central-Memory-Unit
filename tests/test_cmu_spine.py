@@ -3763,6 +3763,67 @@ class MemoryUseTests(unittest.TestCase):
             [loaded] = MemoryUseStore(tmp).list()
             self.assertEqual(loaded.commit_hash, "")
 
+    def test_cli_semantic_audit_recommendations_details_separates_partial_semantic_evidence_gaps(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "cmu/usage.py", "semantic = true\n", "Add semantic audit positive evidence")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="Preflight should surface compact memory only when it changes action.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            linked_receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="semantic audit positive evidence", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=memory,
+                    score=5.0,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.74,
+                    semantic_proposal_status="direct-match",
+                ),
+                semantic_mode="local",
+            )
+            linked_receipt.commit_hash = metadata.commit_hash
+            linked_receipt.outcome_signal = "committed"
+            linked_receipt.link_confidence = 0.9
+            MemoryUseStore(tmp).add(linked_receipt)
+            unresolved_receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="semantic audit follow up", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=memory,
+                    score=4.8,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.7,
+                    semantic_proposal_status="direct-match",
+                ),
+                source_command="start",
+                semantic_mode="local",
+            )
+            unresolved_receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(unresolved_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-audit", "--recommendations", "--details"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Resolve Remaining Semantic Evidence", rendered)
+            self.assertIn(f"{memory.id} Task-start preflight stays quiet unless useful: resolve remaining semantic receipts before judging semantic fit", rendered)
+            self.assertIn("(2 semantic receipts, 1 linked, 0 resolved, 1 strong, 0 drag)", rendered)
+            self.assertIn(f"{linked_receipt.id} preflight linked; semantic=local/direct-match score=0.74", rendered)
+            self.assertIn(f"{unresolved_receipt.id} start unlinked; semantic=local/direct-match score=0.70", rendered)
+            self.assertNotIn(f"Positive Semantic Signal\n- {memory.id}", rendered)
+
     def test_cli_semantic_audit_recommendations_rejects_memory_filter(self) -> None:
         with TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as context:

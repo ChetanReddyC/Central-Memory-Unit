@@ -541,10 +541,14 @@ class SemanticAuditReport:
             if self.memory_id:
                 return "No semantic-assisted receipts for this memory yet; keep collecting evidence before judging semantic fit."
             return "No semantic-assisted receipts yet; keep semantic retrieval opt-in and collect evidence before tuning."
+        semantic_closed = self.semantic_linked
+        semantic_unresolved = max(0, self.semantic_receipts - semantic_closed)
         if self.semantic_linked == 0:
             return "Link semantic-assisted receipts to commits before judging semantic usefulness or drag."
         if self.semantic_drag_signals and self.semantic_drag_signals >= self.semantic_strong_committed:
             return "Inspect semantic-assisted drag before broadening semantic retrieval or changing thresholds."
+        if semantic_unresolved:
+            return "Resolve remaining semantic-assisted receipts before treating semantic usefulness as settled."
         if self.semantic_strong_committed:
             return "Semantic retrieval has positive linked evidence; keep collecting focused receipts before tuning thresholds."
         if self.semantic_resolved_without_commit:
@@ -644,10 +648,10 @@ class SemanticAuditReceiptDetail:
                 lines.append(f"      command: cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
         return lines
 
-
 @dataclass
 class SemanticAuditRecommendationsReport:
     no_link: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    partial: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     strong: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     drag: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     neutral: list[SemanticAuditRecommendationLine] = field(default_factory=list)
@@ -660,6 +664,9 @@ class SemanticAuditRecommendationsReport:
             "",
             "Link Receipts First",
             *render_recommendation_group(self.no_link),
+            "",
+            "Resolve Remaining Semantic Evidence",
+            *render_recommendation_group(self.partial),
             "",
             "Inspect Semantic Drag",
             *render_recommendation_group(self.drag),
@@ -1105,6 +1112,7 @@ def semantic_audit_recommendations(
         semantic_receipts = [receipt for receipt in relevant if is_semantic_assisted(receipt)]
         linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
         resolved = [receipt for receipt in semantic_receipts if is_resolved_without_commit(receipt)]
+        unresolved = [receipt for receipt in semantic_receipts if not receipt.commit_hash and not receipt.outcome_signal]
         strong = [
             receipt
             for receipt in linked
@@ -1139,11 +1147,14 @@ def semantic_audit_recommendations(
             report.no_link.append(line)
         elif drag:
             report.drag.append(line)
+        elif unresolved:
+            report.partial.append(line)
         elif strong:
             report.strong.append(line)
         else:
             report.neutral.append(line)
     sort_recommendations(report.no_link)
+    sort_recommendations(report.partial)
     sort_recommendations(report.drag)
     sort_recommendations(report.strong)
     sort_recommendations(report.neutral)
@@ -1264,6 +1275,8 @@ def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: 
         return "link receipts first before judging semantic fit"
     if drag:
         return "inspect semantic grounding before broadening semantic behavior"
+    if semantic_receipts > linked:
+        return "resolve remaining semantic receipts before judging semantic fit"
     if strong:
         return "keep collecting focused evidence; possible positive semantic signal"
     if resolved:
