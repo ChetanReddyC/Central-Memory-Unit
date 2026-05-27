@@ -29,6 +29,7 @@ from .usage import (
     link_commit,
     link_git_commit,
     prepare_use_review_followup,
+    resolve_receipt_without_commit,
     semantic_audit,
     semantic_audit_recommendations,
     use_review,
@@ -280,6 +281,18 @@ def build_parser() -> argparse.ArgumentParser:
     use_link_auto_parser.add_argument("--min-score", type=float, default=DEFAULT_AUTO_LINK_MIN_SCORE, help="Minimum auto-match score required.")
     use_link_auto_parser.add_argument("--apply", action="store_true", help="Persist confident auto-links. Defaults to dry-run.")
     use_link_auto_parser.set_defaults(func=cmd_use_link_auto)
+
+    use_resolve_parser = subparsers.add_parser("use-resolve", help="Resolve a memory use receipt without linking a Git commit.")
+    use_resolve_parser.add_argument("use_id", help="Memory use receipt id to resolve.")
+    use_resolve_parser.add_argument(
+        "--outcome",
+        choices=["no-checkpoint", "not-applicable", "superseded"],
+        required=True,
+        help="Why this receipt should not wait for a Git commit link.",
+    )
+    use_resolve_parser.add_argument("--note", required=True, help="Short explanation for the no-commit resolution.")
+    use_resolve_parser.add_argument("--resolved-by", default="", help="Person, team, or agent applying the resolution.")
+    use_resolve_parser.set_defaults(func=cmd_use_resolve)
 
     use_list_parser = subparsers.add_parser("use-list", help="List memory use receipts.")
     use_list_parser.add_argument("--limit", type=int, default=20)
@@ -713,6 +726,21 @@ def cmd_use_link_auto(args: argparse.Namespace, store: MemoryStore) -> int:
             if decision.applied and decision.matched:
                 use_store.update(decision.receipt)
     print(report.render())
+    return 0
+
+
+def cmd_use_resolve(args: argparse.Namespace, store: MemoryStore) -> int:
+    use_store = MemoryUseStore(args.root)
+    receipt = use_store.get(args.use_id)
+    decision = resolve_receipt_without_commit(
+        receipt,
+        outcome=args.outcome,
+        note=args.note,
+        resolved_by=args.resolved_by,
+    )
+    if decision.resolved and decision.receipt is not None:
+        use_store.update(decision.receipt)
+    print(decision.render())
     return 0
 
 

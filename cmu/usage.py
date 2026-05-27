@@ -30,6 +30,8 @@ USAGE_REVERTED_WEIGHT = -0.35
 USAGE_LOW_CONFIDENCE_WEIGHT = -0.15
 USAGE_MIXED_COMMIT_WEIGHT = -0.05
 USAGE_NO_FILE_OVERLAP_WEIGHT = -0.15
+RESOLVED_WITHOUT_COMMIT_OUTCOMES = {"no_checkpoint", "not_applicable", "superseded"}
+RESOLVED_WITHOUT_COMMIT_FLAG = "resolved_without_commit"
 
 
 @dataclass
@@ -174,6 +176,33 @@ class CommitLinkDecision:
 
 
 @dataclass
+class ReceiptResolutionDecision:
+    resolved: bool
+    reason: str
+    receipt: MemoryUseReceipt | None = None
+    missing: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        if not self.resolved or self.receipt is None:
+            lines = ["CMU Use Receipt Resolution Not Applied", f"Reason: {self.reason}"]
+            if self.missing:
+                lines.append(f"Missing: {format_list(self.missing)}")
+            lines.append(f"Allowed Outcomes: {format_list(sorted(RESOLVED_WITHOUT_COMMIT_OUTCOMES))}")
+            return "\n".join(lines)
+        return "\n".join(
+            [
+                "CMU Use Receipt Resolution Applied",
+                f"Use Receipt: {self.receipt.id}",
+                f"Memory: {self.receipt.memory_id} {self.receipt.memory_title}",
+                f"Outcome: {self.receipt.outcome_signal}",
+                f"Resolved By: {self.receipt.metadata_source}",
+                f"Note: {self.receipt.note}",
+                "No Commit Linked: this closes the evidence gap without counting as committed usefulness.",
+            ]
+        )
+
+
+@dataclass
 class MemoryUseSummary:
     memory_id: str
     total: int
@@ -182,6 +211,7 @@ class MemoryUseSummary:
     reverted: int = 0
     low_confidence: int = 0
     mixed: int = 0
+    resolved_without_commit: int = 0
     source_counts: dict[str, int] = field(default_factory=dict)
     semantic_mode_counts: dict[str, int] = field(default_factory=dict)
     semantic_match_counts: dict[str, int] = field(default_factory=dict)
@@ -199,6 +229,7 @@ class MemoryUseSummary:
                 f"Reverted: {self.reverted}",
                 f"Low Confidence: {self.low_confidence}",
                 f"Mixed Commits: {self.mixed}",
+                f"Resolved Without Commit: {self.resolved_without_commit}",
                 f"Sources: {format_source_counts(self.source_counts)}",
                 f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
                 f"Semantic Matches: {format_source_counts(self.semantic_match_counts)}",
@@ -276,6 +307,7 @@ class UseReviewCard:
     reverted: int
     low_confidence: int
     mixed: int
+    resolved_without_commit: int
     drag_signals: int
     status: str
     why: str
@@ -317,6 +349,7 @@ class UseReviewCard:
             f"{self.committed} committed ({self.strong_committed} strong), "
             f"{self.checkpoints} checkpoints, {self.reverted} reverted, "
             f"{self.low_confidence} low-confidence, {self.mixed} mixed, "
+            f"{self.resolved_without_commit} resolved-without-commit, "
             f"{self.drag_signals} drag signals"
         )
 
@@ -358,6 +391,7 @@ class UseThresholdMemoryDiagnostic:
     linked_uses: int
     strong_committed: int
     drag_signals: int
+    resolved_without_commit: int
     source_counts: dict[str, int]
     semantic_mode_counts: dict[str, int]
     semantic_match_counts: dict[str, int]
@@ -369,7 +403,7 @@ class UseThresholdMemoryDiagnostic:
         return (
             f"- {self.memory_id} [{self.memory_type}] {self.memory_title}: {self.status}; "
             f"{self.linked_uses}/{self.total_uses} linked, {self.strong_committed} strong, "
-            f"{self.drag_signals} drag, adjustment {self.retrieval_adjustment:+.2f}; "
+            f"{self.drag_signals} drag, {self.resolved_without_commit} resolved, adjustment {self.retrieval_adjustment:+.2f}; "
             f"sources {format_source_counts(self.source_counts)}; "
             f"semantic {format_source_counts(self.semantic_mode_counts)} / {format_source_counts(self.semantic_match_counts)}; "
             f"{self.suggested_action}"
@@ -457,6 +491,7 @@ class SemanticAuditReport:
     total_receipts: int
     semantic_receipts: int
     semantic_linked: int
+    semantic_resolved_without_commit: int
     semantic_strong_committed: int
     semantic_drag_signals: int
     semantic_mode_counts: dict[str, int]
@@ -479,6 +514,7 @@ class SemanticAuditReport:
                 f"Total Receipts: {self.total_receipts}",
                 f"Semantic-Assisted Receipts: {self.semantic_receipts}",
                 f"Semantic-Assisted Linked: {self.semantic_linked}",
+                f"Semantic-Assisted Resolved Without Commit: {self.semantic_resolved_without_commit}",
                 f"Semantic-Assisted Strong Committed: {self.semantic_strong_committed}",
                 f"Semantic-Assisted Drag Signals: {self.semantic_drag_signals}",
                 f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
@@ -511,6 +547,8 @@ class SemanticAuditReport:
             return "Inspect semantic-assisted drag before broadening semantic retrieval or changing thresholds."
         if self.semantic_strong_committed:
             return "Semantic retrieval has positive linked evidence; keep collecting focused receipts before tuning thresholds."
+        if self.semantic_resolved_without_commit:
+            return "Semantic-assisted receipts were resolved without commit evidence; keep observing before tuning thresholds."
         return "Semantic retrieval has linked evidence but no strong or drag pattern yet; keep observing."
 
 
@@ -520,6 +558,7 @@ class SemanticAuditRecommendationLine:
     memory_title: str
     semantic_receipts: int
     semantic_linked: int
+    semantic_resolved_without_commit: int
     semantic_strong_committed: int
     semantic_drag_signals: int
     action: str
@@ -530,6 +569,7 @@ class SemanticAuditRecommendationLine:
         line = (
             f"- {memory_label}: {self.action} "
             f"({self.semantic_receipts} semantic receipts, {self.semantic_linked} linked, "
+            f"{self.semantic_resolved_without_commit} resolved, "
             f"{self.semantic_strong_committed} strong, {self.semantic_drag_signals} drag)"
         )
         if not self.details:
@@ -567,6 +607,7 @@ class SemanticAuditReceiptDetail:
     semantic_status: str
     semantic_score: float
     linked: bool
+    resolved_without_commit: bool = False
     commit_hash: str = ""
     outcome_signal: str = ""
     link_confidence: float = 0.0
@@ -574,7 +615,7 @@ class SemanticAuditReceiptDetail:
     candidate_commits: list[SemanticAuditCommitCandidateDetail] = field(default_factory=list)
 
     def render(self) -> list[str]:
-        state = "linked" if self.linked else "unlinked"
+        state = "resolved-without-commit" if self.resolved_without_commit else ("linked" if self.linked else "unlinked")
         lines = [
             (
                 f"  - {self.receipt_id} {self.source_command} {state}; "
@@ -582,6 +623,12 @@ class SemanticAuditReceiptDetail:
                 f"score={self.semantic_score:.2f}"
             )
         ]
+        if self.resolved_without_commit:
+            lines.append(
+                f"    Resolution: {self.outcome_signal or 'unknown'}; "
+                f"resolved-by={self.auto_link_reason or 'unknown'}"
+            )
+            return lines
         if self.linked:
             lines.append(
                 f"    Linked Commit: {short_hash(self.commit_hash)}; "
@@ -756,6 +803,47 @@ def link_commit(receipt: MemoryUseReceipt, request: CommitLinkRequest) -> Commit
     )
 
 
+def resolve_receipt_without_commit(
+    receipt: MemoryUseReceipt,
+    *,
+    outcome: str,
+    note: str,
+    resolved_by: str = "",
+) -> ReceiptResolutionDecision:
+    normalized_outcome = outcome.strip().replace("-", "_").lower()
+    normalized_note = note.strip()
+    missing: list[str] = []
+    if not receipt.id.strip():
+        missing.append("use_id")
+    if normalized_outcome not in RESOLVED_WITHOUT_COMMIT_OUTCOMES:
+        missing.append("valid_outcome")
+    if not normalized_note:
+        missing.append("note")
+    if missing:
+        return ReceiptResolutionDecision(
+            resolved=False,
+            reason="receipt resolution requires a valid outcome and a note explaining why no Git commit should be linked",
+            receipt=receipt,
+            missing=missing,
+        )
+    if receipt.commit_hash:
+        return ReceiptResolutionDecision(
+            resolved=False,
+            reason="receipt already has a linked commit; use-review should inspect the existing commit evidence",
+            receipt=receipt,
+        )
+    receipt.outcome_signal = normalized_outcome
+    receipt.commit_message = ""
+    receipt.commit_files = []
+    receipt.commit_time = ""
+    receipt.metadata_source = resolved_by.strip() or "cmu use-resolve"
+    receipt.note = normalized_note
+    receipt.linked_at = utc_now()
+    receipt.link_confidence = 0.0
+    append_flag(receipt, RESOLVED_WITHOUT_COMMIT_FLAG)
+    return ReceiptResolutionDecision(resolved=True, reason="Resolved receipt without Git commit evidence.", receipt=receipt)
+
+
 def link_git_commit(
     receipt: MemoryUseReceipt,
     *,
@@ -887,6 +975,7 @@ def use_summary(receipts: list[MemoryUseReceipt], memory_id: str) -> MemoryUseSu
         reverted=sum(1 for receipt in relevant if receipt.outcome_signal == "reverted"),
         low_confidence=sum(1 for receipt in relevant if receipt.outcome_signal == "committed_low_confidence"),
         mixed=sum(1 for receipt in relevant if "mixed_commit" in receipt.flags),
+        resolved_without_commit=sum(1 for receipt in relevant if is_resolved_without_commit(receipt)),
         source_counts=source_counts(relevant),
         semantic_mode_counts=semantic_mode_counts(relevant),
         semantic_match_counts=semantic_match_counts(relevant),
@@ -932,6 +1021,7 @@ def use_threshold_report(receipts: list[MemoryUseReceipt], memories: list[Memory
                 linked_uses=card.linked_uses,
                 strong_committed=card.strong_committed,
                 drag_signals=card.drag_signals,
+                resolved_without_commit=card.resolved_without_commit,
                 source_counts=source_counts(relevant),
                 semantic_mode_counts=semantic_mode_counts(relevant),
                 semantic_match_counts=semantic_match_counts(relevant),
@@ -966,6 +1056,7 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
                 break
     semantic_receipts = [receipt for receipt in scoped_receipts if is_semantic_assisted(receipt)]
     linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
+    resolved = [receipt for receipt in semantic_receipts if is_resolved_without_commit(receipt)]
     strong = [
         receipt
         for receipt in linked
@@ -976,6 +1067,7 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
         total_receipts=len(scoped_receipts),
         semantic_receipts=len(semantic_receipts),
         semantic_linked=len(linked),
+        semantic_resolved_without_commit=len(resolved),
         semantic_strong_committed=len(strong),
         semantic_drag_signals=len(drag),
         semantic_mode_counts=semantic_mode_counts(semantic_receipts),
@@ -1012,6 +1104,7 @@ def semantic_audit_recommendations(
         relevant = [receipt for receipt in receipts if receipt.memory_id == memory_id]
         semantic_receipts = [receipt for receipt in relevant if is_semantic_assisted(receipt)]
         linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
+        resolved = [receipt for receipt in semantic_receipts if is_resolved_without_commit(receipt)]
         strong = [
             receipt
             for receipt in linked
@@ -1025,9 +1118,10 @@ def semantic_audit_recommendations(
             memory_title=title,
             semantic_receipts=len(semantic_receipts),
             semantic_linked=len(linked),
+            semantic_resolved_without_commit=len(resolved),
             semantic_strong_committed=len(strong),
             semantic_drag_signals=len(drag),
-            action=semantic_recommendation_action(len(semantic_receipts), len(linked), len(strong), len(drag)),
+            action=semantic_recommendation_action(len(semantic_receipts), len(linked), len(strong), len(drag), len(resolved)),
             details=semantic_receipt_details(
                 semantic_receipts,
                 memory,
@@ -1089,6 +1183,7 @@ def semantic_receipt_detail(
     min_score: float,
 ) -> SemanticAuditReceiptDetail:
     if receipt.commit_hash or receipt.outcome_signal:
+        resolved = is_resolved_without_commit(receipt)
         return SemanticAuditReceiptDetail(
             receipt_id=receipt.id,
             source_command=receipt.source_command,
@@ -1096,9 +1191,11 @@ def semantic_receipt_detail(
             semantic_status=receipt.semantic_proposal_status,
             semantic_score=receipt.semantic_score,
             linked=True,
+            resolved_without_commit=resolved,
             commit_hash=receipt.commit_hash,
             outcome_signal=receipt.outcome_signal,
             link_confidence=receipt.link_confidence,
+            auto_link_reason=receipt.metadata_source if resolved else "",
         )
     if detail_error:
         return SemanticAuditReceiptDetail(
@@ -1160,7 +1257,7 @@ def semantic_receipt_detail(
     )
 
 
-def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: int, drag: int) -> str:
+def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: int, drag: int, resolved: int = 0) -> str:
     if semantic_receipts == 0:
         return "stay quiet until semantic-assisted receipts exist"
     if linked == 0:
@@ -1169,6 +1266,8 @@ def semantic_recommendation_action(semantic_receipts: int, linked: int, strong: 
         return "inspect semantic grounding before broadening semantic behavior"
     if strong:
         return "keep collecting focused evidence; possible positive semantic signal"
+    if resolved:
+        return "keep observing; semantic receipts were resolved without commit evidence"
     return "keep observing; linked semantic evidence is not strong or drag yet"
 
 
@@ -1597,6 +1696,7 @@ def build_use_review_card(memory: Memory | None, receipts: list[MemoryUseReceipt
     reverted = [receipt for receipt in linked if receipt.outcome_signal == "reverted"]
     low_confidence = [receipt for receipt in linked if receipt.outcome_signal == "committed_low_confidence"]
     mixed = [receipt for receipt in linked if "mixed_commit" in receipt.flags]
+    resolved_without_commit = [receipt for receipt in linked if is_resolved_without_commit(receipt)]
     drag = [receipt for receipt in linked if is_drag_signal(receipt)]
     memory_id = receipts[0].memory_id
     title = memory.title if memory is not None else receipts[0].memory_title
@@ -1621,6 +1721,7 @@ def build_use_review_card(memory: Memory | None, receipts: list[MemoryUseReceipt
         reverted=len(reverted),
         low_confidence=len(low_confidence),
         mixed=len(mixed),
+        resolved_without_commit=len(resolved_without_commit),
         drag_signals=len(drag),
         status=status,
         why=why,
@@ -1646,6 +1747,7 @@ def empty_use_review_card(memory: Memory | None, memory_id: str, title: str) -> 
         reverted=0,
         low_confidence=0,
         mixed=0,
+        resolved_without_commit=0,
         drag_signals=0,
         status="No use evidence found",
         why="No Memory Use Receipts exist for this memory yet.",
@@ -2031,12 +2133,21 @@ def drag_review_prompts(receipts: list[MemoryUseReceipt], memories: list[Memory]
 
 
 def is_drag_signal(receipt: MemoryUseReceipt) -> bool:
+    if is_resolved_without_commit(receipt):
+        return False
     return (
         receipt.outcome_signal in {"reverted", "committed_low_confidence"}
         or "mixed_commit" in receipt.flags
         or "no_file_overlap" in receipt.flags
         or "no_commit_file_context" in receipt.flags
     )
+
+
+def is_resolved_without_commit(receipt: MemoryUseReceipt) -> bool:
+    return (
+        receipt.outcome_signal in RESOLVED_WITHOUT_COMMIT_OUTCOMES
+        or RESOLVED_WITHOUT_COMMIT_FLAG in receipt.flags
+    ) and not receipt.commit_hash
 
 
 def append_flag(receipt: MemoryUseReceipt, flag: str) -> None:

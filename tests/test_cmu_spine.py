@@ -2721,6 +2721,130 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Review Prompts", output.getvalue())
             self.assertIn("drag signals", output.getvalue())
 
+    def test_cli_use_resolve_marks_receipt_without_commit_and_surfaces_resolution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="Preflight should surface compact memory only when it changes action.",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Update docs after semantic audit", actor="agent", area="cmu", files=["CMU_Implementation_Progress.md"]),
+                match=Match(
+                    memory=memory,
+                    score=4.8,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.66,
+                    semantic_proposal_status="direct-match",
+                ),
+                source_command="start",
+                semantic_mode="local",
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-resolve",
+                        receipt.id,
+                        "--outcome",
+                        "no-checkpoint",
+                        "--note",
+                        "Strategic markdown is intentionally ignored by Git.",
+                        "--resolved-by",
+                        "CMU Test",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Receipt Resolution Applied", rendered)
+            self.assertIn("Outcome: no_checkpoint", rendered)
+            self.assertIn("No Commit Linked", rendered)
+            [resolved] = MemoryUseStore(tmp).list()
+            self.assertEqual(resolved.commit_hash, "")
+            self.assertEqual(resolved.outcome_signal, "no_checkpoint")
+            self.assertEqual(resolved.metadata_source, "CMU Test")
+            self.assertIn("resolved_without_commit", resolved.flags)
+
+            list_output = StringIO()
+            with redirect_stdout(list_output):
+                self.assertEqual(main(["--root", tmp, "use-list"]), 0)
+            self.assertIn(f"{receipt.id} start no_checkpoint unlinked", list_output.getvalue())
+
+            summary_output = StringIO()
+            with redirect_stdout(summary_output):
+                self.assertEqual(main(["--root", tmp, "use-summary", memory.id]), 0)
+            self.assertIn("Resolved Without Commit: 1", summary_output.getvalue())
+
+            review_output = StringIO()
+            with redirect_stdout(review_output):
+                self.assertEqual(main(["--root", tmp, "use-review", memory.id]), 0)
+            self.assertIn("1 resolved-without-commit", review_output.getvalue())
+            self.assertIn("0 drag signals", review_output.getvalue())
+
+            audit_output = StringIO()
+            with redirect_stdout(audit_output):
+                self.assertEqual(main(["--root", tmp, "semantic-audit", "--memory", memory.id]), 0)
+            audit_rendered = audit_output.getvalue()
+            self.assertIn("Semantic-Assisted Linked: 1", audit_rendered)
+            self.assertIn("Semantic-Assisted Resolved Without Commit: 1", audit_rendered)
+            self.assertIn("resolved without commit evidence", audit_rendered)
+
+            recommendations_output = StringIO()
+            with redirect_stdout(recommendations_output):
+                self.assertEqual(main(["--root", tmp, "semantic-audit", "--recommendations", "--details"]), 0)
+            recommendations_rendered = recommendations_output.getvalue()
+            self.assertIn("Neutral Linked Semantic Evidence", recommendations_rendered)
+            self.assertIn(f"{memory.id} Task-start preflight stays quiet unless useful: keep observing; semantic receipts were resolved without commit evidence", recommendations_rendered)
+            self.assertIn(f"{receipt.id} start resolved-without-commit; semantic=local/direct-match score=0.66", recommendations_rendered)
+            self.assertIn("Resolution: no_checkpoint; resolved-by=CMU Test", recommendations_rendered)
+            self.assertNotIn("Link Receipts First\n- " + memory.id, recommendations_rendered)
+
+    def test_cli_use_resolve_refuses_receipt_that_already_has_commit_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Committed receipt memory",
+                summary="Receipt already has commit evidence.",
+            )
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix committed thing"),
+                match=Match(memory=memory, score=3.2, matched_terms=["fix"]),
+            )
+            receipt.commit_hash = "abc123"
+            receipt.outcome_signal = "committed"
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "use-resolve",
+                        receipt.id,
+                        "--outcome",
+                        "not-applicable",
+                        "--note",
+                        "Should not replace commit evidence.",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Use Receipt Resolution Not Applied", output.getvalue())
+            self.assertIn("already has a linked commit", output.getvalue())
+            [loaded] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded.commit_hash, "abc123")
+            self.assertEqual(loaded.outcome_signal, "committed")
+
     def test_usage_adjustment_is_capped_for_repeated_positive_and_negative_signals(self) -> None:
         memory = Memory.create(
             type=MemoryType.PRACTICE,
