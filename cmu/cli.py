@@ -17,6 +17,7 @@ from .retrieval import (
     semantic_index_status,
     semantic_proposal_diagnostics,
 )
+from .scenarios import ScenarioEvaluationRequest, evaluate_scenario
 from .store import MemoryStore
 from .triggers import decide_trigger
 from .usage import (
@@ -179,6 +180,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show diagnostic-only semantic proposal decisions without changing retrieval or receipts.",
     )
     start_parser.set_defaults(func=cmd_start)
+
+    evaluate_parser = subparsers.add_parser("evaluate-scenario", help="Run a read-only CMU structural scenario evaluation.")
+    evaluate_parser.add_argument("prompt", nargs="*", help="Task scenario prompt to evaluate.")
+    evaluate_parser.add_argument("--actor", default="developer")
+    evaluate_parser.add_argument("--area", default="")
+    evaluate_parser.add_argument("--file", action="append", default=[])
+    evaluate_parser.add_argument("--workflow", action="append", default=[])
+    evaluate_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    evaluate_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    evaluate_parser.add_argument("--repeated-error", action="store_true")
+    evaluate_parser.add_argument("--uncertainty", action="store_true")
+    evaluate_parser.add_argument("--shared-contract", action="store_true")
+    evaluate_parser.add_argument("--irreversible", action="store_true")
+    evaluate_parser.add_argument("--unfamiliar", action="store_true")
+    evaluate_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    evaluate_parser.add_argument("--expect-trigger", choices=["must-call", "should-call", "silent-skip"], default="")
+    evaluate_parser.add_argument("--expect-action", choices=["action-note", "quiet"], default="")
+    evaluate_parser.add_argument("--expect-memory", default="", help="Expected surfaced memory id, or 'none'.")
+    evaluate_parser.add_argument("--expect-candidate", choices=["draft-recommended", "not-recommended"], default="")
+    evaluate_parser.add_argument("--learning-signal", action="append", default=[], help="Reusable learning signal observed in the scenario.")
+    evaluate_parser.add_argument("--worked", default="", help="What worked in the scenario, if reusable.")
+    evaluate_parser.add_argument("--failed", default="", help="What failed in the scenario, if reusable.")
+    evaluate_parser.add_argument("--future-use", default="", help="Why future work should reuse this learning.")
+    evaluate_parser.add_argument("--evidence", action="append", default=[], help="Evidence observed in the scenario.")
+    evaluate_parser.set_defaults(func=cmd_evaluate_scenario)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
@@ -578,6 +609,41 @@ def cmd_start(args: argparse.Namespace, store: MemoryStore) -> int:
     )
     use_store.add(receipt)
     print(f"Use Receipt: {receipt.id}")
+    return 0
+
+
+def cmd_evaluate_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("evaluate-scenario requires a task prompt")
+    memories = store.list()
+    query = build_query(args, prompt)
+    semantic_index = load_semantic_index(args, memories)
+    request = ScenarioEvaluationRequest(
+        prompt=prompt,
+        query=query,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+        expect_trigger=args.expect_trigger,
+        expect_action=args.expect_action,
+        expect_memory=args.expect_memory,
+        expect_candidate=args.expect_candidate,
+        learning_signals=args.learning_signal,
+        worked=args.worked,
+        failed=args.failed,
+        future_use=args.future_use,
+        evidence=args.evidence,
+    )
+    report = evaluate_scenario(
+        memories,
+        MemoryUseStore(args.root).list(),
+        request,
+        semantic_index=semantic_index,
+    )
+    print(report.render())
     return 0
 
 

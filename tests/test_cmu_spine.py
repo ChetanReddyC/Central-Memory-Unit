@@ -2077,6 +2077,154 @@ class WorkCycleStartTests(unittest.TestCase):
             self.assertEqual(len(MemoryUseStore(tmp).list()), 1)
 
 
+class ScenarioEvaluationTests(unittest.TestCase):
+    def test_cli_evaluate_scenario_proves_expected_action_note_without_mutating_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["preflight", "quiet"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "evaluate-scenario",
+                        "implement CMU preflight behavior",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                        "--expect-trigger",
+                        "must-call",
+                        "--expect-action",
+                        "action-note",
+                        "--expect-memory",
+                        memory.id,
+                        "--expect-candidate",
+                        "draft-recommended",
+                        "--learning-signal",
+                        "structural proof",
+                        "--worked",
+                        "The harness reused the real Work Cycle path.",
+                        "--future-use",
+                        "Use this scenario to verify CMU can prove task-start memory behavior.",
+                        "--evidence",
+                        "The scenario surfaced the expected Practice memory.",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Scenario Evaluation", rendered)
+            self.assertIn("Mode: read-only structural proof", rendered)
+            self.assertIn("Level: must-call", rendered)
+            self.assertIn("Action: action-note", rendered)
+            self.assertIn(f"Matched Memory: {memory.id}", rendered)
+            self.assertIn("Receipt Signal: would-create-use-receipt", rendered)
+            self.assertIn("- trigger: pass", rendered)
+            self.assertIn("- action: pass", rendered)
+            self.assertIn("- memory: pass", rendered)
+            self.assertIn("- candidate: pass", rendered)
+            self.assertIn("Candidate Memory: draft-recommended", rendered)
+            self.assertIn("Verdict: supports-cmu-assumption", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_evaluate_scenario_proves_expected_quiet_silent_skip(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "evaluate-scenario",
+                        "adjust button spacing",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "frontend",
+                        "--file",
+                        "settings.css",
+                        "--workflow",
+                        "styling",
+                        "--risk",
+                        "low",
+                        "--expect-trigger",
+                        "silent-skip",
+                        "--expect-action",
+                        "quiet",
+                        "--expect-memory",
+                        "none",
+                        "--expect-candidate",
+                        "not-recommended",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Level: silent-skip", rendered)
+            self.assertIn("Onboarding Seed: skipped by silent-skip trigger", rendered)
+            self.assertIn("Action: quiet", rendered)
+            self.assertIn("Receipt Signal: none", rendered)
+            self.assertIn("- trigger: pass", rendered)
+            self.assertIn("- action: pass", rendered)
+            self.assertIn("- memory: pass", rendered)
+            self.assertIn("- candidate: pass", rendered)
+            self.assertIn("Verdict: supports-cmu-assumption", rendered)
+
+    def test_cli_evaluate_scenario_reports_gap_when_expected_memory_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "evaluate-scenario",
+                        "debug unknown billing migration failure",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--workflow",
+                        "debugging",
+                        "--risk",
+                        "high",
+                        "--expect-trigger",
+                        "must-call",
+                        "--expect-action",
+                        "action-note",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Level: must-call", rendered)
+            self.assertIn("Action: quiet", rendered)
+            self.assertIn("- trigger: pass", rendered)
+            self.assertIn("- action: fail", rendered)
+            self.assertIn("Verdict: cmu-gap-found", rendered)
+
+
 class MemoryUseTests(unittest.TestCase):
     def test_memory_use_receipt_defaults_old_records_to_preflight_source(self) -> None:
         receipt = MemoryUseReceipt.from_dict(
