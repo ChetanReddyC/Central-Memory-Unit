@@ -4105,6 +4105,158 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn(f"cmu use-link {second_receipt.id} --commit {metadata.commit_hash}", rendered)
             self.assertNotIn(first_receipt.id, rendered)
 
+    def test_cli_semantic_audit_candidate_limit_caps_plausible_commits(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "cmu/usage.py", "semantic = 1\n", "Add first semantic candidate")
+            write_and_commit(tmp, "cmu/usage.py", "semantic = 2\n", "Add second semantic candidate")
+            write_and_commit(tmp, "cmu/usage.py", "semantic = 3\n", "Add third semantic candidate")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="Preflight should surface compact memory only when it changes action.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.9,
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="semantic command closure", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=memory,
+                    score=4.7,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.69,
+                    semantic_proposal_status="direct-match",
+                ),
+                source_command="start",
+                semantic_mode="local",
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "semantic-audit",
+                        "--recommendations",
+                        "--details",
+                        "--open-only",
+                        "--commands-only",
+                        "--candidate-limit",
+                        "1",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("candidate-limit=1", rendered)
+            self.assertEqual(rendered.count(f"cmu use-link {receipt.id} --commit"), 1)
+            self.assertIn(f"cmu use-resolve {receipt.id} --outcome no-checkpoint", rendered)
+
+    def test_cli_semantic_audit_action_filter_focuses_recommendation_bucket(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "cmu/usage.py", "semantic = true\n", "Add semantic partial evidence")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            no_link_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Unlinked semantic practice",
+                summary="A semantic practice with only open receipts.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.9,
+            )
+            partial_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Partial semantic practice",
+                summary="A semantic practice with linked and open receipts.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.9,
+            )
+            store = MemoryStore(tmp)
+            store.add(no_link_memory)
+            store.add(partial_memory)
+            no_link_receipt = MemoryUseReceipt.create(
+                no_link_memory,
+                PreflightQuery(prompt="semantic unlinked", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=no_link_memory,
+                    score=4.7,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.69,
+                    semantic_proposal_status="direct-match",
+                ),
+                source_command="start",
+                semantic_mode="local",
+            )
+            no_link_receipt.surfaced_at = before_commit(metadata, minutes=30)
+            linked_partial_receipt = MemoryUseReceipt.create(
+                partial_memory,
+                PreflightQuery(prompt="semantic linked partial", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=partial_memory,
+                    score=4.7,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.72,
+                    semantic_proposal_status="direct-match",
+                ),
+                semantic_mode="local",
+            )
+            linked_partial_receipt.commit_hash = metadata.commit_hash
+            linked_partial_receipt.outcome_signal = "committed"
+            linked_partial_receipt.link_confidence = 0.9
+            unresolved_partial_receipt = MemoryUseReceipt.create(
+                partial_memory,
+                PreflightQuery(prompt="semantic unresolved partial", actor="agent", area="cmu", files=["cmu/usage.py"]),
+                match=Match(
+                    memory=partial_memory,
+                    score=4.7,
+                    matched_terms=["semantic:workflow scope"],
+                    semantic_label="local hashing embeddings",
+                    semantic_score=0.68,
+                    semantic_proposal_status="direct-match",
+                ),
+                source_command="start",
+                semantic_mode="local",
+            )
+            unresolved_partial_receipt.surfaced_at = before_commit(metadata, minutes=20)
+            use_store = MemoryUseStore(tmp)
+            use_store.add(no_link_receipt)
+            use_store.add(linked_partial_receipt)
+            use_store.add(unresolved_partial_receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "semantic-audit",
+                        "--recommendations",
+                        "--details",
+                        "--open-only",
+                        "--commands-only",
+                        "--action",
+                        "partial",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Action Filter: partial", rendered)
+            self.assertIn(unresolved_partial_receipt.id, rendered)
+            self.assertNotIn(no_link_receipt.id, rendered)
+
     def test_cli_semantic_audit_recommendations_rejects_memory_filter(self) -> None:
         with TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as context:
@@ -4146,6 +4298,30 @@ class MemoryUseTests(unittest.TestCase):
                 main(["--root", tmp, "semantic-audit", "--recommendations", "--min-score", "0.1"])
 
             self.assertIn("candidate tuning requires --recommendations --details", str(context.exception))
+
+    def test_cli_semantic_audit_action_filter_requires_recommendations(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as context:
+                main(["--root", tmp, "semantic-audit", "--action", "link"])
+
+            self.assertIn("--action requires --recommendations", str(context.exception))
+
+    def test_cli_semantic_audit_candidate_limit_rejects_negative_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as context:
+                main(
+                    [
+                        "--root",
+                        tmp,
+                        "semantic-audit",
+                        "--recommendations",
+                        "--details",
+                        "--candidate-limit",
+                        "-1",
+                    ]
+                )
+
+            self.assertIn("--candidate-limit must be zero or greater", str(context.exception))
 
     def test_cli_use_review_prepare_strengthen_proposal_does_not_mutate(self) -> None:
         with TemporaryDirectory() as tmp:

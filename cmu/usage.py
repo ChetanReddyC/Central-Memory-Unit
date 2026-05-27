@@ -685,6 +685,8 @@ class SemanticAuditRecommendationsReport:
     limit: int = 20
     hours: int = 72
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE
+    candidate_limit: int = 0
+    action_filter: str = ""
 
     def render(self) -> str:
         if self.commands_only:
@@ -698,27 +700,13 @@ class SemanticAuditRecommendationsReport:
         if self.receipt_id:
             lines.append(f"Receipt Filter: {self.receipt_id}")
         if self.details_are_tuned():
-            lines.append(f"Candidate Window: limit={self.limit}, hours={self.hours}, min-score={self.min_score:.2f}")
+            lines.append(self.render_candidate_window())
+        if self.action_filter:
+            lines.append(f"Action Filter: {self.action_filter}")
         lines.extend(
             [
                 "",
-                "Link Receipts First",
-                *render_recommendation_group(self.no_link),
-                "",
-                "Resolve Remaining Semantic Evidence",
-                *render_recommendation_group(self.partial),
-                "",
-                "Inspect Semantic Drag",
-                *render_recommendation_group(self.drag),
-                "",
-                "Positive Semantic Signal",
-                *render_recommendation_group(self.strong),
-                "",
-                "Neutral Linked Semantic Evidence",
-                *render_recommendation_group(self.neutral),
-                "",
-                "No Semantic Evidence",
-                *render_recommendation_group(self.no_semantic),
+                *self.render_selected_groups(),
                 "",
                 "Tuning Guidance: Do not tune thresholds or broaden semantic proposal behavior until linked per-memory evidence shows a repeated pattern.",
             ]
@@ -734,9 +722,11 @@ class SemanticAuditRecommendationsReport:
         if self.receipt_id:
             lines.append(f"Receipt Filter: {self.receipt_id}")
         if self.details_are_tuned():
-            lines.append(f"Candidate Window: limit={self.limit}, hours={self.hours}, min-score={self.min_score:.2f}")
+            lines.append(self.render_candidate_window())
+        if self.action_filter:
+            lines.append(f"Action Filter: {self.action_filter}")
         command_lines: list[str] = []
-        for group in [self.no_link, self.partial, self.drag, self.strong, self.neutral]:
+        for _, group in self.selected_groups(include_no_semantic=False):
             for item in group:
                 for detail in item.details:
                     command_lines.extend(detail.command_lines())
@@ -748,7 +738,42 @@ class SemanticAuditRecommendationsReport:
         return "\n".join(lines)
 
     def details_are_tuned(self) -> bool:
-        return self.limit != 20 or self.hours != 72 or self.min_score != DEFAULT_AUTO_LINK_MIN_SCORE
+        return (
+            self.limit != 20
+            or self.hours != 72
+            or self.min_score != DEFAULT_AUTO_LINK_MIN_SCORE
+            or self.candidate_limit > 0
+        )
+
+    def render_candidate_window(self) -> str:
+        candidate_limit = "all" if self.candidate_limit <= 0 else str(self.candidate_limit)
+        return (
+            f"Candidate Window: limit={self.limit}, hours={self.hours}, "
+            f"min-score={self.min_score:.2f}, candidate-limit={candidate_limit}"
+        )
+
+    def selected_groups(self, *, include_no_semantic: bool = True) -> list[tuple[str, list[SemanticAuditRecommendationLine]]]:
+        groups = [
+            ("link", "Link Receipts First", self.no_link),
+            ("partial", "Resolve Remaining Semantic Evidence", self.partial),
+            ("drag", "Inspect Semantic Drag", self.drag),
+            ("positive", "Positive Semantic Signal", self.strong),
+            ("neutral", "Neutral Linked Semantic Evidence", self.neutral),
+        ]
+        if include_no_semantic:
+            groups.append(("none", "No Semantic Evidence", self.no_semantic))
+        if not self.action_filter:
+            return [(title, group) for _, title, group in groups]
+        return [(title, group) for key, title, group in groups if key == self.action_filter]
+
+    def render_selected_groups(self) -> list[str]:
+        lines: list[str] = []
+        for index, (title, group) in enumerate(self.selected_groups()):
+            if index:
+                lines.append("")
+            lines.append(title)
+            lines.extend(render_recommendation_group(group))
+        return lines
 
 
 @dataclass
@@ -1163,9 +1188,11 @@ def semantic_audit_recommendations(
     limit: int = 20,
     hours: int = 72,
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE,
+    candidate_limit: int = 0,
     open_only: bool = False,
     commands_only: bool = False,
     receipt_id: str = "",
+    action_filter: str = "",
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
@@ -1177,6 +1204,8 @@ def semantic_audit_recommendations(
         limit=limit,
         hours=hours,
         min_score=min_score,
+        candidate_limit=candidate_limit,
+        action_filter=action_filter,
     )
     commits: list[GitCommitMetadata] = []
     detail_error = ""
@@ -1216,6 +1245,7 @@ def semantic_audit_recommendations(
                 detail_error=detail_error,
                 hours=hours,
                 min_score=min_score,
+                candidate_limit=candidate_limit,
                 open_only=open_only,
                 receipt_id=receipt_id,
             )
@@ -1251,6 +1281,7 @@ def semantic_receipt_details(
     detail_error: str,
     hours: int,
     min_score: float,
+    candidate_limit: int = 0,
     open_only: bool = False,
     receipt_id: str = "",
 ) -> list[SemanticAuditReceiptDetail]:
@@ -1265,6 +1296,7 @@ def semantic_receipt_details(
             detail_error=detail_error,
             hours=hours,
             min_score=min_score,
+            candidate_limit=candidate_limit,
         )
         for receipt in sorted(relevant, key=lambda item: item.surfaced_at)
     ]
@@ -1278,6 +1310,7 @@ def semantic_receipt_detail(
     detail_error: str,
     hours: int,
     min_score: float,
+    candidate_limit: int = 0,
 ) -> SemanticAuditReceiptDetail:
     if receipt.commit_hash or receipt.outcome_signal:
         resolved = is_resolved_without_commit(receipt)
@@ -1326,6 +1359,8 @@ def semantic_receipt_detail(
     best = candidates[0]
     close = [candidate for candidate in candidates[1:] if best.score - candidate.score <= AUTO_LINK_AMBIGUITY_MARGIN]
     shown = [best, *close] if close else [best]
+    if candidate_limit > 0:
+        shown = shown[:candidate_limit]
     reason = (
         "multiple commits were plausible; leaving receipt unlinked"
         if close

@@ -335,6 +335,13 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_audit_parser.add_argument("--limit", type=int, default=20, help="With --recommendations --details, number of recent commits to inspect for link candidates.")
     semantic_audit_parser.add_argument("--hours", type=int, default=72, help="With --recommendations --details, maximum hours after a receipt to consider a commit.")
     semantic_audit_parser.add_argument("--min-score", type=float, default=DEFAULT_AUTO_LINK_MIN_SCORE, help="With --recommendations --details, minimum candidate score to show.")
+    semantic_audit_parser.add_argument("--candidate-limit", type=int, default=0, help="With --recommendations --details, maximum candidate commits to show per unresolved receipt. Defaults to all plausible candidates.")
+    semantic_audit_parser.add_argument(
+        "--action",
+        choices=["link", "partial", "drag", "positive", "neutral", "none"],
+        default="",
+        help="With --recommendations, render only one recommendation bucket.",
+    )
     semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
@@ -828,8 +835,12 @@ def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
         raise SystemExit("semantic-audit --commands-only requires --recommendations --details --open-only")
     if args.receipt and not (args.recommendations and args.details):
         raise SystemExit("semantic-audit --receipt requires --recommendations --details")
-    if (args.limit != 20 or args.hours != 72 or args.min_score != DEFAULT_AUTO_LINK_MIN_SCORE) and not (args.recommendations and args.details):
+    if (args.limit != 20 or args.hours != 72 or args.min_score != DEFAULT_AUTO_LINK_MIN_SCORE or args.candidate_limit) and not (args.recommendations and args.details):
         raise SystemExit("semantic-audit candidate tuning requires --recommendations --details")
+    if args.candidate_limit < 0:
+        raise SystemExit("semantic-audit --candidate-limit must be zero or greater")
+    if args.action and not args.recommendations:
+        raise SystemExit("semantic-audit --action requires --recommendations")
     if args.recommendations:
         if args.memory:
             raise SystemExit("semantic-audit --recommendations reviews all memories and does not accept --memory")
@@ -841,9 +852,11 @@ def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
             limit=args.limit,
             hours=args.hours,
             min_score=args.min_score,
+            candidate_limit=args.candidate_limit,
             open_only=args.open_only,
             commands_only=args.commands_only,
             receipt_id=args.receipt,
+            action_filter=args.action,
         )
         print(report.render())
         return 0
