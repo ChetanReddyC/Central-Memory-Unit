@@ -24,6 +24,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.store import MemoryStore
+from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
 from cmu.usage import (
     CommitLinkRequest,
@@ -5248,6 +5249,113 @@ class CliRememberTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             memories = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
             self.assertEqual(len(memories), 1)
+
+
+class RawTraceDistillationTests(unittest.TestCase):
+    def test_cli_trace_distill_apply_saves_candidate_from_reusable_raw_trace(self) -> None:
+        with TemporaryDirectory() as tmp:
+            capture_output = StringIO()
+            with redirect_stdout(capture_output):
+                capture_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "trace-add",
+                        "Billing deploy failed because service rollout ran before schema migration.",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--file",
+                        "billing/deploy.py",
+                        "--workflow",
+                        "deployment",
+                        "--risk",
+                        "high",
+                        "--learning-signal",
+                        "explained failure",
+                        "--outcome",
+                        "Deployment passed after migration order was corrected.",
+                        "--worked",
+                        "Run billing schema migration before service rollout.",
+                        "--failed",
+                        "Rolling out service code first caused the deploy failure.",
+                        "--future-use",
+                        "Use when billing deployment or migration ordering changes.",
+                        "--evidence",
+                        "Deploy log showed service code started before schema compatibility.",
+                    ]
+                )
+
+            self.assertEqual(capture_code, 0)
+            capture_rendered = capture_output.getvalue()
+            self.assertIn("CMU Raw Trace Captured", capture_rendered)
+            self.assertIn("candidate-ready", capture_rendered)
+            traces = RawTraceStore(tmp).list()
+            self.assertEqual(len(traces), 1)
+            self.assertEqual(traces[0].status, "raw")
+
+            distill_output = StringIO()
+            with redirect_stdout(distill_output):
+                distill_code = main(["--root", tmp, "trace-distill", "--apply"])
+
+            self.assertEqual(distill_code, 0)
+            distill_rendered = distill_output.getvalue()
+            self.assertIn("CMU Raw Trace Distillation", distill_rendered)
+            self.assertIn("Mode: apply", distill_rendered)
+            self.assertIn("Candidate Ready: 1", distill_rendered)
+            memories = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(memories), 1)
+            self.assertIn("Billing deploy failed", memories[0].summary)
+            self.assertIn("explained failure", memories[0].signals)
+            self.assertTrue(any(item.startswith("Distilled from raw trace:") for item in memories[0].evidence))
+            updated_trace = RawTraceStore(tmp).get(traces[0].id)
+            self.assertEqual(updated_trace.status, "candidate-saved")
+            self.assertEqual(updated_trace.distilled_memory_id, memories[0].id)
+
+            with redirect_stdout(StringIO()):
+                rerun_code = main(["--root", tmp, "trace-distill", traces[0].id, "--apply"])
+
+            self.assertEqual(rerun_code, 0)
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 1)
+            self.assertEqual(RawTraceStore(tmp).get(traces[0].id).distilled_memory_id, memories[0].id)
+
+    def test_cli_trace_distill_apply_rejects_routine_noise_without_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with redirect_stdout(StringIO()):
+                capture_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "trace-add",
+                        "Fixed a local formatting typo in a comment.",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "docs",
+                        "--file",
+                        "README.md",
+                        "--workflow",
+                        "cleanup",
+                        "--risk",
+                        "low",
+                    ]
+                )
+
+            self.assertEqual(capture_code, 0)
+            trace = RawTraceStore(tmp).list()[0]
+            output = StringIO()
+            with redirect_stdout(output):
+                distill_code = main(["--root", tmp, "trace-distill", trace.id, "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(distill_code, 0)
+            self.assertIn("Noise Rejected: 1", rendered)
+            self.assertIn("Missing required Candidate Memory fields", rendered)
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
+            updated_trace = RawTraceStore(tmp).get(trace.id)
+            self.assertEqual(updated_trace.status, "rejected")
+            self.assertEqual(updated_trace.distilled_memory_id, "")
 
 
 class LifecycleTests(unittest.TestCase):

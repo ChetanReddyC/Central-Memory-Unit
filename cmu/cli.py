@@ -20,6 +20,7 @@ from .retrieval import (
 )
 from .scenarios import ScenarioEvaluationRequest, evaluate_scenario
 from .store import MemoryStore
+from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
 from .usage import (
     CommitLinkRequest,
@@ -211,6 +212,28 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--future-use", default="", help="Why future work should reuse this learning.")
     evaluate_parser.add_argument("--evidence", action="append", default=[], help="Evidence observed in the scenario.")
     evaluate_parser.set_defaults(func=cmd_evaluate_scenario)
+
+    trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
+    trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
+    trace_add_parser.add_argument("--actor", default="developer")
+    trace_add_parser.add_argument("--area", default="")
+    trace_add_parser.add_argument("--file", action="append", default=[])
+    trace_add_parser.add_argument("--workflow", action="append", default=[])
+    trace_add_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    trace_add_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    trace_add_parser.add_argument("--learning-signal", action="append", default=[], help="Reusable learning signal observed in the trace.")
+    trace_add_parser.add_argument("--outcome", default="", help="Observed outcome from the work.")
+    trace_add_parser.add_argument("--worked", default="", help="What worked, if reusable.")
+    trace_add_parser.add_argument("--failed", default="", help="What failed, if reusable.")
+    trace_add_parser.add_argument("--future-use", default="", help="Why future work should reuse this trace.")
+    trace_add_parser.add_argument("--evidence", action="append", default=[], help="Evidence observed in the raw trace.")
+    trace_add_parser.set_defaults(func=cmd_trace_add)
+
+    trace_distill_parser = subparsers.add_parser("trace-distill", help="Distill raw traces into Candidate Memory drafts when quality gates pass.")
+    trace_distill_parser.add_argument("trace_id", nargs="?", help="Raw trace id to distill. Omit to review pending raw traces.")
+    trace_distill_parser.add_argument("--apply", action="store_true", help="Persist Candidate Memories and trace distillation status.")
+    trace_distill_parser.add_argument("--include-distilled", action="store_true", help="Include traces that were already distilled or rejected.")
+    trace_distill_parser.set_defaults(func=cmd_trace_distill)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
@@ -649,6 +672,57 @@ def cmd_evaluate_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
         semantic_index=semantic_index,
     )
     print(report.render())
+    return 0
+
+
+def cmd_trace_add(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("trace-add requires a task prompt")
+    trace = RawTrace.create(
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+        learning_signals=args.learning_signal,
+        outcome=args.outcome,
+        worked=args.worked,
+        failed=args.failed,
+        future_use=args.future_use,
+        evidence=args.evidence,
+    )
+    RawTraceStore(args.root).add(trace)
+    distillation = distill_trace(trace, store.list())
+    print("CMU Raw Trace Captured")
+    print(f"ID: {trace.id}")
+    print(f"Status: {trace.status}")
+    print()
+    print("Distillation Preview:")
+    print(distillation.render())
+    return 0
+
+
+def cmd_trace_distill(args: argparse.Namespace, store: MemoryStore) -> int:
+    trace_store = RawTraceStore(args.root)
+    if args.trace_id:
+        trace = trace_store.get(args.trace_id)
+        traces = [trace] if trace.status == "raw" or args.include_distilled else []
+    else:
+        traces = trace_store.list(include_distilled=args.include_distilled)
+    memories = store.list()
+    distillations = []
+    for trace in traces:
+        distillation = distill_trace(trace, memories)
+        distillations.append(distillation)
+        if args.apply and trace.status == "raw":
+            if distillation.decision.saved and distillation.decision.memory is not None:
+                store.add(distillation.decision.memory)
+                memories.append(distillation.decision.memory)
+            apply_distillation(trace_store, trace, distillation.decision)
+    print(TraceDistillationReport(distillations=distillations, apply=args.apply).render())
     return 0
 
 
