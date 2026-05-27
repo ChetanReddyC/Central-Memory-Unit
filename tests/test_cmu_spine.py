@@ -5250,6 +5250,141 @@ class CliRememberTests(unittest.TestCase):
             self.assertEqual(len(memories), 1)
 
 
+class LifecycleTests(unittest.TestCase):
+    def test_cli_lifecycle_connects_candidate_situation_stable_challenge_and_exception(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Billing migration order matters",
+                summary="Billing deploy failed because service code ran before migration.",
+                signals=["explained failure"],
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Deploy passed after migration order was corrected."],
+                use_this_path="Run billing migration before service rollout.",
+                avoid_this="Do not roll out service code before schema compatibility.",
+                challenge_only_if="Use when billing deploy or migration order fails again.",
+                liability_score=4,
+                confidence=0.75,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["practice discovery", "agent behavior"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+            )
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Start command coordinates Work Cycle",
+                summary="The start command should coordinate trigger, onboarding, preflight, and receipts.",
+                signals=["work cycle"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Manual start run confirmed trigger to seed to Action Note handoff."],
+                use_this_path="Use start for meaningful implementation tasks.",
+                avoid_this="Do not create receipts when CMU stays quiet.",
+                challenge_only_if="The task is low-risk and follows an obvious local pattern.",
+                liability_score=4,
+                confidence=0.85,
+                approved_by="CMU owner",
+            )
+            exception = Memory.create(
+                type=MemoryType.EXCEPTION,
+                title="Docs-only receipts can be resolved without commit",
+                summary="Strategic markdown-only work may not map to a Git checkpoint.",
+                scope=MemoryScope(code=["CMU_Implementation_Progress.md"], workflow=["documentation"], actor=["agent"]),
+                evidence=["Docs are intentionally local development memory."],
+                liability_score=3,
+                confidence=0.8,
+                approved_by="CMU owner",
+            )
+            for memory in [candidate, situation, practice, exception]:
+                store.add(memory)
+            challenge = challenge_stable_memory(
+                store.list(),
+                ChallengeRequest(
+                    memory_id=practice.id,
+                    mismatch="Start command guidance may not fit silent low-risk tasks.",
+                    benefit="Clarify when start should stay quiet.",
+                    risk="Overusing start can create workflow drag.",
+                    rollback="Keep using direct preflight for low-risk obvious work.",
+                    challenged_by="agent",
+                ),
+            )
+            assert challenge.challenge_memory is not None
+            store.add(challenge.challenge_memory)
+            use_store = MemoryUseStore(tmp)
+            for index in range(2):
+                receipt = MemoryUseReceipt.create(
+                    practice,
+                    PreflightQuery(
+                        prompt=f"implement work cycle slice {index}",
+                        actor="agent",
+                        area="cmu",
+                        workflow=["implementation"],
+                    ),
+                    Match(memory=practice, score=5.0, matched_terms=["cmu", "implementation"]),
+                    source_command="start",
+                )
+                receipt.commit_hash = f"{index + 1:040x}"
+                receipt.outcome_signal = "committed"
+                receipt.link_confidence = 0.9
+                use_store.add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Core Memory Lifecycle", rendered)
+            self.assertIn("Mode: read-only structural lifecycle proof", rendered)
+            self.assertIn(f"{candidate.id} [candidate/active]", rendered)
+            self.assertIn("Gate: ready: promote to situation", rendered)
+            self.assertIn(f"{situation.id} [situation/active]", rendered)
+            self.assertIn("ready: authority review for practice, anchor", rendered)
+            self.assertIn(f"{practice.id} [practice/active]", rendered)
+            self.assertIn("Stage: stable", rendered)
+            self.assertIn("ready: 1 active challenge(s)", rendered)
+            self.assertIn("challenge path active", rendered)
+            self.assertIn(challenge.challenge_memory.id, rendered)
+            self.assertIn("Stage: challenge-candidate", rendered)
+            self.assertIn("ready: resolve challenge", rendered)
+            self.assertIn(f"{exception.id} [exception/active]", rendered)
+            self.assertIn("Stage: exception", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_lifecycle_memory_filter_and_blocked_candidate_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Thin candidate",
+                summary="Something happened.",
+                liability_score=2,
+            )
+            store.add(candidate)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle", "--memory", candidate.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory Filter: {candidate.id}", rendered)
+            self.assertIn(f"{candidate.id} [candidate/active]", rendered)
+            self.assertIn("Stage: candidate", rendered)
+            self.assertIn("blocked: missing", rendered)
+            self.assertIn("evidence_or_outcome", rendered)
+            self.assertIn("add missing reusable scenario evidence/scope/future-use lesson", rendered)
+
+
 class PromotionTests(unittest.TestCase):
     def test_candidate_to_situation_review_passes_when_gate_fields_exist(self) -> None:
         candidate = Memory.create(

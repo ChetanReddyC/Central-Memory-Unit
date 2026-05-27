@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
 from .onboarding import build_onboarding_seed
 from .promotion import promote_memory, review_promotion
@@ -239,6 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=MemoryType.SITUATION.value,
     )
     review_parser.set_defaults(func=cmd_review)
+
+    lifecycle_parser = subparsers.add_parser("lifecycle", help="Show the read-only Core Memory Lifecycle structural view.")
+    lifecycle_parser.add_argument("--memory", default="", help="Limit lifecycle view to one memory id.")
+    lifecycle_parser.set_defaults(func=cmd_lifecycle)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -687,6 +692,16 @@ def cmd_review(args: argparse.Namespace, store: MemoryStore) -> int:
         return 0
     review = review_promotion(store.list(), args.memory_id, MemoryType(args.to))
     print(review.render())
+    return 0
+
+
+def cmd_lifecycle(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_report(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+    )
+    print(report.render())
     return 0
 
 
