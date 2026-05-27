@@ -665,32 +665,39 @@ class SemanticAuditRecommendationsReport:
     drag: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     neutral: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     no_semantic: list[SemanticAuditRecommendationLine] = field(default_factory=list)
+    open_only: bool = False
 
     def render(self) -> str:
         lines = [
             "CMU Semantic Audit Recommendations",
             "Mode: read-only; no memory or receipt mutation.",
-            "",
-            "Link Receipts First",
-            *render_recommendation_group(self.no_link),
-            "",
-            "Resolve Remaining Semantic Evidence",
-            *render_recommendation_group(self.partial),
-            "",
-            "Inspect Semantic Drag",
-            *render_recommendation_group(self.drag),
-            "",
-            "Positive Semantic Signal",
-            *render_recommendation_group(self.strong),
-            "",
-            "Neutral Linked Semantic Evidence",
-            *render_recommendation_group(self.neutral),
-            "",
-            "No Semantic Evidence",
-            *render_recommendation_group(self.no_semantic),
-            "",
-            "Tuning Guidance: Do not tune thresholds or broaden semantic proposal behavior until linked per-memory evidence shows a repeated pattern.",
         ]
+        if self.open_only:
+            lines.append("Detail Filter: open semantic receipts only.")
+        lines.extend(
+            [
+                "",
+                "Link Receipts First",
+                *render_recommendation_group(self.no_link),
+                "",
+                "Resolve Remaining Semantic Evidence",
+                *render_recommendation_group(self.partial),
+                "",
+                "Inspect Semantic Drag",
+                *render_recommendation_group(self.drag),
+                "",
+                "Positive Semantic Signal",
+                *render_recommendation_group(self.strong),
+                "",
+                "Neutral Linked Semantic Evidence",
+                *render_recommendation_group(self.neutral),
+                "",
+                "No Semantic Evidence",
+                *render_recommendation_group(self.no_semantic),
+                "",
+                "Tuning Guidance: Do not tune thresholds or broaden semantic proposal behavior until linked per-memory evidence shows a repeated pattern.",
+            ]
+        )
         return "\n".join(lines)
 
 
@@ -1106,11 +1113,12 @@ def semantic_audit_recommendations(
     limit: int = 20,
     hours: int = 72,
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE,
+    open_only: bool = False,
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
     memory_ids = sorted(set(memory_by_id) | receipt_ids)
-    report = SemanticAuditRecommendationsReport()
+    report = SemanticAuditRecommendationsReport(open_only=open_only)
     commits: list[GitCommitMetadata] = []
     detail_error = ""
     if details:
@@ -1149,6 +1157,7 @@ def semantic_audit_recommendations(
                 detail_error=detail_error,
                 hours=hours,
                 min_score=min_score,
+                open_only=open_only,
             )
             if details and semantic_receipts
             else [],
@@ -1182,7 +1191,9 @@ def semantic_receipt_details(
     detail_error: str,
     hours: int,
     min_score: float,
+    open_only: bool = False,
 ) -> list[SemanticAuditReceiptDetail]:
+    relevant = [receipt for receipt in receipts if not receipt.commit_hash and not receipt.outcome_signal] if open_only else receipts
     return [
         semantic_receipt_detail(
             receipt,
@@ -1192,7 +1203,7 @@ def semantic_receipt_details(
             hours=hours,
             min_score=min_score,
         )
-        for receipt in sorted(receipts, key=lambda item: item.surfaced_at)
+        for receipt in sorted(relevant, key=lambda item: item.surfaced_at)
     ]
 
 

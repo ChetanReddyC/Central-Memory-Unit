@@ -329,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_audit_parser.add_argument("--memory", default="", help="Limit semantic audit to one memory id.")
     semantic_audit_parser.add_argument("--recommendations", action="store_true", help="Group semantic audit evidence into read-only next-action recommendations.")
     semantic_audit_parser.add_argument("--details", action="store_true", help="Include receipt-level semantic evidence and auto-link candidate details.")
+    semantic_audit_parser.add_argument("--open-only", action="store_true", help="With --recommendations --details, show only unresolved semantic receipt details.")
     semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
@@ -816,10 +817,18 @@ def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
     use_store = MemoryUseStore(args.root)
     if args.details and not args.recommendations:
         raise SystemExit("semantic-audit --details is only available with --recommendations")
+    if args.open_only and not args.details:
+        raise SystemExit("semantic-audit --open-only is only available with --recommendations --details")
     if args.recommendations:
         if args.memory:
             raise SystemExit("semantic-audit --recommendations reviews all memories and does not accept --memory")
-        report = semantic_audit_recommendations(use_store.list(), store.list(), root=args.root, details=args.details)
+        report = semantic_audit_recommendations(
+            use_store.list(),
+            store.list(),
+            root=args.root,
+            details=args.details,
+            open_only=args.open_only,
+        )
         print(report.render())
         return 0
     report = semantic_audit(use_store.list(), store.list(), args.memory)
