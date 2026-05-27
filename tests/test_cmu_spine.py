@@ -2795,6 +2795,7 @@ class MemoryUseTests(unittest.TestCase):
             audit_rendered = audit_output.getvalue()
             self.assertIn("Semantic-Assisted Linked: 1", audit_rendered)
             self.assertIn("Semantic-Assisted Resolved Without Commit: 1", audit_rendered)
+            self.assertIn("Semantic-Assisted Unresolved: 0", audit_rendered)
             self.assertIn("resolved without commit evidence", audit_rendered)
 
             recommendations_output = StringIO()
@@ -3760,6 +3761,10 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("message: Add semantic audit details", rendered)
             self.assertIn("overlap: cmu/usage.py", rendered)
             self.assertIn("reasons: time window, file overlap: cmu/usage.py", rendered)
+            self.assertIn("No-Commit Resolution Options", rendered)
+            self.assertIn(f"command: cmu use-resolve {receipt.id} --outcome no-checkpoint", rendered)
+            self.assertIn(f"command: cmu use-resolve {receipt.id} --outcome not-applicable", rendered)
+            self.assertIn(f"command: cmu use-resolve {receipt.id} --outcome superseded", rendered)
             [loaded] = MemoryUseStore(tmp).list()
             self.assertEqual(loaded.commit_hash, "")
 
@@ -3819,9 +3824,10 @@ class MemoryUseTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("Resolve Remaining Semantic Evidence", rendered)
             self.assertIn(f"{memory.id} Task-start preflight stays quiet unless useful: resolve remaining semantic receipts before judging semantic fit", rendered)
-            self.assertIn("(2 semantic receipts, 1 linked, 0 resolved, 1 strong, 0 drag)", rendered)
+            self.assertIn("(2 semantic receipts, 1 linked, 0 resolved, 1 unresolved, 1 strong, 0 drag)", rendered)
             self.assertIn(f"{linked_receipt.id} preflight linked; semantic=local/direct-match score=0.74", rendered)
             self.assertIn(f"{unresolved_receipt.id} start unlinked; semantic=local/direct-match score=0.70", rendered)
+            self.assertIn(f"command: cmu use-resolve {unresolved_receipt.id} --outcome no-checkpoint", rendered)
             self.assertNotIn(f"Positive Semantic Signal\n- {memory.id}", rendered)
 
     def test_cli_semantic_audit_recommendations_rejects_memory_filter(self) -> None:

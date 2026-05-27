@@ -492,6 +492,7 @@ class SemanticAuditReport:
     semantic_receipts: int
     semantic_linked: int
     semantic_resolved_without_commit: int
+    semantic_unresolved: int
     semantic_strong_committed: int
     semantic_drag_signals: int
     semantic_mode_counts: dict[str, int]
@@ -515,6 +516,7 @@ class SemanticAuditReport:
                 f"Semantic-Assisted Receipts: {self.semantic_receipts}",
                 f"Semantic-Assisted Linked: {self.semantic_linked}",
                 f"Semantic-Assisted Resolved Without Commit: {self.semantic_resolved_without_commit}",
+                f"Semantic-Assisted Unresolved: {self.semantic_unresolved}",
                 f"Semantic-Assisted Strong Committed: {self.semantic_strong_committed}",
                 f"Semantic-Assisted Drag Signals: {self.semantic_drag_signals}",
                 f"Semantic Modes: {format_source_counts(self.semantic_mode_counts)}",
@@ -541,13 +543,11 @@ class SemanticAuditReport:
             if self.memory_id:
                 return "No semantic-assisted receipts for this memory yet; keep collecting evidence before judging semantic fit."
             return "No semantic-assisted receipts yet; keep semantic retrieval opt-in and collect evidence before tuning."
-        semantic_closed = self.semantic_linked
-        semantic_unresolved = max(0, self.semantic_receipts - semantic_closed)
         if self.semantic_linked == 0:
             return "Link semantic-assisted receipts to commits before judging semantic usefulness or drag."
         if self.semantic_drag_signals and self.semantic_drag_signals >= self.semantic_strong_committed:
             return "Inspect semantic-assisted drag before broadening semantic retrieval or changing thresholds."
-        if semantic_unresolved:
+        if self.semantic_unresolved:
             return "Resolve remaining semantic-assisted receipts before treating semantic usefulness as settled."
         if self.semantic_strong_committed:
             return "Semantic retrieval has positive linked evidence; keep collecting focused receipts before tuning thresholds."
@@ -563,6 +563,7 @@ class SemanticAuditRecommendationLine:
     semantic_receipts: int
     semantic_linked: int
     semantic_resolved_without_commit: int
+    semantic_unresolved: int
     semantic_strong_committed: int
     semantic_drag_signals: int
     action: str
@@ -574,6 +575,7 @@ class SemanticAuditRecommendationLine:
             f"- {memory_label}: {self.action} "
             f"({self.semantic_receipts} semantic receipts, {self.semantic_linked} linked, "
             f"{self.semantic_resolved_without_commit} resolved, "
+            f"{self.semantic_unresolved} unresolved, "
             f"{self.semantic_strong_committed} strong, {self.semantic_drag_signals} drag)"
         )
         if not self.details:
@@ -646,6 +648,13 @@ class SemanticAuditReceiptDetail:
             for candidate in self.candidate_commits:
                 lines.append(candidate.render())
                 lines.append(f"      command: cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
+        lines.append("    No-Commit Resolution Options:")
+        for outcome in sorted(RESOLVED_WITHOUT_COMMIT_OUTCOMES):
+            cli_outcome = outcome.replace("_", "-")
+            lines.append(
+                f"      command: cmu use-resolve {self.receipt_id} --outcome {cli_outcome} "
+                '--note "<why no Git checkpoint should be linked>"'
+            )
         return lines
 
 @dataclass
@@ -1064,6 +1073,7 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
     semantic_receipts = [receipt for receipt in scoped_receipts if is_semantic_assisted(receipt)]
     linked = [receipt for receipt in semantic_receipts if receipt.commit_hash or receipt.outcome_signal]
     resolved = [receipt for receipt in semantic_receipts if is_resolved_without_commit(receipt)]
+    unresolved = [receipt for receipt in semantic_receipts if not receipt.commit_hash and not receipt.outcome_signal]
     strong = [
         receipt
         for receipt in linked
@@ -1075,6 +1085,7 @@ def semantic_audit(receipts: list[MemoryUseReceipt], memories: list[Memory], mem
         semantic_receipts=len(semantic_receipts),
         semantic_linked=len(linked),
         semantic_resolved_without_commit=len(resolved),
+        semantic_unresolved=len(unresolved),
         semantic_strong_committed=len(strong),
         semantic_drag_signals=len(drag),
         semantic_mode_counts=semantic_mode_counts(semantic_receipts),
@@ -1127,6 +1138,7 @@ def semantic_audit_recommendations(
             semantic_receipts=len(semantic_receipts),
             semantic_linked=len(linked),
             semantic_resolved_without_commit=len(resolved),
+            semantic_unresolved=len(unresolved),
             semantic_strong_committed=len(strong),
             semantic_drag_signals=len(drag),
             action=semantic_recommendation_action(len(semantic_receipts), len(linked), len(strong), len(drag), len(resolved)),
