@@ -681,6 +681,10 @@ class SemanticAuditRecommendationsReport:
     no_semantic: list[SemanticAuditRecommendationLine] = field(default_factory=list)
     open_only: bool = False
     commands_only: bool = False
+    receipt_id: str = ""
+    limit: int = 20
+    hours: int = 72
+    min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE
 
     def render(self) -> str:
         if self.commands_only:
@@ -691,6 +695,10 @@ class SemanticAuditRecommendationsReport:
         ]
         if self.open_only:
             lines.append("Detail Filter: open semantic receipts only.")
+        if self.receipt_id:
+            lines.append(f"Receipt Filter: {self.receipt_id}")
+        if self.details_are_tuned():
+            lines.append(f"Candidate Window: limit={self.limit}, hours={self.hours}, min-score={self.min_score:.2f}")
         lines.extend(
             [
                 "",
@@ -723,6 +731,10 @@ class SemanticAuditRecommendationsReport:
             "Mode: read-only; no memory or receipt mutation.",
             "Detail Filter: open semantic receipts only.",
         ]
+        if self.receipt_id:
+            lines.append(f"Receipt Filter: {self.receipt_id}")
+        if self.details_are_tuned():
+            lines.append(f"Candidate Window: limit={self.limit}, hours={self.hours}, min-score={self.min_score:.2f}")
         command_lines: list[str] = []
         for group in [self.no_link, self.partial, self.drag, self.strong, self.neutral]:
             for item in group:
@@ -734,6 +746,9 @@ class SemanticAuditRecommendationsReport:
             lines.extend(command_lines)
         lines.append("Review before running: choose either one use-link command or one use-resolve command per receipt.")
         return "\n".join(lines)
+
+    def details_are_tuned(self) -> bool:
+        return self.limit != 20 or self.hours != 72 or self.min_score != DEFAULT_AUTO_LINK_MIN_SCORE
 
 
 @dataclass
@@ -1150,11 +1165,19 @@ def semantic_audit_recommendations(
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE,
     open_only: bool = False,
     commands_only: bool = False,
+    receipt_id: str = "",
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
     memory_ids = sorted(set(memory_by_id) | receipt_ids)
-    report = SemanticAuditRecommendationsReport(open_only=open_only, commands_only=commands_only)
+    report = SemanticAuditRecommendationsReport(
+        open_only=open_only,
+        commands_only=commands_only,
+        receipt_id=receipt_id,
+        limit=limit,
+        hours=hours,
+        min_score=min_score,
+    )
     commits: list[GitCommitMetadata] = []
     detail_error = ""
     if details:
@@ -1194,6 +1217,7 @@ def semantic_audit_recommendations(
                 hours=hours,
                 min_score=min_score,
                 open_only=open_only,
+                receipt_id=receipt_id,
             )
             if details and semantic_receipts
             else [],
@@ -1228,8 +1252,11 @@ def semantic_receipt_details(
     hours: int,
     min_score: float,
     open_only: bool = False,
+    receipt_id: str = "",
 ) -> list[SemanticAuditReceiptDetail]:
     relevant = [receipt for receipt in receipts if not receipt.commit_hash and not receipt.outcome_signal] if open_only else receipts
+    if receipt_id:
+        relevant = [receipt for receipt in relevant if receipt.id == receipt_id]
     return [
         semantic_receipt_detail(
             receipt,
