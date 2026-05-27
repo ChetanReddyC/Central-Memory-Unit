@@ -342,6 +342,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="With --recommendations, render only one recommendation bucket.",
     )
+    semantic_audit_parser.add_argument(
+        "--command-type",
+        choices=["all", "link", "resolve"],
+        default="all",
+        help="With --commands-only, render all closure commands, only use-link commands, or only use-resolve commands.",
+    )
+    semantic_audit_parser.add_argument(
+        "--resolve-outcome",
+        choices=["all", "no-checkpoint", "not-applicable", "superseded"],
+        default="all",
+        help="With --commands-only, limit use-resolve command options to one outcome.",
+    )
     semantic_audit_parser.set_defaults(func=cmd_semantic_audit)
 
     return parser
@@ -833,6 +845,10 @@ def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
         raise SystemExit("semantic-audit --open-only is only available with --recommendations --details")
     if args.commands_only and not (args.recommendations and args.details and args.open_only):
         raise SystemExit("semantic-audit --commands-only requires --recommendations --details --open-only")
+    if args.command_type != "all" and not args.commands_only:
+        raise SystemExit("semantic-audit --command-type requires --commands-only")
+    if args.resolve_outcome != "all" and not args.commands_only:
+        raise SystemExit("semantic-audit --resolve-outcome requires --commands-only")
     if args.receipt and not (args.recommendations and args.details):
         raise SystemExit("semantic-audit --receipt requires --recommendations --details")
     if (args.limit != 20 or args.hours != 72 or args.min_score != DEFAULT_AUTO_LINK_MIN_SCORE or args.candidate_limit) and not (args.recommendations and args.details):
@@ -857,6 +873,8 @@ def cmd_semantic_audit(args: argparse.Namespace, store: MemoryStore) -> int:
             commands_only=args.commands_only,
             receipt_id=args.receipt,
             action_filter=args.action,
+            command_type=args.command_type,
+            resolve_outcome=args.resolve_outcome,
         )
         print(report.render())
         return 0

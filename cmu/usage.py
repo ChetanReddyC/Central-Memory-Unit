@@ -620,19 +620,28 @@ class SemanticAuditReceiptDetail:
     auto_link_reason: str = ""
     candidate_commits: list[SemanticAuditCommitCandidateDetail] = field(default_factory=list)
 
-    def command_lines(self) -> list[str]:
+    def command_lines(self, *, command_type: str = "all", resolve_outcome: str = "all") -> list[str]:
         if self.linked or self.resolved_without_commit:
             return []
-        lines = [f"# {self.receipt_id} {self.source_command} semantic={self.semantic_mode}/{self.semantic_status or 'unknown'}"]
-        for candidate in self.candidate_commits:
-            lines.append(f"cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
-        for outcome in sorted(RESOLVED_WITHOUT_COMMIT_OUTCOMES):
-            cli_outcome = outcome.replace("_", "-")
-            lines.append(
-                f'cmu use-resolve {self.receipt_id} --outcome {cli_outcome} '
-                '--note "<why no Git checkpoint should be linked>"'
-            )
-        return lines
+        commands: list[str] = []
+        if command_type in {"all", "link"}:
+            for candidate in self.candidate_commits:
+                commands.append(f"cmu use-link {self.receipt_id} --commit {candidate.commit_hash}")
+        if command_type in {"all", "resolve"}:
+            for outcome in sorted(RESOLVED_WITHOUT_COMMIT_OUTCOMES):
+                cli_outcome = outcome.replace("_", "-")
+                if resolve_outcome != "all" and cli_outcome != resolve_outcome:
+                    continue
+                commands.append(
+                    f'cmu use-resolve {self.receipt_id} --outcome {cli_outcome} '
+                    '--note "<why no Git checkpoint should be linked>"'
+                )
+        if not commands:
+            return []
+        return [
+            f"# {self.receipt_id} {self.source_command} semantic={self.semantic_mode}/{self.semantic_status or 'unknown'}",
+            *commands,
+        ]
 
     def render(self) -> list[str]:
         state = "resolved-without-commit" if self.resolved_without_commit else ("linked" if self.linked else "unlinked")
@@ -687,6 +696,8 @@ class SemanticAuditRecommendationsReport:
     min_score: float = DEFAULT_AUTO_LINK_MIN_SCORE
     candidate_limit: int = 0
     action_filter: str = ""
+    command_type: str = "all"
+    resolve_outcome: str = "all"
 
     def render(self) -> str:
         if self.commands_only:
@@ -725,11 +736,20 @@ class SemanticAuditRecommendationsReport:
             lines.append(self.render_candidate_window())
         if self.action_filter:
             lines.append(f"Action Filter: {self.action_filter}")
+        if self.command_type != "all":
+            lines.append(f"Command Filter: {self.command_type}")
+        if self.resolve_outcome != "all":
+            lines.append(f"Resolve Outcome Filter: {self.resolve_outcome}")
         command_lines: list[str] = []
         for _, group in self.selected_groups(include_no_semantic=False):
             for item in group:
                 for detail in item.details:
-                    command_lines.extend(detail.command_lines())
+                    command_lines.extend(
+                        detail.command_lines(
+                            command_type=self.command_type,
+                            resolve_outcome=self.resolve_outcome,
+                        )
+                    )
         if not command_lines:
             lines.append("No unresolved semantic receipt commands found.")
         else:
@@ -1193,6 +1213,8 @@ def semantic_audit_recommendations(
     commands_only: bool = False,
     receipt_id: str = "",
     action_filter: str = "",
+    command_type: str = "all",
+    resolve_outcome: str = "all",
 ) -> SemanticAuditRecommendationsReport:
     memory_by_id = {memory.id: memory for memory in memories}
     receipt_ids = {receipt.memory_id for receipt in receipts}
@@ -1206,6 +1228,8 @@ def semantic_audit_recommendations(
         min_score=min_score,
         candidate_limit=candidate_limit,
         action_filter=action_filter,
+        command_type=command_type,
+        resolve_outcome=resolve_outcome,
     )
     commits: list[GitCommitMetadata] = []
     detail_error = ""
