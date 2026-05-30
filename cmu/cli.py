@@ -7,6 +7,7 @@ from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .governance import governance_report
+from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -98,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
     relations_parser = subparsers.add_parser("relations", help="Inspect graph relationships for one memory.")
     relations_parser.add_argument("memory_id", help="Memory id to inspect.")
     relations_parser.set_defaults(func=cmd_relations)
+
+    graph_parser = subparsers.add_parser("graph", help="Show the read-only Graph Memory View.")
+    graph_parser.add_argument("memory_id", nargs="?", default="", help="Optional root memory id for a focused path.")
+    graph_parser.add_argument("--depth", type=int, default=3, help="Maximum relationship depth for a focused path.")
+    graph_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history in the graph.")
+    graph_parser.set_defaults(func=cmd_graph)
 
     preflight_parser = subparsers.add_parser("preflight", help="Run a task-start CMU preflight.")
     preflight_parser.add_argument("prompt", nargs="*", help="Task prompt to check against memory.")
@@ -632,6 +639,25 @@ def cmd_relations(args: argparse.Namespace, store: MemoryStore) -> int:
             reason = f" - {relationship.reason}" if relationship.reason else ""
             lines.append(f"- {relationship.type.value} <- {source.id} {source.title}{reason}")
     print("\n".join(lines))
+    return 0
+
+
+def cmd_graph(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.depth < 1:
+        raise SystemExit("graph --depth must be at least 1")
+    memories = store.list()
+    if args.include_retired:
+        memories.extend(store.list(status=MemoryStatus.RETIRED))
+    try:
+        report = graph_memory_view_report(
+            memories,
+            root_id=args.memory_id,
+            max_depth=args.depth,
+            include_retired=args.include_retired,
+        )
+    except KeyError as error:
+        raise SystemExit(error.args[0]) from error
+    print(report.render())
     return 0
 
 

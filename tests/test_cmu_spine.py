@@ -232,6 +232,183 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertEqual(loaded_ids, expected_ids)
 
 
+class GraphMemoryViewTests(unittest.TestCase):
+    def test_cli_graph_traverses_multi_hop_paths_and_marks_cycle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback repeats stale release marker",
+                summary="Checkout rollback retried against stale release marker state.",
+            )
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Verify release marker before deployment retry",
+                summary="Deployment retries must verify release marker state.",
+                approved_by="Release owner",
+            )
+            exception = Memory.create(
+                type=MemoryType.EXCEPTION,
+                title="Marker check can be skipped for dry-run rollback",
+                summary="Dry-run rollback does not write release marker state.",
+            )
+            anti_pattern = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Blindly rerun deployment rollback",
+                summary="Blind rollback retries can hide stale marker state.",
+            )
+            situation.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                    reason="The failed rollback teaches the marker-check practice.",
+                )
+            )
+            practice.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.SUPPORTS,
+                    target_id=situation.id,
+                    reason="The practice points back to the incident evidence.",
+                )
+            )
+            exception.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.EXCEPTION_TO,
+                    target_id=practice.id,
+                    reason="Dry-run rollback does not mutate the marker.",
+                )
+            )
+            anti_pattern.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.CHALLENGES,
+                    target_id=practice.id,
+                    reason="Blind retry bypasses the required marker inspection.",
+                )
+            )
+            for memory in [situation, practice, exception, anti_pattern]:
+                store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "graph", situation.id, "--depth", "4"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Graph Memory View", rendered)
+            self.assertIn("Mode: read-only graph path proof", rendered)
+            self.assertIn(f"- {situation.id} [situation/active] {situation.title}", rendered)
+            self.assertIn(f"-> related_practice: {practice.id} [practice/active] {practice.title}", rendered)
+            self.assertIn(f"-> supports: {situation.id} [situation/active] {situation.title} [cycle/reference]", rendered)
+            self.assertIn(f"<- exception_to: {exception.id} [exception/active] {exception.title}", rendered)
+            self.assertIn(f"<- challenges: {anti_pattern.id} [anti-pattern/active] {anti_pattern.title}", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_graph_global_summary_reports_components_isolates_and_dangling_links(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback marker mismatch",
+                summary="Rollback marker state was stale.",
+            )
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Inspect release markers",
+                summary="Inspect release markers before rollback retries.",
+                approved_by="Release owner",
+            )
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Does billing rollback share release marker state?",
+                summary="Billing marker ownership remains unknown.",
+            )
+            anti_pattern = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Retry against a deleted practice",
+                summary="A stale relationship should be repaired before use.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.CHALLENGES,
+                        target_id="mem_deletedpractice",
+                        reason="The original practice was retired outside this fixture.",
+                    )
+                ],
+            )
+            situation.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                    reason="The incident teaches marker inspection.",
+                )
+            )
+            for memory in [situation, practice, question, anti_pattern]:
+                store.add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "graph"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("- Memories: 4", rendered)
+            self.assertIn("- Relationships: 2", rendered)
+            self.assertIn("- Connected Components: 3", rendered)
+            self.assertIn("- Connected Memories: 2", rendered)
+            self.assertIn("- Isolated Memories: 2", rendered)
+            self.assertIn("- Dangling Relationships: 1", rendered)
+            self.assertIn(f"- {question.id} [question/active] {question.title}", rendered)
+            self.assertIn(f"- {anti_pattern.id} [anti-pattern/active] {anti_pattern.title}", rendered)
+            self.assertIn("mem_deletedpractice [missing]", rendered)
+            self.assertIn("repair dangling relationships", rendered)
+
+    def test_cli_graph_include_retired_surfaces_resolved_question_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Does checkout rollback share release marker state?",
+                summary="Checkout rollback marker ownership remains unresolved.",
+                scope=MemoryScope(ownership=["Release owner"], code=["checkout"], workflow=["deployment"]),
+                evidence=["Logs refer to release_marker_id."],
+            )
+            store.add(question)
+            with redirect_stdout(StringIO()):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "resolve-question",
+                        question.id,
+                        "--outcome",
+                        "situation",
+                        "--answer",
+                        "Checkout rollback shares the deployment release marker.",
+                        "--resolved-by",
+                        "Release owner",
+                        "--evidence",
+                        "Code inspection found the same release_marker_id read and write path.",
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            situation = store.list(type=MemoryType.SITUATION)[0]
+
+            active_only = StringIO()
+            with redirect_stdout(active_only):
+                active_exit = main(["--root", tmp, "graph", situation.id])
+            self.assertEqual(active_exit, 0)
+            self.assertIn(f"-> derived_from: {question.id} [missing]", active_only.getvalue())
+            self.assertIn("- Dangling Relationships: 1", active_only.getvalue())
+
+            history = StringIO()
+            with redirect_stdout(history):
+                history_exit = main(["--root", tmp, "graph", situation.id, "--include-retired"])
+            history_rendered = history.getvalue()
+            self.assertEqual(history_exit, 0)
+            self.assertIn("History: active + retired", history_rendered)
+            self.assertIn(f"-> derived_from: {question.id} [question/retired] {question.title}", history_rendered)
+            self.assertIn("- Dangling Relationships: 0", history_rendered)
+
+
 class PreflightTests(unittest.TestCase):
     def test_preflight_returns_action_note_for_relevant_memory(self) -> None:
         memory = Memory.create(
