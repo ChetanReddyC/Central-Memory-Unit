@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .governance import governance_report
 from .gravity import gravity_report
 from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
@@ -289,6 +290,10 @@ def build_parser() -> argparse.ArgumentParser:
     gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
     gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
     gravity_parser.set_defaults(func=cmd_gravity)
+
+    governance_parser = subparsers.add_parser("governance", help="Show the read-only Practice/Anchor governance view.")
+    governance_parser.add_argument("--memory", default="", help="Limit governance view to one stable memory id.")
+    governance_parser.set_defaults(func=cmd_governance)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -820,6 +825,16 @@ def cmd_lifecycle(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:
     report = gravity_report(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_governance(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = governance_report(
         store.list(),
         MemoryUseStore(args.root).list(),
         memory_id=args.memory,

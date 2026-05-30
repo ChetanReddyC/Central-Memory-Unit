@@ -5803,6 +5803,126 @@ class MemoryGravityTests(unittest.TestCase):
             self.assertIn("review duplicate/related memories", rendered)
 
 
+class PracticeAnchorGovernanceTests(unittest.TestCase):
+    def test_cli_governance_connects_authority_use_review_and_active_challenge(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            approved = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Run CMU start for structural work",
+                summary="Meaningful CMU implementation should enter through the Work Cycle.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Start command coordinates trigger, onboarding, preflight, and receipts."],
+                use_this_path="Use start for large implementation tasks.",
+                avoid_this="Do not create receipts when CMU stays quiet.",
+                challenge_only_if="The task is low-risk and follows an obvious local pattern.",
+                liability_score=4,
+                confidence=0.85,
+                approved_by="CMU owner",
+            )
+            missing_authority = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Do not trust broad unapproved stable memory",
+                summary="Stable memory needs explicit owner/team authority before broader trust.",
+                scope=MemoryScope(code=["cmu"], workflow=["governance"], actor=["agent"]),
+                evidence=["Planning docs require authority for Practice and Anchor memory."],
+                use_this_path="Inspect approval before expanding trust.",
+                avoid_this="Do not treat unapproved stable memory as settled precedent.",
+                challenge_only_if="Authority has already been recorded elsewhere.",
+                liability_score=5,
+                confidence=0.8,
+            )
+            challenged = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use preflight before agent implementation",
+                summary="Agents should check CMU memory before meaningful implementation work.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Manual preflight validation surfaced the expected Action Note."],
+                use_this_path="Run preflight before implementation.",
+                avoid_this="Do not dump all memory into context.",
+                challenge_only_if="The task is tiny, local, and obvious.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU owner",
+            )
+            for memory in [approved, missing_authority, challenged]:
+                store.add(memory)
+            add_strong_receipts(tmp, approved, count=2)
+            challenge = challenge_stable_memory(
+                store.list(),
+                ChallengeRequest(
+                    memory_id=challenged.id,
+                    mismatch="Full start may be better than raw preflight for large implementation.",
+                    benefit="Governance can distinguish task-start surfaces.",
+                    risk="Agents may overuse the wrong entrypoint.",
+                    rollback="Keep direct preflight available for focused checks.",
+                    challenged_by="agent",
+                ),
+            )
+            assert challenge.challenge_memory is not None
+            store.add(challenge.challenge_memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "governance"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Practice/Anchor Governance", rendered)
+            self.assertIn("Mode: read-only stable-memory governance proof", rendered)
+            self.assertIn("Stable Memories: 3", rendered)
+            self.assertIn("Approved: 2", rendered)
+            self.assertIn("Missing Authority: 1", rendered)
+            self.assertIn("Active Challenges: 1", rendered)
+            self.assertIn(f"{approved.id} [practice/active]", rendered)
+            self.assertIn("Authority: approved by CMU owner", rendered)
+            self.assertIn("State: ready: strengthen evidence", rendered)
+            self.assertIn("2 linked uses; 2 committed (2 strong)", rendered)
+            self.assertIn(f"{missing_authority.id} [anchor/active]", rendered)
+            self.assertIn("Authority: missing explicit approval", rendered)
+            self.assertIn("State: blocked: missing authority", rendered)
+            self.assertIn(f"{challenged.id} [practice/active]", rendered)
+            self.assertIn("State: blocked: active challenge", rendered)
+            self.assertIn(challenge.challenge_memory.id, rendered)
+            self.assertIn("Allowed Paths: resolve exception, resolve strengthen, resolve update, resolve retire, resolve split", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_governance_memory_filter_reports_drag_review_path(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Deployment retries need marker checks",
+                summary="Deployment retry flows must verify release markers before retrying.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Rollback passed after marker verification was restored."],
+                use_this_path="Verify release markers before retrying deployment.",
+                avoid_this="Do not retry deployment blindly.",
+                challenge_only_if="The deployment path has no release marker concept.",
+                liability_score=5,
+                confidence=0.85,
+                approved_by="Release owner",
+            )
+            MemoryStore(tmp).add(memory)
+            add_drag_receipts(tmp, memory, count=2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "governance", "--memory", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory Filter: {memory.id}", rendered)
+            self.assertIn(f"{memory.id} [practice/active]", rendered)
+            self.assertIn("Authority: approved by Release owner", rendered)
+            self.assertIn("Scope: code=deploy; workflow=deployment; actor=agent", rendered)
+            self.assertIn("State: ready: governance review", rendered)
+            self.assertIn("2 linked uses; 0 committed (0 strong)", rendered)
+            self.assertIn("2 drag signals", rendered)
+            self.assertIn("Challenge State: none", rendered)
+            self.assertIn("Allowed Paths: follow within scope, strengthen, challenge, scope-review, split, retire", rendered)
+            self.assertIn("challenge, narrow, split, retire, or strengthen", rendered)
+
+
 class PromotionTests(unittest.TestCase):
     def test_candidate_to_situation_review_passes_when_gate_fields_exist(self) -> None:
         candidate = Memory.create(
