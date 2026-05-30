@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .analytics import usefulness_analytics_report
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .governance import governance_report
 from .gravity import gravity_report
@@ -294,6 +295,10 @@ def build_parser() -> argparse.ArgumentParser:
     governance_parser = subparsers.add_parser("governance", help="Show the read-only Practice/Anchor governance view.")
     governance_parser.add_argument("--memory", default="", help="Limit governance view to one stable memory id.")
     governance_parser.set_defaults(func=cmd_governance)
+
+    analytics_parser = subparsers.add_parser("analytics", help="Show the read-only Usefulness and Drag Analytics view.")
+    analytics_parser.add_argument("--memory", default="", help="Limit analytics view to one memory id.")
+    analytics_parser.set_defaults(func=cmd_analytics)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -835,6 +840,16 @@ def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_governance(args: argparse.Namespace, store: MemoryStore) -> int:
     report = governance_report(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_analytics(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = usefulness_analytics_report(
         store.list(),
         MemoryUseStore(args.root).list(),
         memory_id=args.memory,

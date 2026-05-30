@@ -5923,6 +5923,114 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
             self.assertIn("challenge, narrow, split, retire, or strengthen", rendered)
 
 
+class UsefulnessDragAnalyticsTests(unittest.TestCase):
+    def test_cli_analytics_classifies_useful_drag_mixed_and_evidence_gap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            useful = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy checks migration order",
+                summary="Billing deploy work should check migration order.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Deploy passed after migration order was corrected."],
+                liability_score=4,
+                confidence=0.8,
+            )
+            mixed = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should surface memory only when it changes action.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Manual preflight validation surfaced useful guidance."],
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU owner",
+            )
+            drag = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Deployment retries need marker checks",
+                summary="Deployment retry flows must verify release markers before retrying.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Rollback passed after marker verification was restored."],
+                liability_score=5,
+                confidence=0.85,
+                approved_by="Release owner",
+            )
+            gap = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback trace",
+                summary="Checkout rollback work may produce reusable deployment lessons.",
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+            )
+            for memory in [useful, mixed, drag, gap]:
+                store.add(memory)
+            add_strong_receipts(tmp, useful, count=2)
+            add_strong_receipts(tmp, mixed, count=2)
+            add_drag_receipts(tmp, mixed, count=1)
+            add_drag_receipts(tmp, drag, count=2)
+            unlinked = MemoryUseReceipt.create(
+                gap,
+                PreflightQuery(prompt="Investigate checkout rollback", actor="agent", area="checkout", workflow=["deployment"]),
+                Match(memory=gap, score=4.0, matched_terms=["checkout", "deployment"]),
+                source_command="start",
+            )
+            MemoryUseStore(tmp).add(unlinked)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "analytics"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Usefulness and Drag Analytics", rendered)
+            self.assertIn("Mode: read-only usefulness/drag proof", rendered)
+            self.assertIn("Memories With Evidence: 4", rendered)
+            self.assertIn("Useful: 1", rendered)
+            self.assertIn("Mixed: 1", rendered)
+            self.assertIn("Drag: 1", rendered)
+            self.assertIn("Evidence Gaps: 1", rendered)
+            self.assertIn(f"{useful.id} [situation] Billing deploy checks migration order", rendered)
+            self.assertIn("Verdict: useful", rendered)
+            self.assertIn("Evidence Readiness: closed enough for first-pass judgment", rendered)
+            self.assertIn(f"{mixed.id} [practice] Task-start preflight stays quiet unless useful", rendered)
+            self.assertIn("Verdict: mixed", rendered)
+            self.assertIn("Governance: ready: governance review", rendered)
+            self.assertIn(f"{drag.id} [practice] Deployment retries need marker checks", rendered)
+            self.assertIn("Verdict: drag", rendered)
+            self.assertIn("review scope and wording", rendered)
+            self.assertIn(f"{gap.id} [situation] Checkout rollback trace", rendered)
+            self.assertIn("Verdict: evidence-gap", rendered)
+            self.assertIn("link or resolve receipts before claiming usefulness or drag", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_analytics_filter_keeps_stable_authority_block_visible(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Run CMU start for structural work",
+                summary="Meaningful CMU implementation should enter through the Work Cycle.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Start command coordinates trigger, onboarding, preflight, and receipts."],
+                liability_score=4,
+                confidence=0.85,
+            )
+            MemoryStore(tmp).add(memory)
+            add_strong_receipts(tmp, memory, count=2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "analytics", "--memory", memory.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory Filter: {memory.id}", rendered)
+            self.assertIn(f"{memory.id} [practice] Run CMU start for structural work", rendered)
+            self.assertIn("Verdict: useful", rendered)
+            self.assertIn("Governance: blocked: missing authority", rendered)
+            self.assertIn("resolve governance first; analytics verdict is useful", rendered)
+            self.assertIn("Retrieval Adjustment: +0.50", rendered)
+
+
 class PromotionTests(unittest.TestCase):
     def test_candidate_to_situation_review_passes_when_gate_fields_exist(self) -> None:
         candidate = Memory.create(
