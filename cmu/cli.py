@@ -9,10 +9,11 @@ from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_sta
 from .governance import governance_report
 from .gravity import gravity_report
 from .lifecycle import lifecycle_report
-from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
+from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
 from .promotion import promote_memory, review_promotion
+from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
     PersistentSemanticIndex,
@@ -345,6 +346,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
     anti_pattern_parser.set_defaults(func=cmd_anti_pattern)
+
+    question_parser = subparsers.add_parser("question", help="Show the read-only Question workflow view.")
+    question_parser.add_argument("prompt", nargs="*", help="Optional task prompt to test against unresolved questions.")
+    question_parser.add_argument("--memory", default="", help="Limit question view to one memory id.")
+    question_parser.add_argument("--include-retired", action="store_true", help="Include answered/retired Question memories.")
+    question_parser.add_argument("--actor", default="developer")
+    question_parser.add_argument("--area", default="")
+    question_parser.add_argument("--file", action="append", default=[])
+    question_parser.add_argument("--workflow", action="append", default=[])
+    question_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    question_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    question_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    question_parser.set_defaults(func=cmd_question)
+
+    resolve_question_parser = subparsers.add_parser("resolve-question", help="Answer and retire a Question memory.")
+    resolve_question_parser.add_argument("question_id", help="Active Question memory id to resolve.")
+    resolve_question_parser.add_argument("--outcome", choices=["retire", "situation", "exception"], required=True)
+    resolve_question_parser.add_argument("--answer", required=True, help="Evidence-backed answer to the unresolved question.")
+    resolve_question_parser.add_argument("--resolved-by", required=True, help="Owner or team resolving the question.")
+    resolve_question_parser.add_argument("--evidence", action="append", default=[], required=True)
+    resolve_question_parser.add_argument("--title", default="", help="Optional title for a Situation/Exception outcome memory.")
+    resolve_question_parser.add_argument("--use-path", default="", help="Optional future-use path for the outcome memory.")
+    resolve_question_parser.add_argument("--avoid", default="", help="Optional warning for the outcome memory.")
+    resolve_question_parser.add_argument("--review-if", default="", help="Optional review condition for the outcome memory.")
+    resolve_question_parser.set_defaults(func=cmd_resolve_question)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -948,6 +979,48 @@ def cmd_anti_pattern(args: argparse.Namespace, store: MemoryStore) -> int:
         semantic_index=semantic_index,
     )
     print(report.render())
+    return 0
+
+
+def cmd_question(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    memories = store.list()
+    if args.include_retired:
+        memories = [*memories, *store.list(status=MemoryStatus.RETIRED)]
+    query = build_query(args, prompt) if prompt else None
+    semantic_index = load_semantic_index(args, memories) if query is not None else None
+    report = question_report(
+        memories,
+        query=query,
+        memory_id=args.memory,
+        include_retired=args.include_retired,
+        semantic_index=semantic_index,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_resolve_question(args: argparse.Namespace, store: MemoryStore) -> int:
+    decision = resolve_question(
+        store.list(),
+        ResolveQuestionRequest(
+            question_id=args.question_id,
+            outcome=args.outcome,
+            answer=args.answer,
+            resolved_by=args.resolved_by,
+            evidence=args.evidence,
+            title=args.title,
+            use_path=args.use_path,
+            avoid=args.avoid,
+            review_if=args.review_if,
+        ),
+    )
+    if decision.applied:
+        if decision.outcome_memory is not None:
+            store.add(decision.outcome_memory)
+        if decision.question is not None:
+            store.update(decision.question)
+    print(decision.render())
     return 0
 
 

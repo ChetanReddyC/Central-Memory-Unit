@@ -2492,6 +2492,191 @@ class AntiPatternWorkflowTests(unittest.TestCase):
             self.assertIn("Usefulness: drag; 0 strong, 2 drag", filtered_rendered)
 
 
+class QuestionWorkflowTests(unittest.TestCase):
+    def test_cli_question_surfaces_relevant_owned_question_with_relationship(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Verify release markers before deployment retry",
+                summary="Deployment retries should confirm release marker state before another rollout attempt.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Rollback recovery required release marker verification."],
+                use_this_path="Check release marker state before retrying rollout.",
+                approved_by="Release owner",
+            )
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Does checkout rollback share the release marker?",
+                summary="Does checkout rollback use the same release marker state as the deployment retry path?",
+                scope=MemoryScope(
+                    ownership=["Release owner"],
+                    code=["checkout", "deploy"],
+                    workflow=["deployment"],
+                    actor=["agent"],
+                ),
+                evidence=["Checkout rollback logs mention the same marker key, but ownership is not yet confirmed."],
+                use_this_path="Inspect checkout rollback marker reads before changing retry behavior.",
+                avoid_this="Do not assume checkout rollback and deploy retry own separate marker state.",
+                challenge_only_if="Resolve when marker ownership and read/write paths are verified.",
+                liability_score=4,
+                confidence=0.75,
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="The answer may change the deployment retry practice.",
+                    )
+                ],
+            )
+            store.add(practice)
+            store.add(question)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "question",
+                        "debug checkout rollback release marker retry",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "checkout",
+                        "--workflow",
+                        "deployment",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Question Workflow", rendered)
+            self.assertIn("Mode: read-only question tracking proof", rendered)
+            self.assertIn("Questions: 1", rendered)
+            self.assertIn("Active Questions: 1", rendered)
+            self.assertIn(f"{question.id} [question/active] Does checkout rollback share the release marker?", rendered)
+            self.assertIn("Owner: Release owner", rendered)
+            self.assertIn("Question: Does checkout rollback use the same release marker state", rendered)
+            self.assertIn("Investigation Path: Inspect checkout rollback marker reads", rendered)
+            self.assertIn("Avoid Assuming: Do not assume checkout rollback and deploy retry own separate marker state.", rendered)
+            self.assertIn("Retrieval: surface question", rendered)
+            self.assertIn("Relationships: related_practice->Verify release markers before deployment retry", rendered)
+            self.assertIn("State: active question", rendered)
+            self.assertIn(f"resolve with `cmu resolve-question {question.id} ...`", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_question_reports_ownership_and_evidence_gaps(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            no_owner = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Who owns billing migration rollback approval?",
+                summary="Billing rollback approval ownership is unclear.",
+                scope=MemoryScope(code=["billing"], workflow=["migration"]),
+                evidence=["Rollback runbook names two teams without a final owner."],
+                liability_score=5,
+                confidence=0.65,
+            )
+            no_evidence = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Does auth rotation require staging soak?",
+                summary="Credential rotation may require staging soak before production.",
+                scope=MemoryScope(ownership=["Security owner"], code=["auth"], workflow=["credential rotation"]),
+                liability_score=4,
+                confidence=0.55,
+            )
+            store.add(no_owner)
+            store.add(no_evidence)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "question"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Questions: 2", rendered)
+            self.assertIn("Ownership Gaps: 1", rendered)
+            self.assertIn("Evidence Gaps: 1", rendered)
+            self.assertIn(f"{no_owner.id} [question/active] Who owns billing migration rollback approval?", rendered)
+            self.assertIn("Owner: missing explicit owner", rendered)
+            self.assertIn("State: ownership gap", rendered)
+            self.assertIn("add ownership scope", rendered)
+            self.assertIn(f"{no_evidence.id} [question/active] Does auth rotation require staging soak?", rendered)
+            self.assertIn("State: evidence gap", rendered)
+            self.assertIn("add evidence showing why forgetting this uncertainty is costly", rendered)
+
+    def test_cli_resolve_question_creates_derived_situation_and_retires_question(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Does checkout rollback share the release marker?",
+                summary="Does checkout rollback use the same release marker state as deployment retry?",
+                scope=MemoryScope(
+                    ownership=["Release owner"],
+                    code=["checkout", "deploy"],
+                    workflow=["deployment"],
+                    actor=["agent"],
+                ),
+                evidence=["Logs mention the same marker key."],
+                use_this_path="Inspect both marker read/write paths.",
+                avoid_this="Do not assume separate marker ownership.",
+                challenge_only_if="Review if marker ownership changes.",
+                liability_score=4,
+                confidence=0.7,
+            )
+            store.add(question)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "resolve-question",
+                        question.id,
+                        "--outcome",
+                        "situation",
+                        "--answer",
+                        "Checkout rollback and deployment retry share the same release marker record.",
+                        "--resolved-by",
+                        "Release owner",
+                        "--evidence",
+                        "Code inspection confirmed both paths read and write release_marker_id.",
+                        "--title",
+                        "Checkout rollback shares deployment release marker",
+                        "--use-path",
+                        "Verify shared marker state before retrying checkout rollback.",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Question Resolution Applied", rendered)
+            self.assertIn(f"Question: {question.id} [retired]", rendered)
+            self.assertIn("Outcome Memory:", rendered)
+            retired = store.list(type=MemoryType.QUESTION, status=MemoryStatus.RETIRED)
+            situations = store.list(type=MemoryType.SITUATION)
+            self.assertEqual(len(retired), 1)
+            self.assertEqual(len(situations), 1)
+            self.assertIn("Answer: Checkout rollback and deployment retry share the same release marker record.", retired[0].evidence)
+            self.assertEqual(situations[0].title, "Checkout rollback shares deployment release marker")
+            self.assertEqual(situations[0].approved_by, "Release owner")
+            self.assertEqual(situations[0].relationships[0].type, MemoryRelationType.DERIVED_FROM)
+            self.assertEqual(situations[0].relationships[0].target_id, question.id)
+
+            history = StringIO()
+            with redirect_stdout(history):
+                history_exit = main(["--root", tmp, "question", "--include-retired", "--memory", question.id])
+
+            self.assertEqual(history_exit, 0)
+            self.assertIn(f"{question.id} [question/retired]", history.getvalue())
+            self.assertIn("State: retired", history.getvalue())
+
+
 class ScenarioEvaluationTests(unittest.TestCase):
     def test_cli_evaluate_scenario_proves_expected_action_note_without_mutating_receipts(self) -> None:
         with TemporaryDirectory() as tmp:
