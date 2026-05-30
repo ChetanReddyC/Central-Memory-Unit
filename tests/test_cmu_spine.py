@@ -5493,6 +5493,156 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn("add missing reusable scenario evidence/scope/future-use lesson", rendered)
 
 
+class MemoryGravityTests(unittest.TestCase):
+    def test_cli_gravity_reports_promotion_governance_graph_and_use_pressures(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Billing schema compatibility rollout",
+                summary="Billing service startup required schema compatibility validation.",
+                signals=["explained failure"],
+                scope=MemoryScope(code=["billing/deploy.py"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Validation allowed safe billing startup."],
+                use_this_path="Verify billing schema compatibility during startup planning.",
+                avoid_this="Do not start billing services with unknown schema compatibility.",
+                challenge_only_if="Use when billing schema compatibility rules change.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth credential lock sequencing",
+                summary="Credential rotation failed when token lock ordering changed.",
+                signals=["explained failure"],
+                scope=MemoryScope(code=["auth/tokens.py"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Rotation passed after lock sequencing was restored."],
+                use_this_path="Verify token lock sequencing before credential rotation.",
+                avoid_this="Do not rotate credentials before lock ownership is confirmed.",
+                challenge_only_if="Use when auth credential rotation or token lock order changes.",
+                liability_score=5,
+                confidence=0.85,
+            )
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Deployment retries need marker checks",
+                summary="Deployment retry flows must verify release markers before retrying.",
+                signals=["deployment"],
+                scope=MemoryScope(code=["checkout", "billing", "deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Multiple rollback fixes required marker checks."],
+                use_this_path="Verify release markers before retrying deployment.",
+                avoid_this="Do not retry deployment blindly.",
+                challenge_only_if="The deployment path has no release marker concept.",
+                liability_score=5,
+                confidence=0.8,
+            )
+            candidate.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.RELATED_PRACTICE,
+                    target_id=practice.id,
+                    reason="Candidate may teach the deployment retry practice.",
+                )
+            )
+            situation.relationships.append(
+                MemoryRelationship(
+                    type=MemoryRelationType.SUPPORTS,
+                    target_id=practice.id,
+                    reason="Auth sequencing evidence supports deployment-style ordering checks.",
+                )
+            )
+            for memory in [candidate, situation, practice]:
+                store.add(memory)
+            use_store = MemoryUseStore(tmp)
+            strong = MemoryUseReceipt.create(
+                practice,
+                PreflightQuery(
+                    prompt="Fix checkout deployment retry marker failure",
+                    actor="agent",
+                    area="checkout",
+                    files=["checkout/deploy.py"],
+                    workflow=["deployment"],
+                ),
+                Match(memory=practice, score=5.0, matched_terms=["checkout", "deployment"]),
+                source_command="start",
+            )
+            strong.commit_hash = "1" * 40
+            strong.outcome_signal = "committed"
+            strong.link_confidence = 0.9
+            use_store.add(strong)
+            mixed = MemoryUseReceipt.create(
+                practice,
+                PreflightQuery(
+                    prompt="Touch broad deployment cleanup",
+                    actor="agent",
+                    area="deployment",
+                    files=["scripts/deploy.py"],
+                    workflow=["deployment"],
+                ),
+                Match(memory=practice, score=4.0, matched_terms=["deployment"]),
+                source_command="preflight",
+            )
+            mixed.commit_hash = "2" * 40
+            mixed.outcome_signal = "committed"
+            mixed.link_confidence = 0.3
+            mixed.flags = ["mixed_commit", "low_confidence"]
+            use_store.add(mixed)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "gravity"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Memory Gravity", rendered)
+            self.assertIn("Mode: read-only placement/settling proof", rendered)
+            self.assertIn(candidate.id, rendered)
+            self.assertIn("promotion pressure", rendered)
+            self.assertIn("promote candidate to situation", rendered)
+            self.assertIn(situation.id, rendered)
+            self.assertIn("stable promotion pressure", rendered)
+            self.assertIn(practice.id, rendered)
+            self.assertIn("graph", rendered)
+            self.assertIn("governance review pressure", rendered)
+            self.assertIn("split pressure", rendered)
+            self.assertIn("use evidence", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_gravity_filter_surfaces_unsettled_merge_pressure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            first = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Auth token rotation lock order",
+                summary="Auth token rotation failed because lock order changed during credential update.",
+                evidence=["Incident note showed changed lock order."],
+                liability_score=3,
+                confidence=0.6,
+            )
+            second = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth credential rotation lock order",
+                summary="Credential rotation failed because auth token lock order changed during update.",
+                evidence=["Debugging found the auth lock order issue."],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"]),
+                liability_score=3,
+                confidence=0.7,
+            )
+            store = MemoryStore(tmp)
+            store.add(first)
+            store.add(second)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "gravity", "--memory", first.id])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn(f"Memory Filter: {first.id}", rendered)
+            self.assertIn("unsettled: no scope center", rendered)
+            self.assertIn("scope gap", rendered)
+            self.assertIn("merge pressure", rendered)
+            self.assertIn("review duplicate/related memories", rendered)
+
+
 class PromotionTests(unittest.TestCase):
     def test_candidate_to_situation_review_passes_when_gate_fields_exist(self) -> None:
         candidate = Memory.create(

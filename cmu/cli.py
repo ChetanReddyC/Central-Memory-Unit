@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .gravity import gravity_report
 from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
 from .onboarding import build_onboarding_seed
@@ -267,6 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_parser = subparsers.add_parser("lifecycle", help="Show the read-only Core Memory Lifecycle structural view.")
     lifecycle_parser.add_argument("--memory", default="", help="Limit lifecycle view to one memory id.")
     lifecycle_parser.set_defaults(func=cmd_lifecycle)
+
+    gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
+    gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
+    gravity_parser.set_defaults(func=cmd_gravity)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -771,6 +776,16 @@ def cmd_review(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_lifecycle(args: argparse.Namespace, store: MemoryStore) -> int:
     report = lifecycle_report(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = gravity_report(
         store.list(),
         MemoryUseStore(args.root).list(),
         memory_id=args.memory,
