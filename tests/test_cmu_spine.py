@@ -2238,6 +2238,126 @@ class WorkCycleStartTests(unittest.TestCase):
             self.assertEqual(len(MemoryUseStore(tmp).list()), 1)
 
 
+class FullWorkCycleIntegrationTests(unittest.TestCase):
+    def test_cli_work_cycle_connects_trigger_preflight_receipt_after_work_and_analytics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["preflight", "quiet"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+            add_strong_receipts(tmp, memory, count=2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "work-cycle",
+                        "implement CMU work-cycle integration report",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                        "--learning-signal",
+                        "new convention",
+                        "--outcome",
+                        "The report connected trigger, preflight, receipt planning, and after-work memory review.",
+                        "--worked",
+                        "Use one read-only report to inspect the whole Work Cycle before automating more.",
+                        "--future-use",
+                        "Use when validating CMU task loop integration across start, receipts, and review.",
+                        "--evidence",
+                        "Full Work Cycle integration test exercises real retrieval and remember gates.",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Full Work Cycle", rendered)
+            self.assertIn("Mode: read-only integration proof", rendered)
+            self.assertIn("Step 1 - Trigger:", rendered)
+            self.assertIn("Level: must-call", rendered)
+            self.assertIn("Step 2 - Onboarding:", rendered)
+            self.assertIn("CMU Onboarding Seed", rendered)
+            self.assertIn("Step 3 - Preflight:", rendered)
+            self.assertIn("Action: action-note", rendered)
+            self.assertIn(f"Matched Memory: {memory.id}", rendered)
+            self.assertIn("Step 4 - Receipt:", rendered)
+            self.assertIn(f"Would create Memory Use Receipt for {memory.id} from work-cycle.", rendered)
+            self.assertIn("Step 5 - After-Work Memory Decision:", rendered)
+            self.assertIn("Status: candidate-ready", rendered)
+            self.assertIn("Suggested Next Type: situation", rendered)
+            self.assertIn("Step 6 - Review Signal:", rendered)
+            self.assertIn("useful; 2/2 linked, 2 strong, 0 drag", rendered)
+            self.assertIn("governance ready: strengthen evidence", rendered)
+            self.assertIn("link the resulting receipt/checkpoint", rendered)
+            self.assertEqual(len(MemoryUseStore(tmp).list()), 2)
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 0)
+
+    def test_cli_work_cycle_silent_skip_can_still_identify_after_work_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "work-cycle",
+                        "adjust local typo in settings label",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "frontend",
+                        "--file",
+                        "settings.css",
+                        "--workflow",
+                        "styling",
+                        "--risk",
+                        "low",
+                        "--learning-signal",
+                        "human correction",
+                        "--outcome",
+                        "The label typo revealed a hidden naming convention for settings copy.",
+                        "--worked",
+                        "Match settings labels to the existing sidebar terminology.",
+                        "--future-use",
+                        "Use when editing settings copy or onboarding agents to settings UI conventions.",
+                        "--evidence",
+                        "Human correction identified the naming convention.",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Full Work Cycle", rendered)
+            self.assertIn("Level: silent-skip", rendered)
+            self.assertIn("Skipped: trigger selected silent-skip.", rendered)
+            self.assertIn("Action: quiet", rendered)
+            self.assertIn("No receipt planned: no Action Note surfaced.", rendered)
+            self.assertIn("Status: candidate-ready", rendered)
+            self.assertIn("No matched memory analytics available.", rendered)
+            self.assertIn("save/review the Candidate Memory even though no prior memory guided the task", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
+
+
 class ScenarioEvaluationTests(unittest.TestCase):
     def test_cli_evaluate_scenario_proves_expected_action_note_without_mutating_receipts(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -43,6 +43,7 @@ from .usage import (
     use_summary,
     use_threshold_report,
 )
+from .workcycle import WorkCycleRequest, work_cycle_report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -202,6 +203,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show diagnostic-only semantic proposal decisions without changing retrieval or receipts.",
     )
     start_parser.set_defaults(func=cmd_start)
+
+    work_cycle_parser = subparsers.add_parser("work-cycle", help="Run the read-only full CMU Work Cycle integration proof.")
+    work_cycle_parser.add_argument("prompt", nargs="*", help="Task prompt to run through the full cycle.")
+    work_cycle_parser.add_argument("--actor", default="developer")
+    work_cycle_parser.add_argument("--area", default="")
+    work_cycle_parser.add_argument("--file", action="append", default=[])
+    work_cycle_parser.add_argument("--workflow", action="append", default=[])
+    work_cycle_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    work_cycle_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    work_cycle_parser.add_argument("--repeated-error", action="store_true")
+    work_cycle_parser.add_argument("--uncertainty", action="store_true")
+    work_cycle_parser.add_argument("--shared-contract", action="store_true")
+    work_cycle_parser.add_argument("--irreversible", action="store_true")
+    work_cycle_parser.add_argument("--unfamiliar", action="store_true")
+    work_cycle_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    work_cycle_parser.add_argument("--learning-signal", action="append", default=[])
+    work_cycle_parser.add_argument("--outcome", default="")
+    work_cycle_parser.add_argument("--worked", default="")
+    work_cycle_parser.add_argument("--failed", default="")
+    work_cycle_parser.add_argument("--future-use", default="")
+    work_cycle_parser.add_argument("--evidence", action="append", default=[])
+    work_cycle_parser.set_defaults(func=cmd_work_cycle)
 
     evaluate_parser = subparsers.add_parser("evaluate-scenario", help="Run a read-only CMU structural scenario evaluation.")
     evaluate_parser.add_argument("prompt", nargs="*", help="Task scenario prompt to evaluate.")
@@ -686,6 +714,37 @@ def cmd_start(args: argparse.Namespace, store: MemoryStore) -> int:
     )
     use_store.add(receipt)
     print(f"Use Receipt: {receipt.id}")
+    return 0
+
+
+def cmd_work_cycle(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("work-cycle requires a task prompt")
+    memories = store.list()
+    query = build_query(args, prompt)
+    semantic_index = load_semantic_index(args, memories)
+    report = work_cycle_report(
+        memories,
+        MemoryUseStore(args.root).list(),
+        WorkCycleRequest(
+            prompt=prompt,
+            query=query,
+            repeated_error=args.repeated_error,
+            uncertainty=args.uncertainty,
+            shared_contract=args.shared_contract,
+            irreversible=args.irreversible,
+            unfamiliar=args.unfamiliar,
+            learning_signals=args.learning_signal,
+            outcome=args.outcome,
+            worked=args.worked,
+            failed=args.failed,
+            future_use=args.future_use,
+            evidence=args.evidence,
+        ),
+        semantic_index=semantic_index,
+    )
+    print(report.render())
     return 0
 
 
