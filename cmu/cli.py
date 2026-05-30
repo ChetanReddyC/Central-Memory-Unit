@@ -8,6 +8,7 @@ from .gravity import gravity_report
 from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryType
 from .onboarding import build_onboarding_seed
+from .pipeline import hybrid_pipeline_report
 from .promotion import promote_memory, review_promotion
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
@@ -114,6 +115,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show diagnostic-only semantic proposal decisions without changing retrieval or receipts.",
     )
     preflight_parser.set_defaults(func=cmd_preflight)
+
+    pipeline_parser = subparsers.add_parser("retrieval-pipeline", help="Show the read-only full Hybrid Retrieval Pipeline.")
+    pipeline_parser.add_argument("prompt", nargs="*", help="Task prompt to inspect against memory.")
+    pipeline_parser.add_argument("--actor", default="developer")
+    pipeline_parser.add_argument("--area", default="")
+    pipeline_parser.add_argument("--file", action="append", default=[])
+    pipeline_parser.add_argument("--workflow", action="append", default=[])
+    pipeline_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    pipeline_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    pipeline_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    pipeline_parser.set_defaults(func=cmd_retrieval_pipeline)
 
     onboard_parser = subparsers.add_parser("onboard", help="Generate a tiny task-bound CMU Onboarding Seed.")
     onboard_parser.add_argument("prompt", nargs="*", help="Task prompt to onboard against.")
@@ -564,6 +581,23 @@ def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
         )
         use_store.add(receipt)
         print(f"Use Receipt: {receipt.id}")
+    return 0
+
+
+def cmd_retrieval_pipeline(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("retrieval-pipeline requires a task prompt")
+    memories = store.list()
+    query = build_query(args, prompt)
+    semantic_index = load_semantic_index(args, memories)
+    report = hybrid_pipeline_report(
+        memories,
+        MemoryUseStore(args.root).list(),
+        query,
+        semantic_index=semantic_index,
+    )
+    print(report.render())
     return 0
 
 

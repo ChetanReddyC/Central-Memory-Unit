@@ -1137,6 +1137,166 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("text or hard scope already grounds this memory before semantic proposal", rendered)
             self.assertIn("CMU Action Note", rendered)
 
+    def test_cli_retrieval_pipeline_reports_graph_ranking_rejection_and_action_note(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use retry budget",
+                summary="Outbound retries should respect bounded failure handling.",
+                use_this_path="Check the retry budget before changing retry behavior.",
+                scope=MemoryScope(code=["billing/reliability"], workflow=["debugging"], actor=["agent"]),
+                evidence=["Prior webhook timeout fix used bounded retries."],
+                liability_score=4,
+                confidence=0.85,
+                approved_by="reliability owner",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Webhook timeout root cause",
+                summary="Webhook timeouts came from unbounded retries during dependency failures.",
+                signals=["webhook", "timeout", "retries"],
+                scope=MemoryScope(code=["billing/webhook.py"], workflow=["debugging"], actor=["agent"]),
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="Timeout debugging should lead to the retry budget practice.",
+                    )
+                ],
+                evidence=["Debugging found retry behavior as the timeout cause."],
+                liability_score=3,
+                confidence=0.75,
+            )
+            thin_candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Webhook timeout note",
+                summary="Webhook timeout happened.",
+                liability_score=1,
+                confidence=0.4,
+            )
+            rejected = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Auth token rotation",
+                summary="Token rotation has a lock ordering constraint.",
+                scope=MemoryScope(code=["auth/tokens.py"], workflow=["credential rotation"], actor=["agent"]),
+                liability_score=4,
+                confidence=0.8,
+            )
+            for memory in [practice, situation, thin_candidate, rejected]:
+                store.add(memory)
+            use_store = MemoryUseStore(tmp)
+            receipt = MemoryUseReceipt.create(
+                practice,
+                PreflightQuery(
+                    prompt="Investigate billing webhook timeout",
+                    actor="agent",
+                    area="billing",
+                    files=["billing/webhook.py"],
+                    workflow=["debugging"],
+                    risk="high",
+                ),
+                Match(memory=practice, score=3.0, matched_terms=["graph:related_practice"]),
+                source_command="start",
+            )
+            receipt.commit_hash = "3" * 40
+            receipt.outcome_signal = "committed"
+            receipt.link_confidence = 0.9
+            use_store.add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "retrieval-pipeline",
+                        "Investigate billing webhook timeout",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--file",
+                        "billing/webhook.py",
+                        "--workflow",
+                        "debugging",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Hybrid Retrieval Pipeline", rendered)
+            self.assertIn("Graph Expanded: 1", rendered)
+            self.assertIn("Phase: graph expansion", rendered)
+            self.assertIn("graph expansion via", rendered)
+            self.assertIn("use evidence adjusted score", rendered)
+            self.assertIn("Status: below-threshold", rendered)
+            self.assertIn(thin_candidate.id, rendered)
+            self.assertIn("Status: rejected", rendered)
+            self.assertIn("hard grounding rejected: scope conflicts with query", rendered)
+            self.assertIn("Selected Action:", rendered)
+            self.assertIn("action-note:", rendered)
+            self.assertIn("Action Note Preview:", rendered)
+
+    def test_cli_retrieval_pipeline_reports_semantic_admission_and_authority_rejection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            admissible = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback releasemarker cleanup",
+                summary="A stale releasemarker blocked rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Clearing the stale releasemarker let the rollout retry finish."],
+                use_this_path="Check stale releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            unapproved_stable = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Releasemarker cleanup default",
+                summary="Stale releasemarkers can block rollout retries.",
+                signals=["rollback", "releasemarker"],
+                scope=MemoryScope(workflow=["deployment"], actor=["agent"]),
+                evidence=["Prior rollout retry succeeded after cleanup."],
+                use_this_path="Check releasemarkers before retrying rollout.",
+                liability_score=4,
+                confidence=0.9,
+            )
+            store.add(admissible)
+            store.add(unapproved_stable)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "retrieval-pipeline",
+                        "roll back release marker problem",
+                        "--actor",
+                        "agent",
+                        "--workflow",
+                        "deploy",
+                        "--risk",
+                        "high",
+                        "--semantic",
+                        "local",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((Path(tmp) / ".cmu" / "semantic_index.json").exists())
+            self.assertIn("Semantic Admissible: 1", rendered)
+            self.assertIn("semantic proposal admitted by grounding", rendered)
+            self.assertIn("semantic proposal admissible", rendered)
+            self.assertIn("stable Practice/Anchor semantic proposal requires explicit authority", rendered)
+            self.assertIn("Action Note Preview:", rendered)
+            self.assertIn("Rollback releasemarker cleanup", rendered)
+
     def test_rank_memories_does_not_expand_graph_from_weak_primary_match(self) -> None:
         practice = Memory.create(
             type=MemoryType.PRACTICE,
