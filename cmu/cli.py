@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .governance import governance_report
@@ -327,6 +328,23 @@ def build_parser() -> argparse.ArgumentParser:
     analytics_parser = subparsers.add_parser("analytics", help="Show the read-only Usefulness and Drag Analytics view.")
     analytics_parser.add_argument("--memory", default="", help="Limit analytics view to one memory id.")
     analytics_parser.set_defaults(func=cmd_analytics)
+
+    anti_pattern_parser = subparsers.add_parser("anti-pattern", help="Show the read-only Anti-Pattern workflow view.")
+    anti_pattern_parser.add_argument("prompt", nargs="*", help="Optional task prompt to test against anti-pattern warnings.")
+    anti_pattern_parser.add_argument("--memory", default="", help="Limit anti-pattern view to one memory id.")
+    anti_pattern_parser.add_argument("--actor", default="developer")
+    anti_pattern_parser.add_argument("--area", default="")
+    anti_pattern_parser.add_argument("--file", action="append", default=[])
+    anti_pattern_parser.add_argument("--workflow", action="append", default=[])
+    anti_pattern_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    anti_pattern_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    anti_pattern_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    anti_pattern_parser.set_defaults(func=cmd_anti_pattern)
 
     promote_parser = subparsers.add_parser("promote", help="Promote memory after gates pass.")
     promote_parser.add_argument("memory_id", help="Memory id to promote.")
@@ -912,6 +930,22 @@ def cmd_analytics(args: argparse.Namespace, store: MemoryStore) -> int:
         store.list(),
         MemoryUseStore(args.root).list(),
         memory_id=args.memory,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_anti_pattern(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    memories = store.list()
+    query = build_query(args, prompt) if prompt else None
+    semantic_index = load_semantic_index(args, memories) if query is not None else None
+    report = anti_pattern_report(
+        memories,
+        MemoryUseStore(args.root).list(),
+        query=query,
+        memory_id=args.memory,
+        semantic_index=semantic_index,
     )
     print(report.render())
     return 0

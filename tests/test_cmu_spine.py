@@ -2358,6 +2358,140 @@ class FullWorkCycleIntegrationTests(unittest.TestCase):
             self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
 
 
+class AntiPatternWorkflowTests(unittest.TestCase):
+    def test_cli_anti_pattern_reports_active_warning_relationships_and_usefulness(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check dependency versions before rerunning failing tests",
+                summary="Repeated test failures around dependencies should verify package versions before retrying blindly.",
+                scope=MemoryScope(code=["tests"], workflow=["debugging"], actor=["agent"]),
+                evidence=["A dependency mismatch caused repeated failures until version state was inspected."],
+                use_this_path="Inspect package versions before rerunning the same failing test loop.",
+                avoid_this="Do not keep rerunning tests without checking dependency versions.",
+                challenge_only_if="The failure is deterministic and unrelated to dependency state.",
+                liability_score=4,
+                confidence=0.85,
+                approved_by="QA owner",
+            )
+            anti = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Blindly rerun dependency failures",
+                summary="Repeatedly rerunning dependency-related test failures can hide the version mismatch root cause.",
+                scope=MemoryScope(code=["tests"], workflow=["debugging"], actor=["agent"]),
+                evidence=["A version mismatch was only found after stopping the retry loop."],
+                use_this_path="Check dependency versions and lockfile state before another retry.",
+                avoid_this="Do not keep rerunning dependency failures hoping they pass.",
+                challenge_only_if="Review when dependency state is already proven clean.",
+                liability_score=4,
+                confidence=0.8,
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.CHALLENGES,
+                        target_id=practice.id,
+                        reason="This anti-pattern protects the dependency-debugging practice from the tempting retry loop.",
+                    )
+                ],
+            )
+            store.add(practice)
+            store.add(anti)
+            add_strong_receipts(tmp, anti, count=2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "anti-pattern",
+                        "rerun dependency failing tests again",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "tests",
+                        "--workflow",
+                        "debugging",
+                        "--risk",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Anti-Pattern Workflow", rendered)
+            self.assertIn("Mode: read-only anti-pattern proof", rendered)
+            self.assertIn("Creation Path:", rendered)
+            self.assertIn("Anti-Patterns: 1", rendered)
+            self.assertIn("Active Warnings: 1", rendered)
+            self.assertIn(f"{anti.id} [anti-pattern/active] Blindly rerun dependency failures", rendered)
+            self.assertIn("Trap: Repeatedly rerunning dependency-related test failures", rendered)
+            self.assertIn("Avoid: Do not keep rerunning dependency failures hoping they pass.", rendered)
+            self.assertIn("Safer Path: Check dependency versions and lockfile state before another retry.", rendered)
+            self.assertIn("Retrieval: active warning", rendered)
+            self.assertIn("Relationships: challenges->Check dependency versions before rerunning failing tests", rendered)
+            self.assertIn("Evidence: 1 memory evidence; 2/2 linked uses; 0 unresolved", rendered)
+            self.assertIn("Usefulness: useful; 2 strong, 0 drag", rendered)
+            self.assertIn("State: active warning", rendered)
+            self.assertIn("surface the avoidance warning", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_anti_pattern_filter_reports_evidence_gap_and_review_warning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            thin = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Skip rollback verification",
+                summary="Skipping rollback verification can hide deployment failure.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                avoid_this="Do not skip rollback verification.",
+                use_this_path="Verify rollback before marking deployment recovered.",
+                challenge_only_if="Rollback verification is automated elsewhere.",
+                liability_score=4,
+                confidence=0.55,
+            )
+            noisy = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Avoid all broad commits",
+                summary="Broad commits can make evidence attribution hard.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Mixed commits made early receipt evidence weak."],
+                avoid_this="Do not use broad commits.",
+                use_this_path="Prefer focused commits when linking receipt evidence.",
+                challenge_only_if="Review when broad checkpoint commits are intentionally required.",
+                liability_score=3,
+                confidence=0.7,
+            )
+            store.add(thin)
+            store.add(noisy)
+            add_drag_receipts(tmp, noisy, count=2)
+
+            all_output = StringIO()
+            with redirect_stdout(all_output):
+                all_exit = main(["--root", tmp, "anti-pattern"])
+
+            all_rendered = all_output.getvalue()
+            self.assertEqual(all_exit, 0)
+            self.assertIn("Evidence Gaps: 1", all_rendered)
+            self.assertIn("Review Ready: 1", all_rendered)
+            self.assertIn(f"{thin.id} [anti-pattern/active] Skip rollback verification", all_rendered)
+            self.assertIn("State: evidence gap", all_rendered)
+            self.assertIn("add concrete failure, incident, or review evidence", all_rendered)
+            self.assertIn(f"{noisy.id} [anti-pattern/active] Avoid all broad commits", all_rendered)
+            self.assertIn("State: review warning", all_rendered)
+            self.assertIn("inspect use receipts; narrow, retire, or rewrite", all_rendered)
+
+            filtered = StringIO()
+            with redirect_stdout(filtered):
+                filter_exit = main(["--root", tmp, "anti-pattern", "--memory", noisy.id])
+
+            filtered_rendered = filtered.getvalue()
+            self.assertEqual(filter_exit, 0)
+            self.assertIn(f"Memory Filter: {noisy.id}", filtered_rendered)
+            self.assertIn("Anti-Patterns: 1", filtered_rendered)
+            self.assertIn("Usefulness: drag; 0 strong, 2 drag", filtered_rendered)
+
+
 class ScenarioEvaluationTests(unittest.TestCase):
     def test_cli_evaluate_scenario_proves_expected_action_note_without_mutating_receipts(self) -> None:
         with TemporaryDirectory() as tmp:
