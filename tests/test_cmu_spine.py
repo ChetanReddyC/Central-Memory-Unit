@@ -1,3 +1,4 @@
+import json
 import subprocess
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -7,11 +8,15 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
+from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
+from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle
 from cmu.promotion import promote_memory, review_promotion
+from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.remembering import RememberRequest, remember_candidate
 from cmu.retrieval import (
     HashingEmbeddingProvider,
@@ -3000,6 +3005,128 @@ class ScenarioEvaluationTests(unittest.TestCase):
             self.assertIn("- trigger: pass", rendered)
             self.assertIn("- action: fail", rendered)
             self.assertIn("Verdict: cmu-gap-found", rendered)
+
+    def test_cli_scenario_library_saves_lists_and_runs_repeatable_cases(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Task-start preflight stays quiet unless useful",
+                summary="CMU should check memory at task start but only surface compact Action Notes when memory changes action.",
+                signals=["preflight", "quiet"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU product spec defines the Work Cycle as always available, rarely loud."],
+                use_this_path="Run preflight at task start, then surface only compact Action Notes that change the next action.",
+                avoid_this="Do not dump memory into context just because it exists.",
+                challenge_only_if="The task is small, local, low-risk, and follows an obvious existing pattern.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            save_output = StringIO()
+            with redirect_stdout(save_output):
+                save_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "scenario-add",
+                        "implement CMU preflight behavior",
+                        "--name",
+                        "cmu preflight practice surfaces",
+                        "--tag",
+                        "regression",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--workflow",
+                        "implementation",
+                        "--risk",
+                        "high",
+                        "--expect-trigger",
+                        "must-call",
+                        "--expect-action",
+                        "action-note",
+                        "--expect-memory",
+                        memory.id,
+                        "--expect-candidate",
+                        "draft-recommended",
+                        "--learning-signal",
+                        "structural proof",
+                        "--worked",
+                        "The library reused the evaluator.",
+                        "--future-use",
+                        "Use this scenario to keep task-start memory behavior stable.",
+                        "--evidence",
+                        "Expected Practice memory surfaced.",
+                    ]
+                )
+
+            self.assertEqual(save_exit, 0)
+            self.assertIn("CMU Scenario Saved", save_output.getvalue())
+
+            list_output = StringIO()
+            with redirect_stdout(list_output):
+                list_exit = main(["--root", tmp, "scenario-list", "--tag", "regression"])
+
+            self.assertEqual(list_exit, 0)
+            self.assertIn("CMU Scenario Library", list_output.getvalue())
+            self.assertIn("cmu preflight practice surfaces", list_output.getvalue())
+            self.assertIn(f"memory={memory.id}", list_output.getvalue())
+
+            run_output = StringIO()
+            with redirect_stdout(run_output):
+                run_exit = main(["--root", tmp, "scenario-run", "--tag", "regression", "--strict"])
+
+            rendered = run_output.getvalue()
+            self.assertEqual(run_exit, 0)
+            self.assertIn("CMU Scenario Library Run", rendered)
+            self.assertIn("Summary: total=1 pass=1 review=0", rendered)
+            self.assertIn("pass:", rendered)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_scenario_run_strict_returns_review_when_saved_expectation_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            add_output = StringIO()
+            with redirect_stdout(add_output):
+                add_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "scenario-add",
+                        "debug unknown billing migration failure",
+                        "--name",
+                        "billing migration gap",
+                        "--tag",
+                        "gaps",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "billing",
+                        "--workflow",
+                        "debugging",
+                        "--risk",
+                        "high",
+                        "--expect-trigger",
+                        "must-call",
+                        "--expect-action",
+                        "action-note",
+                    ]
+                )
+
+            self.assertEqual(add_exit, 0)
+
+            run_output = StringIO()
+            with redirect_stdout(run_output):
+                run_exit = main(["--root", tmp, "scenario-run", "--tag", "gaps", "--strict"])
+
+            rendered = run_output.getvalue()
+            self.assertEqual(run_exit, 1)
+            self.assertIn("Summary: total=1 pass=0 review=1", rendered)
+            self.assertIn("review:", rendered)
+            self.assertIn("failed=action", rendered)
 
 
 class MemoryUseTests(unittest.TestCase):
@@ -7487,6 +7614,553 @@ class CliChallengeTests(unittest.TestCase):
             self.assertIn(f"Split-off stable memory: {split_practice.id}", original.evidence)
             retired = MemoryStore(tmp).list(type=MemoryType.CANDIDATE, status=MemoryStatus.RETIRED)
             self.assertEqual(len(retired), 1)
+
+
+class AgentIntegrationBoundaryTests(unittest.TestCase):
+    def test_manifest_exposes_stable_agent_tool_contract(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manifest = AgentIntegration(tmp).manifest()
+
+            self.assertEqual(manifest["api_version"], AGENT_API_VERSION)
+            self.assertEqual(
+                [tool["name"] for tool in manifest["tools"]],
+                ["cmu_task_start", "cmu_after_work", "cmu_link_checkpoint", "cmu_review"],
+            )
+            self.assertTrue(next(tool for tool in manifest["tools"] if tool["name"] == "cmu_review")["mutates"] is False)
+
+    def test_direct_agent_boundary_runs_guidance_learning_checkpoint_and_review_loop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check CMU before structural implementation",
+                summary="Structural CMU implementation starts by checking scoped memory guidance.",
+                signals=["new convention"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The CMU Work Cycle requires task-start guidance before meaningful work."],
+                use_this_path="Inspect the scoped CMU practice before editing structural code.",
+                avoid_this="Do not start broad CMU implementation without checking memory.",
+                challenge_only_if="The task is a tiny local edit with no structural impact.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(practice)
+            integration = AgentIntegration(tmp)
+
+            started = integration.invoke(
+                "cmu_task_start",
+                {
+                    "prompt": "Implement the CMU agent integration boundary",
+                    "actor": "agent",
+                    "area": "cmu",
+                    "files": ["cmu/agent_api.py"],
+                    "workflow": ["implementation"],
+                    "risk": "high",
+                },
+            )
+
+            self.assertTrue(started["ok"])
+            self.assertEqual(started["status"], "action-note")
+            self.assertEqual(started["matched_memory"]["id"], practice.id)
+            self.assertEqual(started["action_note"]["recognized_situation"], practice.title)
+            use_id = started["receipt"]["id"]
+            stored_receipt = MemoryUseStore(tmp).get(use_id)
+            self.assertEqual(stored_receipt.source_command, "agent.task-start")
+
+            learned = integration.invoke(
+                "cmu_after_work",
+                {
+                    "situation": "Agent runtimes need one versioned CMU tool boundary instead of reconstructing CLI orchestration.",
+                    "signals": ["new convention"],
+                    "outcome": "The direct boundary now exposes structured task-start, learning, checkpoint, and review calls.",
+                    "worked": "Route runtime calls through the AgentIntegration service.",
+                    "failed": "Depending on rendered CLI output makes integrations brittle.",
+                    "future_use": "Use this boundary when wiring MCP, SDK, or autonomous runner integrations.",
+                    "evidence": ["The end-to-end agent integration boundary test exercises the complete tool loop."],
+                    "liability_score": 4,
+                    "scope": {
+                        "code": ["cmu/agent_api.py"],
+                        "workflow": ["agent integration"],
+                        "actor": ["agent"],
+                    },
+                    "confidence": 0.85,
+                },
+            )
+
+            self.assertTrue(learned["ok"])
+            self.assertEqual(learned["status"], "candidate-saved")
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 1)
+
+            linked = integration.invoke(
+                "cmu_link_checkpoint",
+                {
+                    "use_id": use_id,
+                    "manual_commit": {
+                        "hash": "abc123",
+                        "message": "Add CMU agent integration boundary",
+                        "files": ["cmu/agent_api.py"],
+                    },
+                },
+            )
+
+            self.assertTrue(linked["ok"])
+            self.assertEqual(linked["status"], "checkpoint-linked")
+            self.assertEqual(linked["decision"]["receipt"]["outcome_signal"], "committed")
+
+            reviewed = integration.invoke("cmu_review", {"memory_id": practice.id})
+
+            self.assertTrue(reviewed["ok"])
+            self.assertEqual(reviewed["status"], "review-ready")
+            self.assertEqual(reviewed["cards"][0]["memory_id"], practice.id)
+            self.assertEqual(reviewed["cards"][0]["linked_uses"], 1)
+            self.assertEqual(reviewed["cards"][0]["source_counts"], {"agent.task-start": 1})
+
+    def test_task_start_silent_skip_keeps_agent_boundary_quiet(self) -> None:
+        with TemporaryDirectory() as tmp:
+            response = AgentIntegration(tmp).invoke(
+                "cmu_task_start",
+                {
+                    "prompt": "Adjust a local style label",
+                    "actor": "agent",
+                    "area": "ui",
+                    "files": ["ui/label.css"],
+                    "risk": "low",
+                },
+            )
+
+            self.assertEqual(response["status"], "silent-skip")
+            self.assertIsNone(response["action_note"])
+            self.assertIsNone(response["receipt"])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_agent_tools_and_agent_call_render_machine_readable_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tools_output = StringIO()
+            with redirect_stdout(tools_output):
+                tools_exit = main(["--root", tmp, "agent-tools"])
+            manifest = json.loads(tools_output.getvalue())
+
+            self.assertEqual(tools_exit, 0)
+            self.assertEqual(manifest["api_version"], AGENT_API_VERSION)
+
+            call_output = StringIO()
+            with redirect_stdout(call_output):
+                call_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "agent-call",
+                        "cmu_task_start",
+                        "--input",
+                        json.dumps({"prompt": "Adjust a local style label", "area": "ui", "risk": "low"}),
+                    ]
+                )
+            response = json.loads(call_output.getvalue())
+
+            self.assertEqual(call_exit, 0)
+            self.assertEqual(response["tool"], "cmu_task_start")
+            self.assertEqual(response["status"], "silent-skip")
+
+            input_file = Path(tmp) / "agent-call.json"
+            input_file.write_text(json.dumps({"prompt": "Adjust a local style label", "area": "ui", "risk": "low"}), encoding="utf-8")
+            file_output = StringIO()
+            with redirect_stdout(file_output):
+                file_exit = main(["--root", tmp, "agent-call", "cmu_task_start", "--input-file", str(input_file)])
+            file_response = json.loads(file_output.getvalue())
+
+            self.assertEqual(file_exit, 0)
+            self.assertEqual(file_response["status"], "silent-skip")
+
+    def test_unknown_agent_tool_returns_structured_error(self) -> None:
+        response = AgentIntegration(".").invoke("cmu_missing_tool", {})
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["status"], "unknown-tool")
+        self.assertIn("cmu_task_start", response["available_tools"])
+
+
+class TeamAuthorityModelTests(unittest.TestCase):
+    def test_authority_assignment_enforces_consequence_permission(self) -> None:
+        practice = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Verify billing migration ordering",
+            summary="Billing migration work must verify rollout ordering.",
+            liability_score=5,
+            approved_by="Legacy billing owner",
+        )
+
+        blocked = set_memory_authority(
+            practice,
+            owner="Billing team",
+            approved_by="Billing contributor",
+            approver_role="member",
+            consequence="critical",
+        )
+
+        self.assertFalse(blocked.applied)
+        self.assertIn("requires org or higher", blocked.reason)
+
+        applied = set_memory_authority(
+            practice,
+            owner="Billing team",
+            approved_by="Billing council",
+            approver_role="org",
+            consequence="critical",
+            review_due_at="2030-01-01T00:00:00+00:00",
+        )
+
+        self.assertTrue(applied.applied)
+        self.assertEqual(practice.authority_owner, "Billing team")
+        self.assertEqual(practice.authority_role, "org")
+        self.assertEqual(practice.authority_consequence, "critical")
+        self.assertIn("Authority approval: Billing council (org)", practice.evidence)
+
+    def test_authority_report_surfaces_legacy_and_expired_review_states(self) -> None:
+        legacy = Memory.create(
+            type=MemoryType.PRACTICE,
+            title="Legacy deployment practice",
+            summary="Keep legacy deployment order.",
+            approved_by="Release owner",
+        )
+        expired = Memory.create(
+            type=MemoryType.ANCHOR,
+            title="Expired credential anchor",
+            summary="Credential rotation lock order must be reviewed.",
+            approved_by="Security council",
+            authority_owner="Security team",
+            authority_role="org",
+            authority_consequence="critical",
+            authority_review_due_at="2020-01-01T00:00:00+00:00",
+        )
+
+        report = authority_report([legacy, expired])
+        rendered = report.render()
+
+        self.assertIn("CMU Team and Authority Model", rendered)
+        self.assertIn("State: legacy approval metadata", rendered)
+        self.assertIn("State: review expired", rendered)
+        self.assertIn("Expired Reviews: 1", rendered)
+
+    def test_stable_promotion_can_store_full_authority_and_refuses_underpowered_role_without_mutation(self) -> None:
+        situation = Memory.create(
+            type=MemoryType.SITUATION,
+            title="Verify release marker before rollback",
+            summary="Rollback retries must verify release marker state.",
+            scope=MemoryScope(code=["deploy"], workflow=["rollback"]),
+            evidence=["A stale release marker caused rollback retry failure."],
+            use_this_path="Inspect the release marker before retrying rollback.",
+            challenge_only_if="The rollback no longer reads or writes release marker state.",
+            liability_score=4,
+            confidence=0.85,
+        )
+
+        blocked = promote_memory(
+            [situation],
+            situation.id,
+            MemoryType.PRACTICE,
+            approved_by="Release contributor",
+            authority_owner="Release team",
+            approver_role="member",
+            consequence="high",
+        )
+
+        self.assertFalse(blocked.promoted)
+        self.assertEqual(situation.type, MemoryType.SITUATION)
+        self.assertEqual(situation.approved_by, "")
+
+        applied = promote_memory(
+            [situation],
+            situation.id,
+            MemoryType.PRACTICE,
+            approved_by="Release owner",
+            authority_owner="Release team",
+            approver_role="owner",
+            consequence="high",
+            review_due_at="2030-01-01T00:00:00+00:00",
+        )
+
+        self.assertTrue(applied.promoted)
+        self.assertEqual(situation.type, MemoryType.PRACTICE)
+        self.assertEqual(situation.authority_owner, "Release team")
+        self.assertEqual(situation.authority_role, "owner")
+        self.assertEqual(situation.authority_consequence, "high")
+
+    def test_cli_authority_set_persists_metadata_and_governance_blocks_expired_review(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Inspect rollback markers",
+                summary="Inspect rollback markers before deployment retry.",
+                approved_by="Legacy release owner",
+            )
+            store.add(practice)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "authority-set",
+                        practice.id,
+                        "--owner",
+                        "Release team",
+                        "--approved-by",
+                        "Release owner",
+                        "--approver-role",
+                        "owner",
+                        "--consequence",
+                        "high",
+                        "--review-due",
+                        "2020-01-01T00:00:00+00:00",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            loaded = MemoryStore(tmp).list(type=MemoryType.PRACTICE)[0]
+            self.assertEqual(loaded.authority_owner, "Release team")
+            governance_output = StringIO()
+            with redirect_stdout(governance_output):
+                self.assertEqual(main(["--root", tmp, "governance", "--memory", practice.id]), 0)
+            self.assertIn("State: blocked: review expired", governance_output.getvalue())
+
+
+class MemoryQualityDecayTests(unittest.TestCase):
+    def test_quality_report_marks_dragging_expired_stable_memory_decay_ready(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Retry deployment without checking marker",
+                summary="An obsolete retry practice that now causes drag.",
+                scope=MemoryScope(code=["deploy"]),
+                evidence=["Old incident note."],
+                confidence=0.45,
+                approved_by="Release owner",
+                authority_owner="Release team",
+                authority_role="owner",
+                authority_consequence="high",
+                authority_review_due_at="2020-01-01T00:00:00+00:00",
+            )
+            MemoryStore(tmp).add(practice)
+            add_drag_receipts(tmp, practice, count=3)
+
+            card = quality_card(practice, MemoryUseStore(tmp).list())
+            rendered = quality_report([practice], MemoryUseStore(tmp).list()).render()
+
+            self.assertEqual(card.state, "decay-ready")
+            self.assertIn("authority review expired", card.signals)
+            self.assertIn("3 drag signal(s)", card.signals)
+            self.assertIn("Decay Ready: 1", rendered)
+
+    def test_stable_decay_requires_authority_then_demotes_to_situation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Blindly retry deployment rollback",
+                summary="This old stable practice now repeatedly creates unrelated changes.",
+                scope=MemoryScope(code=["deploy"]),
+                evidence=["Old rollback guidance."],
+                confidence=0.45,
+                approved_by="Release owner",
+                authority_owner="Release team",
+                authority_role="owner",
+                authority_consequence="high",
+            )
+            store.add(practice)
+            add_drag_receipts(tmp, practice, count=3)
+            receipts = MemoryUseStore(tmp).list()
+
+            blocked = apply_decay_action(
+                store.list(),
+                receipts,
+                practice.id,
+                action="demote",
+                reason="Repeated no-overlap checkpoint evidence shows this should stop guiding work as stable memory.",
+            )
+
+            self.assertFalse(blocked.applied)
+            self.assertIn("stable-memory decay requires explicit approval", blocked.reason)
+
+            applied = apply_decay_action(
+                store.list(),
+                receipts,
+                practice.id,
+                action="demote",
+                reason="Repeated no-overlap checkpoint evidence shows this should stop guiding work as stable memory.",
+                approved_by="Release owner",
+                approver_role="owner",
+            )
+
+            self.assertTrue(applied.applied)
+            assert applied.memory is not None
+            self.assertEqual(applied.memory.type, MemoryType.SITUATION)
+            self.assertEqual(applied.memory.approved_by, "")
+            self.assertIn("Decay action demote:", applied.memory.evidence[-3])
+
+    def test_cli_quality_and_decay_apply_persist_controlled_weaken(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Old local dependency workaround",
+                summary="This workaround has repeated unrelated checkpoint evidence.",
+                scope=MemoryScope(code=["tools"]),
+                evidence=["Old workaround note."],
+                confidence=0.4,
+            )
+            store.add(situation)
+            add_drag_receipts(tmp, situation, count=2)
+
+            quality_output = StringIO()
+            with redirect_stdout(quality_output):
+                self.assertEqual(main(["--root", tmp, "quality", "--memory", situation.id]), 0)
+            self.assertIn("CMU Memory Quality and Decay", quality_output.getvalue())
+            self.assertIn("State: decay-ready", quality_output.getvalue())
+
+            decay_output = StringIO()
+            with redirect_stdout(decay_output):
+                self.assertEqual(
+                    main(
+                        [
+                            "--root",
+                            tmp,
+                            "decay-apply",
+                            situation.id,
+                            "--action",
+                            "weaken",
+                            "--reason",
+                            "Two unrelated linked checkpoints show the workaround is dragging retrieval.",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertIn("CMU Decay Action Applied", decay_output.getvalue())
+            loaded = MemoryStore(tmp).list(type=MemoryType.SITUATION)[0]
+            self.assertEqual(loaded.confidence, 0.25)
+
+
+class ImportExportPortabilityTests(unittest.TestCase):
+    def test_export_bundle_preserves_memory_authority_relationships_and_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Review rollback marker before retry",
+                summary="Deployment retries must inspect the rollback marker first.",
+                scope=MemoryScope(code=["deploy"], workflow=["release"]),
+                evidence=["Incident 42 confirmed marker drift."],
+                use_this_path="Inspect marker, then retry.",
+                approved_by="Release owner",
+                authority_owner="Release team",
+                authority_role="owner",
+                authority_consequence="high",
+            )
+            exception = Memory.create(
+                type=MemoryType.EXCEPTION,
+                title="Skip marker for docs-only deploy",
+                summary="Docs-only deploy does not need rollback marker inspection.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.EXCEPTION_TO,
+                        target_id=practice.id,
+                        reason="Docs deploy has no runtime rollback marker.",
+                    )
+                ],
+            )
+            store = MemoryStore(tmp)
+            store.add(practice)
+            store.add(exception)
+            add_strong_receipts(tmp, practice, count=1)
+
+            bundle = export_bundle_from_root(tmp)
+
+            self.assertEqual(bundle.schema, PORTABLE_BUNDLE_VERSION)
+            self.assertEqual(bundle.integrity["memory_count"], 2)
+            self.assertEqual(bundle.integrity["use_count"], 1)
+            exported = {item["id"]: item for item in bundle.memories}
+            self.assertEqual(exported[practice.id]["authority_owner"], "Release team")
+            self.assertEqual(exported[exception.id]["relationships"][0]["target_id"], practice.id)
+            self.assertEqual(bundle.uses[0]["memory_id"], practice.id)
+            self.assertFalse(bundle.warnings)
+
+    def test_import_bundle_is_dry_run_until_apply_then_restores_records(self) -> None:
+        with TemporaryDirectory() as source, TemporaryDirectory() as target:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check deploy receipt before follow-up",
+                summary="Follow-up deploy work should inspect the previous receipt.",
+                evidence=["Two deploy tasks used this successfully."],
+                approved_by="Release owner",
+                authority_owner="Release team",
+                authority_role="owner",
+                authority_consequence="high",
+            )
+            MemoryStore(source).add(practice)
+            add_strong_receipts(source, practice, count=1)
+            bundle = export_bundle_from_root(source).to_dict()
+
+            dry_run = import_portable_bundle(target, bundle)
+            self.assertFalse(dry_run.applied)
+            self.assertEqual(dry_run.memory_adds, [practice.id])
+            self.assertEqual(len(MemoryStore(target).list()), 0)
+
+            applied = import_portable_bundle(target, bundle, apply=True)
+            self.assertTrue(applied.applied)
+            [loaded] = MemoryStore(target).list(type=MemoryType.PRACTICE)
+            self.assertEqual(loaded.id, practice.id)
+            self.assertEqual(loaded.authority_role, "owner")
+            self.assertEqual(len(MemoryUseStore(target).list()), 1)
+
+    def test_import_blocks_different_existing_record_unless_update_existing_is_explicit(self) -> None:
+        with TemporaryDirectory() as source, TemporaryDirectory() as target:
+            original = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Original import source",
+                summary="The source version should win only with update-existing.",
+            )
+            MemoryStore(source).add(original)
+            changed = Memory.from_dict(original.to_dict())
+            changed.summary = "The target version is different."
+            MemoryStore(target).add(changed)
+            bundle = export_bundle_from_root(source).to_dict()
+
+            blocked = import_portable_bundle(target, bundle, apply=True)
+            self.assertFalse(blocked.applied)
+            self.assertIn(f"memory {original.id} already exists with different content", blocked.conflicts)
+            self.assertEqual(MemoryStore(target).list()[0].summary, "The target version is different.")
+
+            updated = import_portable_bundle(target, bundle, apply=True, update_existing=True)
+            self.assertTrue(updated.applied)
+            self.assertEqual(MemoryStore(target).list()[0].summary, original.summary)
+
+    def test_cli_portable_export_and_import_apply_round_trip(self) -> None:
+        with TemporaryDirectory() as source, TemporaryDirectory() as target:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Portable CLI round trip",
+                summary="CLI export/import should move this record.",
+            )
+            MemoryStore(source).add(memory)
+            bundle_path = Path(source) / "cmu-portable.json"
+
+            export_output = StringIO()
+            with redirect_stdout(export_output):
+                self.assertEqual(main(["--root", source, "portable-export", "--output", str(bundle_path)]), 0)
+            self.assertIn("CMU Portable Export Written", export_output.getvalue())
+
+            preview_output = StringIO()
+            with redirect_stdout(preview_output):
+                self.assertEqual(main(["--root", target, "portable-import", str(bundle_path)]), 0)
+            self.assertIn("Dry Run: pass --apply", preview_output.getvalue())
+            self.assertEqual(MemoryStore(target).list(), [])
+
+            apply_output = StringIO()
+            with redirect_stdout(apply_output):
+                self.assertEqual(main(["--root", target, "portable-import", str(bundle_path), "--apply"]), 0)
+            self.assertIn("Applied: yes", apply_output.getvalue())
+            self.assertEqual(MemoryStore(target).list()[0].id, memory.id)
 
 
 def init_git_repo(root: str) -> None:

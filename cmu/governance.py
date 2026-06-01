@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .authority import authority_state, review_expiry_state
 from .challenges import challenged_memory_id, is_challenge_candidate
 from .models import Memory, MemoryScope, MemoryStatus, MemoryType
 from .usage import MemoryUseReceipt, UseReviewCard, use_review
@@ -17,6 +18,7 @@ class GovernanceCard:
     memory_type: str
     status: str
     authority: str
+    authority_review: str
     scope: str
     state: str
     use_evidence: str
@@ -29,6 +31,7 @@ class GovernanceCard:
             [
                 f"- {self.memory_id} [{self.memory_type}/{self.status}] {self.title}",
                 f"  Authority: {self.authority}",
+                f"  Authority Review: {self.authority_review}",
                 f"  Scope: {self.scope}",
                 f"  State: {self.state}",
                 f"  Use Evidence: {self.use_evidence}",
@@ -114,6 +117,7 @@ def governance_card(
         memory_type=memory.type.value,
         status=memory.status.value,
         authority=authority,
+        authority_review=review_expiry_state(memory),
         scope=format_scope(memory.scope),
         state=state,
         use_evidence=use_card.signal_summary() if use_card is not None else "no use-review card",
@@ -130,8 +134,9 @@ def governance_state(
 ) -> tuple[str, str]:
     if active_challenges:
         return "blocked: active challenge", "resolve active challenge before broadening trust or treating this stable memory as fully settled"
-    if not memory.approved_by:
-        return "blocked: missing authority", "add explicit authority through approved promotion/strengthen flow or use the challenge path before broader trust"
+    authority_status, authority_next = authority_state(memory)
+    if authority_status in {"missing authority", "review expired", "permission blocked"}:
+        return f"blocked: {authority_status}", authority_next
     if use_card is not None and use_card.status == "Strengthen evidence suggested":
         return "ready: strengthen evidence", "prepare/apply approved strengthen evidence if the current scope is still accurate"
     if use_card is not None and use_card.status == "Review suggested":

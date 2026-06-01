@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import sys
 
+from .agent_api import AgentIntegration
 from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
+from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .governance import governance_report
 from .graphview import graph_memory_view_report
@@ -13,8 +17,10 @@ from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
+from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle
 from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
+from .quality import apply_decay_action, quality_report
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
     PersistentSemanticIndex,
@@ -25,7 +31,13 @@ from .retrieval import (
     semantic_index_status,
     semantic_proposal_diagnostics,
 )
-from .scenarios import ScenarioEvaluationRequest, evaluate_scenario
+from .scenarios import (
+    ScenarioDefinition,
+    ScenarioEvaluationRequest,
+    ScenarioLibraryStore,
+    evaluate_scenario,
+    run_scenario_library,
+)
 from .store import MemoryStore
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
@@ -64,6 +76,38 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Create the local CMU store.")
     init_parser.set_defaults(func=cmd_init)
 
+    agent_tools_parser = subparsers.add_parser("agent-tools", help="Show the stable direct agent tool-call manifest as JSON.")
+    agent_tools_parser.set_defaults(func=cmd_agent_tools)
+
+    agent_call_parser = subparsers.add_parser("agent-call", help="Invoke one stable direct agent tool with JSON arguments.")
+    agent_call_parser.add_argument("tool", help="Agent tool name from cmu agent-tools.")
+    agent_call_parser.add_argument("--input", default="", help="Inline JSON object containing the tool arguments.")
+    agent_call_parser.add_argument("--input-file", default="", help="Read JSON arguments from a file, or '-' for stdin.")
+    agent_call_parser.set_defaults(func=cmd_agent_call)
+
+    portable_export_parser = subparsers.add_parser(
+        "portable-export",
+        help="Export memories and evidence receipts as a versioned portable JSON bundle.",
+    )
+    portable_export_parser.add_argument("--output", default="-", help="Write bundle to a file, or '-' for stdout.")
+    portable_export_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
+    portable_export_parser.add_argument("--memory", default="", help="Export one memory and its receipts only.")
+    portable_export_parser.add_argument("--no-uses", action="store_true", help="Exclude use receipts from the bundle.")
+    portable_export_parser.set_defaults(func=cmd_portable_export)
+
+    portable_import_parser = subparsers.add_parser(
+        "portable-import",
+        help="Preview or apply a versioned portable CMU bundle.",
+    )
+    portable_import_parser.add_argument("bundle", help="Portable bundle JSON file.")
+    portable_import_parser.add_argument("--apply", action="store_true", help="Write the import plan. Default is dry-run.")
+    portable_import_parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        help="Update existing records with matching ids instead of treating differences as conflicts.",
+    )
+    portable_import_parser.set_defaults(func=cmd_portable_import)
+
     add_parser = subparsers.add_parser("add", help="Add a structured CMU memory.")
     add_parser.add_argument("--type", choices=[item.value for item in MemoryType], default=MemoryType.SITUATION.value)
     add_parser.add_argument("--title", required=True)
@@ -82,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--liability", type=int, default=1)
     add_parser.add_argument("--confidence", type=float, default=0.6)
     add_parser.add_argument("--approved-by", default="", help="Owner or team approving a stable Practice/Anchor memory.")
+    add_parser.add_argument("--authority-owner", default="", help="Accountable person or team for consequence-based authority.")
+    add_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    add_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
+    add_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
     add_parser.set_defaults(func=cmd_add)
 
     list_parser = subparsers.add_parser("list", help="List stored CMU memories.")
@@ -270,6 +318,50 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--evidence", action="append", default=[], help="Evidence observed in the scenario.")
     evaluate_parser.set_defaults(func=cmd_evaluate_scenario)
 
+    scenario_add_parser = subparsers.add_parser("scenario-add", help="Save a repeatable read-only scenario evaluation.")
+    scenario_add_parser.add_argument("prompt", nargs="*", help="Task scenario prompt to save.")
+    scenario_add_parser.add_argument("--name", required=True, help="Short scenario name.")
+    scenario_add_parser.add_argument("--description", default="", help="Why this scenario belongs in the library.")
+    scenario_add_parser.add_argument("--tag", action="append", default=[], help="Scenario grouping tag.")
+    scenario_add_parser.add_argument("--actor", default="developer")
+    scenario_add_parser.add_argument("--area", default="")
+    scenario_add_parser.add_argument("--file", action="append", default=[])
+    scenario_add_parser.add_argument("--workflow", action="append", default=[])
+    scenario_add_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    scenario_add_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    scenario_add_parser.add_argument("--repeated-error", action="store_true")
+    scenario_add_parser.add_argument("--uncertainty", action="store_true")
+    scenario_add_parser.add_argument("--shared-contract", action="store_true")
+    scenario_add_parser.add_argument("--irreversible", action="store_true")
+    scenario_add_parser.add_argument("--unfamiliar", action="store_true")
+    scenario_add_parser.add_argument("--expect-trigger", choices=["must-call", "should-call", "silent-skip"], default="")
+    scenario_add_parser.add_argument("--expect-action", choices=["action-note", "quiet"], default="")
+    scenario_add_parser.add_argument("--expect-memory", default="", help="Expected surfaced memory id, or 'none'.")
+    scenario_add_parser.add_argument("--expect-candidate", choices=["draft-recommended", "not-recommended"], default="")
+    scenario_add_parser.add_argument("--learning-signal", action="append", default=[], help="Reusable learning signal expected in the scenario.")
+    scenario_add_parser.add_argument("--worked", default="", help="What worked in the scenario, if reusable.")
+    scenario_add_parser.add_argument("--failed", default="", help="What failed in the scenario, if reusable.")
+    scenario_add_parser.add_argument("--future-use", default="", help="Why future work should reuse this learning.")
+    scenario_add_parser.add_argument("--evidence", action="append", default=[], help="Evidence expected in the scenario.")
+    scenario_add_parser.set_defaults(func=cmd_scenario_add)
+
+    scenario_list_parser = subparsers.add_parser("scenario-list", help="List saved scenario-library cases.")
+    scenario_list_parser.add_argument("--tag", default="", help="Only list scenarios with this tag.")
+    scenario_list_parser.add_argument("--limit", type=int, default=50)
+    scenario_list_parser.set_defaults(func=cmd_scenario_list)
+
+    scenario_run_parser = subparsers.add_parser("scenario-run", help="Run saved scenario-library cases.")
+    scenario_run_parser.add_argument("scenario", nargs="?", default="", help="Scenario id or exact name. Omit to run the library.")
+    scenario_run_parser.add_argument("--tag", default="", help="Run scenarios with this tag.")
+    scenario_run_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider. Defaults to off.",
+    )
+    scenario_run_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any scenario needs review.")
+    scenario_run_parser.set_defaults(func=cmd_scenario_run)
+
     trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
     trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
     trace_add_parser.add_argument("--actor", default="developer")
@@ -333,6 +425,33 @@ def build_parser() -> argparse.ArgumentParser:
     governance_parser.add_argument("--memory", default="", help="Limit governance view to one stable memory id.")
     governance_parser.set_defaults(func=cmd_governance)
 
+    authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
+    authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
+    authority_parser.add_argument("--all", action="store_true", help="Include non-stable memories in the authority view.")
+    authority_parser.set_defaults(func=cmd_authority)
+
+    authority_set_parser = subparsers.add_parser("authority-set", help="Apply explicit consequence-based authority metadata.")
+    authority_set_parser.add_argument("memory_id", help="Memory id to assign authority metadata.")
+    authority_set_parser.add_argument("--owner", required=True, help="Accountable person or team.")
+    authority_set_parser.add_argument("--approved-by", required=True, help="Person or team approving this memory.")
+    authority_set_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], required=True)
+    authority_set_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], required=True)
+    authority_set_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
+    authority_set_parser.set_defaults(func=cmd_authority_set)
+
+    quality_parser = subparsers.add_parser("quality", help="Show the read-only Memory Quality and Decay Model.")
+    quality_parser.add_argument("--memory", default="", help="Limit quality view to one memory id.")
+    quality_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
+    quality_parser.set_defaults(func=cmd_quality)
+
+    decay_parser = subparsers.add_parser("decay-apply", help="Apply an explicit evidence-backed memory decay action.")
+    decay_parser.add_argument("memory_id", help="Memory id to weaken, demote, or retire.")
+    decay_parser.add_argument("--action", choices=["weaken", "demote", "retire"], required=True)
+    decay_parser.add_argument("--reason", required=True, help="Evidence-backed reason for the decay action.")
+    decay_parser.add_argument("--approved-by", default="", help="Required for stable-memory decay actions.")
+    decay_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    decay_parser.set_defaults(func=cmd_decay_apply)
+
     analytics_parser = subparsers.add_parser("analytics", help="Show the read-only Usefulness and Drag Analytics view.")
     analytics_parser.add_argument("--memory", default="", help="Limit analytics view to one memory id.")
     analytics_parser.set_defaults(func=cmd_analytics)
@@ -392,6 +511,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=MemoryType.SITUATION.value,
     )
     promote_parser.add_argument("--approved-by", default="", help="Owner or team approving stable Practice/Anchor promotion.")
+    promote_parser.add_argument("--authority-owner", default="", help="Accountable person or team for stable-memory authority.")
+    promote_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    promote_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
+    promote_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
     promote_parser.set_defaults(func=cmd_promote)
 
     challenge_parser = subparsers.add_parser("challenge", help="Record a deliberate challenge to Practice or Anchor memory.")
@@ -565,6 +688,17 @@ def cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
         confidence=args.confidence,
         approved_by=args.approved_by,
     )
+    if args.authority_owner or args.approver_role or args.consequence or args.review_due:
+        decision = set_memory_authority(
+            memory,
+            owner=args.authority_owner,
+            approved_by=args.approved_by,
+            approver_role=args.approver_role,
+            consequence=args.consequence,
+            review_due_at=args.review_due,
+        )
+        if not decision.applied:
+            raise SystemExit(decision.reason)
     store.add(memory)
     print(f"Added {memory.type.value} memory {memory.id}: {memory.title}")
     return 0
@@ -659,6 +793,68 @@ def cmd_graph(args: argparse.Namespace, store: MemoryStore) -> int:
         raise SystemExit(error.args[0]) from error
     print(report.render())
     return 0
+
+
+def cmd_agent_tools(args: argparse.Namespace, store: MemoryStore) -> int:
+    print(json.dumps(AgentIntegration(args.root).manifest(), indent=2, ensure_ascii=True))
+    return 0
+
+
+def cmd_agent_call(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.input and args.input_file:
+        raise SystemExit("agent-call accepts either --input or --input-file, not both")
+    raw_input = args.input or "{}"
+    if args.input_file:
+        if args.input_file == "-":
+            raw_input = sys.stdin.read()
+        else:
+            raw_input = Path(args.input_file).read_text(encoding="utf-8")
+    try:
+        arguments = json.loads(raw_input)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"agent-call --input must be valid JSON: {error.msg}") from error
+    response = AgentIntegration(args.root).invoke(args.tool, arguments)
+    print(json.dumps(response, indent=2, ensure_ascii=True))
+    return 0 if response["ok"] else 1
+
+
+def cmd_portable_export(args: argparse.Namespace, store: MemoryStore) -> int:
+    bundle = export_bundle_from_root(
+        args.root,
+        include_retired=args.include_retired,
+        memory_id=args.memory,
+        include_uses=not args.no_uses,
+    )
+    rendered = bundle.render_json()
+    if args.output == "-":
+        print(rendered, end="")
+    else:
+        Path(args.output).write_text(rendered, encoding="utf-8")
+        print("CMU Portable Export Written")
+        print(f"Path: {args.output}")
+        print(f"Schema: {bundle.schema}")
+        print(f"Memories: {len(bundle.memories)}")
+        print(f"Use Receipts: {len(bundle.uses)}")
+        if bundle.warnings:
+            print("Warnings:")
+            for warning in bundle.warnings[:10]:
+                print(f"- {warning}")
+    return 0
+
+
+def cmd_portable_import(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        bundle = load_portable_bundle(args.bundle)
+        report = import_portable_bundle(
+            args.root,
+            bundle,
+            apply=args.apply,
+            update_existing=args.update_existing,
+        )
+    except (OSError, ValueError, KeyError) as error:
+        raise SystemExit(f"portable-import failed: {error}") from error
+    print(report.render())
+    return 0 if not (args.apply and report.conflicts) else 1
 
 
 def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
@@ -858,6 +1054,82 @@ def cmd_evaluate_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_scenario_add(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("scenario-add requires a task prompt")
+    scenario = ScenarioDefinition.create(
+        name=args.name,
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+        expect_trigger=args.expect_trigger,
+        expect_action=args.expect_action,
+        expect_memory=args.expect_memory,
+        expect_candidate=args.expect_candidate,
+        learning_signals=args.learning_signal,
+        worked=args.worked,
+        failed=args.failed,
+        future_use=args.future_use,
+        evidence=args.evidence,
+        tags=args.tag,
+        description=args.description,
+    )
+    ScenarioLibraryStore(args.root).add(scenario)
+    print("CMU Scenario Saved")
+    print(f"ID: {scenario.id}")
+    print(f"Name: {scenario.name}")
+    print(f"Prompt: {scenario.prompt}")
+    if scenario.tags:
+        print(f"Tags: {', '.join(scenario.tags)}")
+    return 0
+
+
+def cmd_scenario_list(args: argparse.Namespace, store: MemoryStore) -> int:
+    scenarios = ScenarioLibraryStore(args.root).list(tag=args.tag)
+    if not scenarios:
+        print("No saved CMU scenarios.")
+        return 0
+    print("CMU Scenario Library")
+    for scenario in scenarios[: args.limit]:
+        print(scenario.render_summary())
+    if len(scenarios) > args.limit:
+        print(f"... {len(scenarios) - args.limit} more")
+    return 0
+
+
+def cmd_scenario_run(args: argparse.Namespace, store: MemoryStore) -> int:
+    library = ScenarioLibraryStore(args.root)
+    if args.scenario:
+        scenarios = [library.get(args.scenario)]
+        tag = ""
+    else:
+        scenarios = library.list(tag=args.tag)
+        tag = args.tag
+    memories = store.list()
+    semantic_index = load_semantic_index(args, memories)
+    report = run_scenario_library(
+        scenarios,
+        memories,
+        MemoryUseStore(args.root).list(),
+        semantic_index=semantic_index,
+        tag=tag,
+    )
+    print(report.render())
+    if args.strict and report.has_review_items():
+        return 1
+    return 0
+
+
 def cmd_trace_add(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -982,6 +1254,58 @@ def cmd_governance(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_authority(args: argparse.Namespace, store: MemoryStore) -> int:
+    print(authority_report(store.list(), memory_id=args.memory, include_all=args.all).render())
+    return 0
+
+
+def cmd_authority_set(args: argparse.Namespace, store: MemoryStore) -> int:
+    memory = find_memory(store.list(), args.memory_id)
+    decision = set_memory_authority(
+        memory,
+        owner=args.owner,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+        consequence=args.consequence,
+        review_due_at=args.review_due,
+    )
+    if decision.applied and decision.memory is not None:
+        store.update(decision.memory)
+    print(decision.render())
+    return 0
+
+
+def cmd_quality(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    if args.include_retired:
+        memories.extend(store.list(status=MemoryStatus.RETIRED))
+    print(
+        quality_report(
+            memories,
+            MemoryUseStore(args.root).list(),
+            memory_id=args.memory,
+            include_retired=args.include_retired,
+        ).render()
+    )
+    return 0
+
+
+def cmd_decay_apply(args: argparse.Namespace, store: MemoryStore) -> int:
+    decision = apply_decay_action(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        args.memory_id,
+        action=args.action,
+        reason=args.reason,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+    )
+    if decision.applied and decision.memory is not None:
+        store.update(decision.memory)
+    print(decision.render())
+    return 0
+
+
 def cmd_analytics(args: argparse.Namespace, store: MemoryStore) -> int:
     report = usefulness_analytics_report(
         store.list(),
@@ -1051,7 +1375,16 @@ def cmd_resolve_question(args: argparse.Namespace, store: MemoryStore) -> int:
 
 
 def cmd_promote(args: argparse.Namespace, store: MemoryStore) -> int:
-    decision = promote_memory(store.list(), args.memory_id, MemoryType(args.to), approved_by=args.approved_by)
+    decision = promote_memory(
+        store.list(),
+        args.memory_id,
+        MemoryType(args.to),
+        approved_by=args.approved_by,
+        authority_owner=args.authority_owner,
+        approver_role=args.approver_role,
+        consequence=args.consequence,
+        review_due_at=args.review_due,
+    )
     if decision.promoted and decision.memory is not None:
         store.update(decision.memory)
     print(decision.render())

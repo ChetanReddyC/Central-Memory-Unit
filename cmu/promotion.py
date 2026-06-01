@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .authority import set_memory_authority
 from .models import Memory, MemoryType, utc_now
 from .retrieval import tokenize
 
@@ -107,6 +108,10 @@ def promote_memory(
     memory_id: str,
     target_type: MemoryType,
     approved_by: str = "",
+    authority_owner: str = "",
+    approver_role: str = "",
+    consequence: str = "",
+    review_due_at: str = "",
 ) -> PromotionDecision:
     review = review_promotion(memories, memory_id, target_type)
     if not review.gate_passed:
@@ -124,6 +129,7 @@ def promote_memory(
             reason="explicit owner/team approval required",
             memory=review.memory,
         )
+    original = review.memory.to_dict()
     review.memory.type = target_type
     review.memory.confidence = max(review.memory.confidence, stable_confidence_floor(target_type))
     if requires_authority:
@@ -131,6 +137,19 @@ def promote_memory(
         approval_evidence = f"Authority approval: {normalized_approver}"
         if approval_evidence not in review.memory.evidence:
             review.memory.evidence.append(approval_evidence)
+        if authority_owner or approver_role or consequence or review_due_at:
+            authority = set_memory_authority(
+                review.memory,
+                owner=authority_owner,
+                approved_by=normalized_approver,
+                approver_role=approver_role,
+                consequence=consequence,
+                review_due_at=review_due_at,
+            )
+            if not authority.applied:
+                restored = Memory.from_dict(original)
+                review.memory.__dict__.update(restored.__dict__)
+                return PromotionDecision(promoted=False, reason=authority.reason, memory=review.memory)
     review.memory.updated_at = utc_now()
     return PromotionDecision(
         promoted=True,

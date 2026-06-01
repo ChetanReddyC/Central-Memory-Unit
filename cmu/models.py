@@ -85,6 +85,11 @@ class Memory:
     liability_score: int = 1
     confidence: float = 0.6
     approved_by: str = ""
+    authority_owner: str = ""
+    authority_role: str = ""
+    authority_consequence: str = ""
+    authority_approved_at: str = ""
+    authority_review_due_at: str = ""
     status: MemoryStatus = MemoryStatus.ACTIVE
     created_at: str = field(default_factory=lambda: utc_now())
     updated_at: str = field(default_factory=lambda: utc_now())
@@ -106,6 +111,11 @@ class Memory:
         liability_score: int = 1,
         confidence: float = 0.6,
         approved_by: str = "",
+        authority_owner: str = "",
+        authority_role: str = "",
+        authority_consequence: str = "",
+        authority_approved_at: str = "",
+        authority_review_due_at: str = "",
     ) -> "Memory":
         return cls(
             id=f"mem_{uuid4().hex[:12]}",
@@ -122,6 +132,11 @@ class Memory:
             liability_score=max(1, min(liability_score, 5)),
             confidence=max(0.0, min(confidence, 1.0)),
             approved_by=approved_by.strip(),
+            authority_owner=authority_owner.strip(),
+            authority_role=authority_role.strip(),
+            authority_consequence=authority_consequence.strip(),
+            authority_approved_at=authority_approved_at.strip() or (utc_now() if approved_by.strip() else ""),
+            authority_review_due_at=authority_review_due_at.strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,6 +166,11 @@ class Memory:
             liability_score=int(data.get("liability_score", 1)),
             confidence=float(data.get("confidence", 0.6)),
             approved_by=data.get("approved_by", ""),
+            authority_owner=data.get("authority_owner", ""),
+            authority_role=data.get("authority_role", ""),
+            authority_consequence=data.get("authority_consequence", ""),
+            authority_approved_at=data.get("authority_approved_at", ""),
+            authority_review_due_at=data.get("authority_review_due_at", ""),
             status=MemoryStatus(data.get("status", MemoryStatus.ACTIVE.value)),
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),

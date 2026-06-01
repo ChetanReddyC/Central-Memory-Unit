@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import uuid4
 
+from .json_store import read_json, update_json
 from .models import Memory
 from .onboarding import OnboardingSeed, build_onboarding_seed
 from .retrieval import PreflightQuery, SemanticIndex, action_threshold, build_action_note, rank_memories
@@ -27,6 +29,231 @@ class ScenarioEvaluationRequest:
     failed: str = ""
     future_use: str = ""
     evidence: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ScenarioDefinition:
+    id: str
+    name: str
+    prompt: str
+    actor: str = "developer"
+    area: str = ""
+    files: list[str] = field(default_factory=list)
+    workflow: list[str] = field(default_factory=list)
+    environment: list[str] = field(default_factory=list)
+    risk: str = "medium"
+    repeated_error: bool = False
+    uncertainty: bool = False
+    shared_contract: bool = False
+    irreversible: bool = False
+    unfamiliar: bool = False
+    expect_trigger: str = ""
+    expect_action: str = ""
+    expect_memory: str = ""
+    expect_candidate: str = ""
+    learning_signals: list[str] = field(default_factory=list)
+    worked: str = ""
+    failed: str = ""
+    future_use: str = ""
+    evidence: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    description: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        name: str,
+        prompt: str,
+        actor: str = "developer",
+        area: str = "",
+        files: list[str] | None = None,
+        workflow: list[str] | None = None,
+        environment: list[str] | None = None,
+        risk: str = "medium",
+        repeated_error: bool = False,
+        uncertainty: bool = False,
+        shared_contract: bool = False,
+        irreversible: bool = False,
+        unfamiliar: bool = False,
+        expect_trigger: str = "",
+        expect_action: str = "",
+        expect_memory: str = "",
+        expect_candidate: str = "",
+        learning_signals: list[str] | None = None,
+        worked: str = "",
+        failed: str = "",
+        future_use: str = "",
+        evidence: list[str] | None = None,
+        tags: list[str] | None = None,
+        description: str = "",
+    ) -> "ScenarioDefinition":
+        return cls(
+            id=f"scn_{uuid4().hex[:12]}",
+            name=name.strip(),
+            prompt=prompt.strip(),
+            actor=actor.strip() or "developer",
+            area=area.strip(),
+            files=[item.strip() for item in files or [] if item.strip()],
+            workflow=[item.strip() for item in workflow or [] if item.strip()],
+            environment=[item.strip() for item in environment or [] if item.strip()],
+            risk=risk.strip() or "medium",
+            repeated_error=repeated_error,
+            uncertainty=uncertainty,
+            shared_contract=shared_contract,
+            irreversible=irreversible,
+            unfamiliar=unfamiliar,
+            expect_trigger=expect_trigger.strip(),
+            expect_action=expect_action.strip(),
+            expect_memory=expect_memory.strip(),
+            expect_candidate=expect_candidate.strip(),
+            learning_signals=[item.strip() for item in learning_signals or [] if item.strip()],
+            worked=worked.strip(),
+            failed=failed.strip(),
+            future_use=future_use.strip(),
+            evidence=[item.strip() for item in evidence or [] if item.strip()],
+            tags=[item.strip() for item in tags or [] if item.strip()],
+            description=description.strip(),
+        )
+
+    def query(self) -> PreflightQuery:
+        return PreflightQuery(
+            prompt=self.prompt,
+            actor=self.actor,
+            area=self.area,
+            files=self.files,
+            workflow=self.workflow,
+            environment=self.environment,
+            risk=self.risk,
+        )
+
+    def request(self) -> ScenarioEvaluationRequest:
+        return ScenarioEvaluationRequest(
+            prompt=self.prompt,
+            query=self.query(),
+            repeated_error=self.repeated_error,
+            uncertainty=self.uncertainty,
+            shared_contract=self.shared_contract,
+            irreversible=self.irreversible,
+            unfamiliar=self.unfamiliar,
+            expect_trigger=self.expect_trigger,
+            expect_action=self.expect_action,
+            expect_memory=self.expect_memory,
+            expect_candidate=self.expect_candidate,
+            learning_signals=list(self.learning_signals),
+            worked=self.worked,
+            failed=self.failed,
+            future_use=self.future_use,
+            evidence=list(self.evidence),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "prompt": self.prompt,
+            "actor": self.actor,
+            "area": self.area,
+            "files": self.files,
+            "workflow": self.workflow,
+            "environment": self.environment,
+            "risk": self.risk,
+            "repeated_error": self.repeated_error,
+            "uncertainty": self.uncertainty,
+            "shared_contract": self.shared_contract,
+            "irreversible": self.irreversible,
+            "unfamiliar": self.unfamiliar,
+            "expect_trigger": self.expect_trigger,
+            "expect_action": self.expect_action,
+            "expect_memory": self.expect_memory,
+            "expect_candidate": self.expect_candidate,
+            "learning_signals": self.learning_signals,
+            "worked": self.worked,
+            "failed": self.failed,
+            "future_use": self.future_use,
+            "evidence": self.evidence,
+            "tags": self.tags,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScenarioDefinition":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            prompt=data["prompt"],
+            actor=data.get("actor", "developer"),
+            area=data.get("area", ""),
+            files=list(data.get("files", [])),
+            workflow=list(data.get("workflow", [])),
+            environment=list(data.get("environment", [])),
+            risk=data.get("risk", "medium"),
+            repeated_error=bool(data.get("repeated_error", False)),
+            uncertainty=bool(data.get("uncertainty", False)),
+            shared_contract=bool(data.get("shared_contract", False)),
+            irreversible=bool(data.get("irreversible", False)),
+            unfamiliar=bool(data.get("unfamiliar", False)),
+            expect_trigger=data.get("expect_trigger", ""),
+            expect_action=data.get("expect_action", ""),
+            expect_memory=data.get("expect_memory", ""),
+            expect_candidate=data.get("expect_candidate", ""),
+            learning_signals=list(data.get("learning_signals", [])),
+            worked=data.get("worked", ""),
+            failed=data.get("failed", ""),
+            future_use=data.get("future_use", ""),
+            evidence=list(data.get("evidence", [])),
+            tags=list(data.get("tags", [])),
+            description=data.get("description", ""),
+        )
+
+    def render_summary(self) -> str:
+        tags = f" tags={','.join(self.tags)}" if self.tags else ""
+        expectations = []
+        if self.expect_trigger:
+            expectations.append(f"trigger={self.expect_trigger}")
+        if self.expect_action:
+            expectations.append(f"action={self.expect_action}")
+        if self.expect_memory:
+            expectations.append(f"memory={self.expect_memory}")
+        if self.expect_candidate:
+            expectations.append(f"candidate={self.expect_candidate}")
+        expected = f" expects {' '.join(expectations)}" if expectations else ""
+        return f"{self.id} - {self.name} [{self.risk}]{tags}{expected}"
+
+
+class ScenarioLibraryStore:
+    def __init__(self, root) -> None:
+        from pathlib import Path
+
+        self.root = Path(root)
+        self.store_file = self.root / ".cmu" / "scenarios.json"
+
+    def add(self, scenario: ScenarioDefinition) -> ScenarioDefinition:
+        return update_json(
+            self.store_file,
+            {"version": 1, "scenarios": []},
+            lambda data: append_scenario(data, scenario),
+        )
+
+    def list(self, *, tag: str = "") -> list[ScenarioDefinition]:
+        scenarios = [ScenarioDefinition.from_dict(item) for item in self._read()["scenarios"]]
+        if tag:
+            scenarios = [scenario for scenario in scenarios if tag in scenario.tags]
+        return sorted(scenarios, key=lambda item: item.name.lower())
+
+    def get(self, scenario_id: str) -> ScenarioDefinition:
+        for scenario in self.list():
+            if scenario.id == scenario_id or scenario.name == scenario_id:
+                return scenario
+        raise KeyError(f"Scenario not found: {scenario_id}")
+
+    def _read(self) -> dict:
+        return read_json(self.store_file, {"version": 1, "scenarios": []})
+
+
+def append_scenario(data: dict, scenario: ScenarioDefinition) -> ScenarioDefinition:
+    data["scenarios"].append(scenario.to_dict())
+    return scenario
 
 
 @dataclass
@@ -96,6 +323,48 @@ class ScenarioEvaluationReport:
         return "\n".join(lines)
 
 
+@dataclass
+class ScenarioLibraryRunItem:
+    scenario: ScenarioDefinition
+    report: ScenarioEvaluationReport
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.report.checks) and all(check.passed for check in self.report.checks)
+
+    def render(self) -> str:
+        status = "pass" if self.passed else "review"
+        failed = [check.name for check in self.report.checks if not check.passed]
+        suffix = f" failed={','.join(failed)}" if failed else ""
+        memory = f" memory={self.report.matched_memory_id or 'none'}"
+        return f"- {status}: {self.scenario.id} {self.scenario.name} verdict={self.report.verdict}{memory}{suffix}"
+
+
+@dataclass
+class ScenarioLibraryRunReport:
+    items: list[ScenarioLibraryRunItem]
+    tag: str = ""
+
+    def render(self) -> str:
+        passed = sum(1 for item in self.items if item.passed)
+        review = len(self.items) - passed
+        lines = [
+            "CMU Scenario Library Run",
+            "Mode: read-only scenario regression; no memories or receipts are mutated.",
+            f"Filter: tag={self.tag}" if self.tag else "Filter: all scenarios",
+            f"Summary: total={len(self.items)} pass={passed} review={review}",
+        ]
+        if self.items:
+            lines.append("")
+            lines.extend(item.render() for item in self.items)
+        else:
+            lines.extend(["", "No scenarios matched."])
+        return "\n".join(lines)
+
+    def has_review_items(self) -> bool:
+        return any(not item.passed for item in self.items)
+
+
 def evaluate_scenario(
     memories: list[Memory],
     receipts: list[MemoryUseReceipt],
@@ -158,6 +427,24 @@ def evaluate_scenario(
         verdict=verdict,
         proof_points=proof_points,
     )
+
+
+def run_scenario_library(
+    scenarios: list[ScenarioDefinition],
+    memories: list[Memory],
+    receipts: list[MemoryUseReceipt],
+    *,
+    semantic_index: SemanticIndex | None = None,
+    tag: str = "",
+) -> ScenarioLibraryRunReport:
+    items = [
+        ScenarioLibraryRunItem(
+            scenario=scenario,
+            report=evaluate_scenario(memories, receipts, scenario.request(), semantic_index=semantic_index),
+        )
+        for scenario in scenarios
+    ]
+    return ScenarioLibraryRunReport(items=items, tag=tag)
 
 
 def evaluate_candidate_signal(request: ScenarioEvaluationRequest) -> ScenarioCandidateSignal:
