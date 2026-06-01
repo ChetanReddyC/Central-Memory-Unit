@@ -21,6 +21,7 @@ from .portable import export_bundle_from_root, import_portable_bundle, load_port
 from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
+from .quickstart import quickstart_demo
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
     PersistentSemanticIndex,
@@ -75,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init", help="Create the local CMU store.")
     init_parser.set_defaults(func=cmd_init)
+
+    quickstart_parser = subparsers.add_parser("quickstart-demo", help="Run a small Git-backed CMU proof loop.")
+    quickstart_parser.add_argument("--apply", action="store_true", help="Create the demo memory, receipt, commit, and link evidence.")
+    quickstart_parser.set_defaults(func=cmd_quickstart_demo)
 
     agent_tools_parser = subparsers.add_parser("agent-tools", help="Show the stable direct agent tool-call manifest as JSON.")
     agent_tools_parser.set_defaults(func=cmd_agent_tools)
@@ -661,6 +666,12 @@ def cmd_init(args: argparse.Namespace, store: MemoryStore) -> int:
     path = store.init()
     print(f"Initialized CMU store at {path}")
     return 0
+
+
+def cmd_quickstart_demo(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = quickstart_demo(args.root, apply=args.apply)
+    print(report.render())
+    return 0 if report.applied or not args.apply else 1
 
 
 def cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:

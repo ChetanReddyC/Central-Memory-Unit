@@ -8163,6 +8163,43 @@ class ImportExportPortabilityTests(unittest.TestCase):
             self.assertEqual(MemoryStore(target).list()[0].id, memory.id)
 
 
+class QuickstartDemoTests(unittest.TestCase):
+    def test_cli_quickstart_demo_dry_run_explains_proof_loop_without_mutating(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "quickstart-demo"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Quickstart Demo", rendered)
+            self.assertIn("Applied: no", rendered)
+            self.assertIn("seed one scoped Practice memory", rendered)
+            self.assertEqual(MemoryStore(tmp).list(), [])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_quickstart_demo_apply_creates_commit_linked_receipt_and_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "quickstart-demo", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Applied: yes", rendered)
+            self.assertIn("demo checkpoint committed and linked", rendered)
+            self.assertIn("CMU Memory Use Summary", rendered)
+            self.assertIn("Committed: 1", rendered)
+            [memory] = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.memory_id, memory.id)
+            self.assertEqual(receipt.outcome_signal, "committed")
+            self.assertTrue(receipt.commit_hash)
+            self.assertEqual(receipt.commit_files, ["quickstart_demo/rollback_notes.txt"])
+
+
 def init_git_repo(root: str) -> None:
     run_git_test(root, ["init"])
     run_git_test(root, ["config", "user.email", "cmu@example.test"])
