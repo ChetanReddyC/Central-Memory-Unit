@@ -82,6 +82,34 @@ class PortabilityReport:
         return "\n".join(lines)
 
 
+@dataclass
+class PortableValidationReport:
+    schema: str
+    valid: bool
+    memory_count: int = 0
+    use_count: int = 0
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        lines = [
+            "CMU Portable Bundle Validation",
+            f"Schema: {self.schema or 'missing'}",
+            f"Status: {'pass' if self.valid else 'fail'}",
+            f"Bundle Memories: {self.memory_count}",
+            f"Bundle Use Receipts: {self.use_count}",
+            f"Errors: {len(self.errors)}",
+            f"Warnings: {len(self.warnings)}",
+        ]
+        if self.errors:
+            lines.append("Error Details:")
+            lines.extend(f"- {item}" for item in self.errors[:10])
+        if self.warnings:
+            lines.append("Warnings:")
+            lines.extend(f"- {item}" for item in self.warnings[:10])
+        return "\n".join(lines)
+
+
 def export_portable_bundle(
     memories: list[Memory],
     receipts: list[MemoryUseReceipt],
@@ -134,7 +162,7 @@ def export_bundle_from_root(
 
 
 def load_portable_bundle(path: Path | str) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
+    with Path(path).open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 
@@ -177,6 +205,44 @@ def import_portable_bundle(
     elif apply and report.conflicts:
         report.mode = "blocked"
     return report
+
+
+def validate_portable_bundle(bundle: dict[str, Any]) -> PortableValidationReport:
+    schema = bundle.get("schema", "") if isinstance(bundle, dict) else ""
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(bundle, dict):
+        return PortableValidationReport(schema="", valid=False, errors=["bundle root must be a JSON object"])
+    if schema != PORTABLE_BUNDLE_VERSION:
+        errors.append(f"unsupported schema: {schema or 'missing'}")
+    contents = bundle.get("contents")
+    if not isinstance(contents, dict):
+        return PortableValidationReport(schema=schema, valid=False, errors=[*errors, "contents must be a JSON object"])
+    memory_payloads = contents.get("memories", [])
+    use_payloads = contents.get("uses", [])
+    if not isinstance(memory_payloads, list):
+        errors.append("contents.memories must be a list")
+        memory_payloads = []
+    if not isinstance(use_payloads, list):
+        errors.append("contents.uses must be a list")
+        use_payloads = []
+    integrity = bundle.get("integrity", {})
+    if not isinstance(integrity, dict):
+        errors.append("integrity must be a JSON object")
+        integrity = {}
+    validate_integrity_counts(integrity, memory_payloads, use_payloads, errors, warnings)
+    validate_integrity_digest(integrity, memory_payloads, use_payloads, errors, warnings)
+    memory_ids = validate_memory_payloads(memory_payloads, errors)
+    validate_use_payloads(use_payloads, memory_ids, errors, warnings)
+    warnings.extend(str(item) for item in bundle.get("warnings", []) if isinstance(item, str))
+    return PortableValidationReport(
+        schema=schema,
+        valid=not errors,
+        memory_count=len(memory_payloads),
+        use_count=len(use_payloads),
+        errors=errors,
+        warnings=dedupe_preserve_order(warnings),
+    )
 
 
 def parse_bundle(bundle: dict[str, Any]) -> tuple[list[Memory], list[MemoryUseReceipt], list[str]]:
@@ -239,6 +305,98 @@ def build_import_report(
         else:
             report.conflicts.append(f"use receipt {receipt.id} already exists with different content")
     return report
+
+
+def validate_integrity_counts(
+    integrity: dict[str, Any],
+    memory_payloads: list[Any],
+    use_payloads: list[Any],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    expected_memory_count = integrity.get("memory_count")
+    expected_use_count = integrity.get("use_count")
+    if expected_memory_count is None:
+        warnings.append("integrity.memory_count is missing")
+    elif expected_memory_count != len(memory_payloads):
+        errors.append(f"integrity.memory_count expected {expected_memory_count}; actual {len(memory_payloads)}")
+    if expected_use_count is None:
+        warnings.append("integrity.use_count is missing")
+    elif expected_use_count != len(use_payloads):
+        errors.append(f"integrity.use_count expected {expected_use_count}; actual {len(use_payloads)}")
+
+
+def validate_integrity_digest(
+    integrity: dict[str, Any],
+    memory_payloads: list[Any],
+    use_payloads: list[Any],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    expected_digest = integrity.get("contents_sha256", "")
+    if not expected_digest:
+        warnings.append("integrity.contents_sha256 is missing")
+        return
+    actual_digest = stable_digest({"memories": memory_payloads, "uses": use_payloads})
+    if expected_digest != actual_digest:
+        errors.append("integrity.contents_sha256 mismatch")
+
+
+def validate_memory_payloads(memory_payloads: list[Any], errors: list[str]) -> set[str]:
+    memory_ids: set[str] = set()
+    for index, payload in enumerate(memory_payloads):
+        if not isinstance(payload, dict):
+            errors.append(f"memory[{index}] must be a JSON object")
+            continue
+        memory_id = str(payload.get("id", ""))
+        if not memory_id:
+            errors.append(f"memory[{index}] missing id")
+        elif memory_id in memory_ids:
+            errors.append(f"duplicate memory id: {memory_id}")
+        else:
+            memory_ids.add(memory_id)
+        try:
+            Memory.from_dict(payload)
+        except (KeyError, TypeError, ValueError) as error:
+            errors.append(f"memory[{index}] is not parseable: {error}")
+    return memory_ids
+
+
+def validate_use_payloads(
+    use_payloads: list[Any],
+    memory_ids: set[str],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    use_ids: set[str] = set()
+    for index, payload in enumerate(use_payloads):
+        if not isinstance(payload, dict):
+            errors.append(f"use[{index}] must be a JSON object")
+            continue
+        use_id = str(payload.get("id", ""))
+        if not use_id:
+            errors.append(f"use[{index}] missing id")
+        elif use_id in use_ids:
+            errors.append(f"duplicate use receipt id: {use_id}")
+        else:
+            use_ids.add(use_id)
+        memory_id = str(payload.get("memory_id", ""))
+        if memory_id and memory_id not in memory_ids:
+            warnings.append(f"use receipt {use_id or index} references memory not present in bundle: {memory_id}")
+        try:
+            MemoryUseReceipt.from_dict(payload)
+        except (KeyError, TypeError, ValueError) as error:
+            errors.append(f"use[{index}] is not parseable: {error}")
+
+
+def dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
 
 
 def export_warnings(memories: list[dict[str, Any]], receipts: list[dict[str, Any]]) -> list[str]:

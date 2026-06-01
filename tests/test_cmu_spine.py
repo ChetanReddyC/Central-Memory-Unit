@@ -14,7 +14,7 @@ from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_
 from cmu.cli import main
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
-from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle
+from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from cmu.promotion import promote_memory, review_promotion
 from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.remembering import RememberRequest, remember_candidate
@@ -8246,6 +8246,67 @@ class ImportExportPortabilityTests(unittest.TestCase):
                 self.assertEqual(main(["--root", target, "portable-import", str(bundle_path), "--apply"]), 0)
             self.assertIn("Applied: yes", apply_output.getvalue())
             self.assertEqual(MemoryStore(target).list()[0].id, memory.id)
+
+    def test_portable_validation_passes_exported_bundle_and_cli_returns_zero(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Portable validation fixture",
+                summary="A clean exported bundle should validate.",
+            )
+            MemoryStore(tmp).add(memory)
+            bundle = export_bundle_from_root(tmp)
+            report = validate_portable_bundle(bundle.to_dict())
+
+            self.assertTrue(report.valid)
+            self.assertEqual(report.memory_count, 1)
+            self.assertEqual(report.use_count, 0)
+
+            bundle_path = Path(tmp) / "bundle.json"
+            bundle_path.write_text(bundle.render_json(), encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-validate", str(bundle_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Status: pass", output.getvalue())
+
+            bom_path = Path(tmp) / "bundle-bom.json"
+            bom_path.write_text(bundle.render_json(), encoding="utf-8-sig")
+            bom_output = StringIO()
+            with redirect_stdout(bom_output):
+                bom_exit = main(["--root", tmp, "portable-validate", str(bom_path)])
+
+            self.assertEqual(bom_exit, 0)
+            self.assertIn("Status: pass", bom_output.getvalue())
+
+    def test_portable_validation_fails_tampered_integrity_and_duplicate_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Portable tamper fixture",
+                summary="Tampering should fail validation.",
+            )
+            MemoryStore(tmp).add(memory)
+            bundle = export_bundle_from_root(tmp).to_dict()
+            bundle["integrity"]["memory_count"] = 99
+            bundle["integrity"]["contents_sha256"] = "bad-digest"
+            bundle["contents"]["memories"].append(dict(bundle["contents"]["memories"][0]))
+            report = validate_portable_bundle(bundle)
+
+            self.assertFalse(report.valid)
+            self.assertIn("integrity.memory_count expected 99; actual 2", report.errors)
+            self.assertIn("integrity.contents_sha256 mismatch", report.errors)
+            self.assertIn(f"duplicate memory id: {memory.id}", report.errors)
+
+            bundle_path = Path(tmp) / "tampered.json"
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-validate", str(bundle_path)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Status: fail", output.getvalue())
 
 
 class QuickstartDemoTests(unittest.TestCase):

@@ -17,7 +17,7 @@ from .lifecycle import lifecycle_report
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
-from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle
+from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle, validate_portable_bundle
 from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
@@ -112,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Update existing records with matching ids instead of treating differences as conflicts.",
     )
     portable_import_parser.set_defaults(func=cmd_portable_import)
+
+    portable_validate_parser = subparsers.add_parser(
+        "portable-validate",
+        help="Validate a portable CMU bundle without importing it.",
+    )
+    portable_validate_parser.add_argument("bundle", help="Portable bundle JSON file.")
+    portable_validate_parser.set_defaults(func=cmd_portable_validate)
 
     add_parser = subparsers.add_parser("add", help="Add a structured CMU memory.")
     add_parser.add_argument("--type", choices=[item.value for item in MemoryType], default=MemoryType.SITUATION.value)
@@ -866,6 +873,16 @@ def cmd_portable_import(args: argparse.Namespace, store: MemoryStore) -> int:
         raise SystemExit(f"portable-import failed: {error}") from error
     print(report.render())
     return 0 if not (args.apply and report.conflicts) else 1
+
+
+def cmd_portable_validate(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        bundle = load_portable_bundle(args.bundle)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(f"portable-validate failed: {error}") from error
+    report = validate_portable_bundle(bundle)
+    print(report.render())
+    return 0 if report.valid else 1
 
 
 def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:
