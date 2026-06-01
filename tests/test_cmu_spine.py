@@ -28,6 +28,7 @@ from cmu.retrieval import (
     preflight,
     rank_memories,
 )
+from cmu.sdk import CentralMemoryUnit
 from cmu.store import MemoryStore
 from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
@@ -7778,6 +7779,90 @@ class AgentIntegrationBoundaryTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["status"], "unknown-tool")
         self.assertIn("cmu_task_start", response["available_tools"])
+
+
+class PythonSdkFacadeTests(unittest.TestCase):
+    def test_sdk_facade_runs_named_methods_over_agent_boundary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check SDK memory before runtime integration",
+                summary="Runtime integrations should call CMU through a stable SDK facade.",
+                signals=["sdk", "runtime integration"],
+                scope=MemoryScope(code=["cmu/sdk.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["SDK ergonomics reduce adapter friction without bypassing authority gates."],
+                use_this_path="Use the CentralMemoryUnit facade instead of shelling out to CLI commands.",
+                avoid_this="Do not make runtimes parse human-readable CMU output.",
+                challenge_only_if="The runtime requires a protocol adapter such as MCP instead of in-process Python.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            cmu = CentralMemoryUnit(tmp)
+
+            manifest = cmu.tools()
+            self.assertEqual(manifest["api_version"], AGENT_API_VERSION)
+
+            started = cmu.task_start(
+                "wire CMU SDK runtime integration",
+                actor="agent",
+                area="cmu",
+                files=["cmu/sdk.py"],
+                workflow=["agent integration"],
+                risk="high",
+            )
+
+            self.assertEqual(started["status"], "action-note")
+            self.assertEqual(started["matched_memory"]["id"], practice.id)
+            use_id = started["receipt"]["id"]
+
+            learned = cmu.after_work(
+                situation="Python runtimes need a small CMU SDK facade over the stable tool boundary.",
+                signals=["sdk", "runtime integration"],
+                worked="Expose named methods that reuse AgentIntegration.",
+                failed="Making callers pass raw tool names everywhere is too adapter-shaped.",
+                future_use="Use CentralMemoryUnit when wiring Python agent runtimes.",
+                evidence=["SDK facade test exercises the named-method runtime loop."],
+                liability_score=3,
+                scope={"code": ["cmu/sdk.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                confidence=0.8,
+            )
+
+            self.assertEqual(learned["status"], "candidate-saved")
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 1)
+
+            linked = cmu.link_checkpoint(
+                use_id,
+                manual_commit={
+                    "hash": "sdk123",
+                    "message": "Add Python SDK facade",
+                    "files": ["cmu/sdk.py"],
+                },
+            )
+
+            self.assertEqual(linked["status"], "checkpoint-linked")
+            self.assertEqual(linked["decision"]["receipt"]["outcome_signal"], "committed")
+
+            reviewed = cmu.review(practice.id)
+
+            self.assertEqual(reviewed["status"], "review-ready")
+            self.assertEqual(reviewed["cards"][0]["memory_id"], practice.id)
+            self.assertEqual(reviewed["cards"][0]["linked_uses"], 1)
+
+    def test_sdk_facade_preserves_silent_skip_behavior(self) -> None:
+        with TemporaryDirectory() as tmp:
+            response = CentralMemoryUnit(tmp).task_start(
+                "adjust local label spacing",
+                actor="agent",
+                area="ui",
+                files=["ui/label.css"],
+                risk="low",
+            )
+
+            self.assertEqual(response["status"], "silent-skip")
+            self.assertIsNone(response["receipt"])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
 
 
 class TeamAuthorityModelTests(unittest.TestCase):
