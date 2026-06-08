@@ -43,6 +43,7 @@ from .scenarios import (
     run_scenario_library,
 )
 from .seed_plan import seed_plan_report
+from .setup import HOST_CHOICES, setup_guide
 from .store import MemoryStore
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
@@ -84,6 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_parser = subparsers.add_parser("quickstart-demo", help="Run a small Git-backed CMU proof loop.")
     quickstart_parser.add_argument("--apply", action="store_true", help="Create the demo memory, receipt, commit, and link evidence.")
     quickstart_parser.set_defaults(func=cmd_quickstart_demo)
+
+    setup_parser = subparsers.add_parser("setup-guide", help="Show read-only CLI, SDK, and MCP host setup guidance.")
+    setup_parser.add_argument("--host", choices=HOST_CHOICES, default="all", help="Limit guidance to one host surface.")
+    setup_parser.set_defaults(func=cmd_setup_guide)
 
     mcp_parser = subparsers.add_parser("mcp", help="Run the CMU MCP stdio server.")
     mcp_parser.set_defaults(func=cmd_mcp)
@@ -707,6 +712,12 @@ def cmd_quickstart_demo(args: argparse.Namespace, store: MemoryStore) -> int:
     report = quickstart_demo(args.root, apply=args.apply)
     print(report.render())
     return 0 if report.applied or not args.apply else 1
+
+
+def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = setup_guide(args.root, host=args.host)
+    print(report.render())
+    return 0
 
 
 def cmd_mcp(args: argparse.Namespace, store: MemoryStore) -> int:

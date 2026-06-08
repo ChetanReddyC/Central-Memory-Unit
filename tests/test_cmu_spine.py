@@ -32,6 +32,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.sdk import CentralMemoryUnit
+from cmu.setup import setup_guide
 from cmu.store import MemoryStore
 from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
@@ -8832,6 +8833,60 @@ class ImportExportPortabilityTests(unittest.TestCase):
 
 
 class QuickstartDemoTests(unittest.TestCase):
+    def test_setup_guide_reports_real_host_tools_and_project_state_without_mutating(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "not-created"
+            report = setup_guide(root, host="mcp")
+            rendered = report.render()
+
+            self.assertFalse(report.status.initialized)
+            self.assertFalse(report.status.git_repository)
+            self.assertEqual(report.agent_tools, [tool["name"] for tool in AgentIntegration(root).manifest()["tools"]])
+            self.assertEqual(report.mcp_tools, [tool["name"] for tool in mcp_tool_definitions()])
+            self.assertIn("CMU Setup Guide", rendered)
+            self.assertIn("Host: mcp", rendered)
+            self.assertIn("CMU Store Initialized: no", rendered)
+            self.assertIn("cmu-mcp", rendered)
+            self.assertIn("cmu_task_start", rendered)
+            self.assertFalse(root.exists())
+
+    def test_setup_guide_cli_uses_real_store_git_and_pyproject_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            MemoryStore(tmp).init()
+            MemoryUseStore(tmp).init()
+            (Path(tmp) / "pyproject.toml").write_text(
+                "\n".join(
+                    [
+                        "[project]",
+                        "name = \"fixture\"",
+                        "[project.scripts]",
+                        "cmu = \"cmu.cli:main\"",
+                        "cmu-mcp = \"cmu.mcp:main\"",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            before_memories = json.loads((Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+            before_uses = json.loads((Path(tmp) / ".cmu" / "uses.json").read_text(encoding="utf-8"))
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "setup-guide", "--host", "all"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Store Initialized: yes", rendered)
+            self.assertIn("Git Repository: yes", rendered)
+            self.assertIn("Quickstart Apply Ready: yes", rendered)
+            self.assertIn("Project Scripts: cmu=cmu.cli:main, cmu-mcp=cmu.mcp:main", rendered)
+            self.assertIn("Python SDK Setup", rendered)
+            self.assertIn("MCP Host Setup", rendered)
+            self.assertIn("Codex MCP Setup", rendered)
+            self.assertEqual(before_memories, json.loads((Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8")))
+            self.assertEqual(before_uses, json.loads((Path(tmp) / ".cmu" / "uses.json").read_text(encoding="utf-8")))
+
     def test_cli_quickstart_demo_dry_run_explains_proof_loop_without_mutating(self) -> None:
         with TemporaryDirectory() as tmp:
             output = StringIO()
