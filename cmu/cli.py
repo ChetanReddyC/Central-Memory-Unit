@@ -23,6 +23,7 @@ from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
 from .quickstart import quickstart_demo
+from .readiness import readiness_report
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
     PersistentSemanticIndex,
@@ -459,6 +460,10 @@ def build_parser() -> argparse.ArgumentParser:
     quality_parser.add_argument("--memory", default="", help="Limit quality view to one memory id.")
     quality_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
     quality_parser.set_defaults(func=cmd_quality)
+
+    readiness_parser = subparsers.add_parser("readiness", help="Show the operator cleanup/readiness workflow for the memory base.")
+    readiness_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
+    readiness_parser.set_defaults(func=cmd_readiness)
 
     decay_parser = subparsers.add_parser("decay-apply", help="Apply an explicit evidence-backed memory decay action.")
     decay_parser.add_argument("memory_id", help="Memory id to weaken, demote, or retire.")
@@ -1320,6 +1325,20 @@ def cmd_quality(args: argparse.Namespace, store: MemoryStore) -> int:
             memories,
             MemoryUseStore(args.root).list(),
             memory_id=args.memory,
+            include_retired=args.include_retired,
+        ).render()
+    )
+    return 0
+
+
+def cmd_readiness(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    if args.include_retired:
+        memories.extend(store.list(status=MemoryStatus.RETIRED))
+    print(
+        readiness_report(
+            memories,
+            MemoryUseStore(args.root).list(),
             include_retired=args.include_retired,
         ).render()
     )

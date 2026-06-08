@@ -18,6 +18,7 @@ from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_c
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from cmu.promotion import promote_memory, review_promotion
 from cmu.quality import apply_decay_action, quality_card, quality_report
+from cmu.readiness import readiness_report
 from cmu.remembering import RememberRequest, remember_candidate
 from cmu.retrieval import (
     HashingEmbeddingProvider,
@@ -6774,6 +6775,142 @@ class UsefulnessDragAnalyticsTests(unittest.TestCase):
             self.assertIn("Governance: blocked: missing authority", rendered)
             self.assertIn("resolve governance first; analytics verdict is useful", rendered)
             self.assertIn("Retrieval Adjustment: +0.50", rendered)
+
+
+class MemoryBaseReadinessTests(unittest.TestCase):
+    def test_readiness_report_prioritizes_real_cleanup_issues_from_stores(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            stable_without_authority = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Run CMU start for structural work",
+                summary="Meaningful CMU implementation should enter through the Work Cycle.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Start command coordinates trigger, onboarding, preflight, and receipts."],
+                use_this_path="Use start before large implementation tasks.",
+                avoid_this="Do not dump all memory into context.",
+                challenge_only_if="The task is tiny and obvious.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.SUPPORTS,
+                        target_id="mem_missing_target",
+                        reason="Imported relationship target was not present.",
+                    )
+                ],
+                liability_score=4,
+                confidence=0.85,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback trace",
+                summary="Checkout rollback work may produce reusable deployment lessons.",
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Rollback notes showed a repeated release-marker mistake."],
+                liability_score=3,
+                confidence=0.75,
+            )
+            for memory in [stable_without_authority, situation]:
+                store.add(memory)
+            receipt = MemoryUseReceipt.create(
+                situation,
+                PreflightQuery(prompt="Investigate checkout rollback", actor="agent", area="checkout", workflow=["deployment"]),
+                Match(memory=situation, score=4.0, matched_terms=["checkout", "deployment"]),
+                source_command="start",
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            report = readiness_report(store.list(), MemoryUseStore(tmp).list())
+
+            self.assertEqual(report.memories_reviewed, 2)
+            self.assertEqual(report.receipts_reviewed, 1)
+            self.assertEqual(report.stable_memories, 1)
+            self.assertEqual(report.anti_patterns, 0)
+            self.assertEqual(report.questions, 0)
+            categories = [(issue.severity, issue.category, issue.state, issue.subject_id) for issue in report.issues]
+            self.assertIn((0, "authority", "blocked: missing authority", stable_without_authority.id), categories)
+            self.assertIn((1, "receipt", "unresolved receipt", receipt.id), categories)
+            self.assertIn((1, "graph", "dangling relationship", stable_without_authority.id), categories)
+            self.assertIn((2, "coverage", "missing active Anti-Pattern memory", "anti-pattern"), categories)
+            self.assertIn((2, "coverage", "missing active Question memory", "question"), categories)
+            self.assertEqual(report.issues[0].severity, 0)
+            self.assertEqual(report.issues[0].category, "authority")
+
+            rendered = report.render()
+            self.assertIn("CMU Memory Base Readiness", rendered)
+            self.assertIn("Cleanup Issues:", rendered)
+            self.assertIn("Readiness Verdict: blocked:", rendered)
+            self.assertIn(f"run `cmu use-link {receipt.id} --commit <hash>`", rendered)
+            self.assertIn("create real Anti-Pattern memories", rendered)
+            self.assertIn("create real Question memories", rendered)
+
+            stored_receipt = MemoryUseStore(tmp).get(receipt.id)
+            self.assertEqual(stored_receipt.commit_hash, "")
+            self.assertEqual(stored_receipt.outcome_signal, "")
+
+    def test_cli_readiness_uses_persisted_memories_receipts_and_includes_retired_when_requested(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Deployment retries need marker checks",
+                summary="Deployment retry flows must verify release markers before retrying.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Rollback passed after marker verification was restored."],
+                use_this_path="Verify release markers before retrying deployment.",
+                avoid_this="Do not retry deployment blindly.",
+                challenge_only_if="The deployment path has no release marker concept.",
+                liability_score=5,
+                confidence=0.85,
+                approved_by="Release owner",
+            )
+            anti_pattern = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Blind deployment retry",
+                summary="Retrying deployment without marker inspection can repeat a bad rollout.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Prior rollback showed marker mismatch."],
+                use_this_path="Inspect markers before retrying.",
+                avoid_this="Do not retry blindly.",
+            )
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Which deploy marker is authoritative",
+                summary="The release process still needs an owner decision on marker authority.",
+                scope=MemoryScope(ownership=["Release owner"], code=["deploy"], workflow=["deployment"]),
+                evidence=["Two systems can write release markers."],
+                use_this_path="Ask Release owner before changing marker checks.",
+                avoid_this="Do not assume both marker systems agree.",
+                challenge_only_if="A single authoritative marker is documented.",
+            )
+            retired = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Retired deploy note",
+                summary="Old deploy note should only appear when retired history is requested.",
+                confidence=0.3,
+            )
+            retired.status = MemoryStatus.RETIRED
+            for memory in [practice, anti_pattern, question, retired]:
+                store.add(memory)
+            add_drag_receipts(tmp, practice, count=3)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "readiness", "--include-retired"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Memory Base Readiness", rendered)
+            self.assertIn("History: active + retired", rendered)
+            self.assertIn("Memories Reviewed: 4", rendered)
+            self.assertIn("Use Receipts Reviewed: 3", rendered)
+            self.assertIn("Anti-Patterns: 1", rendered)
+            self.assertIn("Questions: 1", rendered)
+            self.assertIn(f"P1 quality: {practice.id} Deployment retries need marker checks", rendered)
+            self.assertIn("State: decay-ready", rendered)
+            self.assertIn("review evidence, then explicitly weaken, demote, or retire", rendered)
+            self.assertIn(retired.id, rendered)
+            self.assertNotIn("missing active Anti-Pattern memory", rendered)
+            self.assertNotIn("missing active Question memory", rendered)
 
 
 class PromotionTests(unittest.TestCase):
