@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
@@ -13,7 +14,7 @@ from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
 from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
-from cmu.mcp import CmuMcpAdapter, mcp_tool_definitions
+from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
@@ -8833,6 +8834,47 @@ class ImportExportPortabilityTests(unittest.TestCase):
 
 
 class QuickstartDemoTests(unittest.TestCase):
+    def test_readme_quickstart_documents_real_package_and_host_surfaces(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        report = setup_guide(root, host="all")
+
+        self.assertIn("python -m pip install -e .", readme)
+        self.assertIn("cmu init", readme)
+        self.assertIn("cmu readiness", readme)
+        self.assertIn("cmu quickstart-demo", readme)
+        self.assertIn("cmu quickstart-demo --apply", readme)
+        self.assertIn("cmu setup-guide --host all", readme)
+        self.assertIn("python -m cmu setup-guide --host all", readme)
+        self.assertIn("cmu-mcp", readme)
+        self.assertIn(MCP_SERVER_NAME, readme)
+        for tool in mcp_tool_definitions():
+            self.assertIn(tool["name"], readme)
+        for script_name in report.status.pyproject_scripts:
+            self.assertIn(script_name, readme)
+
+    def test_pyproject_package_metadata_matches_setup_guide_entrypoints(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        report = setup_guide(root, host="all")
+
+        self.assertEqual(pyproject["project"]["readme"], "README.md")
+        self.assertEqual(pyproject["project"]["scripts"], report.status.pyproject_scripts)
+        self.assertEqual(pyproject["project"]["scripts"]["cmu"], "cmu.cli:main")
+        self.assertEqual(pyproject["project"]["scripts"]["cmu-mcp"], "cmu.mcp:main")
+        self.assertEqual(pyproject["build-system"]["build-backend"], "setuptools.build_meta")
+        self.assertIn("setuptools>=68", pyproject["build-system"]["requires"])
+        self.assertEqual(pyproject["tool"]["setuptools"]["packages"]["find"]["include"], ["cmu*"])
+
+    def test_setup_guide_local_development_fallback_matches_readme(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        rendered = setup_guide(root, host="mcp").render()
+
+        self.assertIn("python -m cmu --root <project-root> mcp", rendered)
+        self.assertIn('"command": "python"', readme)
+        self.assertIn('"args": ["-m", "cmu", "--root", "<project-root>", "mcp"]', readme)
+
     def test_setup_guide_reports_real_host_tools_and_project_state_without_mutating(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "not-created"

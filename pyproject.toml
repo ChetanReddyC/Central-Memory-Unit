@@ -2,11 +2,19 @@
 name = "cmu-local-spine"
 version = "0.1.0"
 description = "Local v0 memory spine for Central Memory Unit."
+readme = "README.md"
 requires-python = ">=3.10"
 
 [project.scripts]
 cmu = "cmu.cli:main"
 cmu-mcp = "cmu.mcp:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cmu*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

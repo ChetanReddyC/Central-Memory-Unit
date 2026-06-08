@@ -173,7 +173,8 @@ def mcp_section(root: Path) -> SetupSection:
         [
             "Configure command `cmu-mcp` with args `['--root', '<project-root>']` when the package script is installed.",
             f"For this root use args `['--root', {str(root)!r}]`.",
-            "Fallback command during local development: `py -m cmu --root <project-root> mcp`.",
+            "Fallback command during local development: `python -m cmu --root <project-root> mcp` "
+            "or `py -m cmu --root <project-root> mcp` on Windows when the Python launcher is available.",
             f"Expected server name: `{MCP_SERVER_NAME}`.",
             "Expected tools: " + ", ".join(tool["name"] for tool in mcp_tool_definitions()) + ".",
         ],
@@ -185,7 +186,7 @@ def codex_section(root: Path) -> SetupSection:
         "Codex MCP Setup",
         [
             "Add a project-scoped MCP server named `central-memory-unit`.",
-            "Use command `cmu-mcp` after installation, or `py` with args "
+            "Use command `cmu-mcp` after installation, or `python` with args "
             "`['-m', 'cmu', '--root', '<project-root>', 'mcp']` during local development.",
             f"Set the project root argument to `{root}`.",
             "Keep CMU calls task-bound: call task-start before meaningful work, after-work only for reusable learning, "
