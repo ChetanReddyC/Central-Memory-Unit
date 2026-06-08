@@ -37,6 +37,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
+from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
@@ -8313,6 +8314,194 @@ class AutonomousRunnerHooksTests(unittest.TestCase):
             self.assertIsNone(report.result)
             self.assertEqual(MemoryStore(tmp).list(), before_memories)
             self.assertEqual(MemoryUseStore(tmp).list(), before_receipts)
+
+
+class RunnerScenarioEvidenceTests(unittest.TestCase):
+    def test_runner_scenario_runs_full_lifecycle_in_isolated_store_without_source_mutation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use runner scenario proof for hook changes",
+                summary="Runner hook changes should be proven through isolated lifecycle scenarios.",
+                signals=["runner scenario", "agent integration"],
+                scope=MemoryScope(code=["cmu/runner_scenarios.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["Scenario evidence should execute real hooks without mutating the source memory base."],
+                use_this_path="Run an isolated runner scenario before trusting hook behavior changes.",
+                avoid_this="Do not judge runner hooks only through static manifest checks.",
+                challenge_only_if="A host-specific adapter has stronger end-to-end evidence.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(root).add(practice)
+            before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")
+            before_uses = (root / ".cmu" / "uses.json").read_text(encoding="utf-8") if (root / ".cmu" / "uses.json").exists() else ""
+
+            report = run_runner_scenario(
+                root,
+                RunnerScenarioRequest(
+                    prompt="implement CMU runner scenario evidence",
+                    actor="agent",
+                    area="cmu",
+                    files=["cmu/runner_scenarios.py"],
+                    workflow=["agent integration"],
+                    risk="high",
+                    run_after_task=True,
+                    reusable_learning=True,
+                    title="Carry surfaced receipt ids into checkpoint links",
+                    situation="Checkpoint linking from autonomous lifecycle proofs depends on preserving the receipt id returned at task start.",
+                    signals=["explained failure"],
+                    outcome="The lifecycle proof can connect the before-task receipt to later checkpoint evidence.",
+                    worked="Pass the task-start receipt id directly into the checkpoint hook.",
+                    failed="Recomputing or guessing the receipt id would leave checkpoint evidence unlinked.",
+                    future_use="Use this when wiring any event sequence that links memory-use evidence after a checkpoint.",
+                    evidence=["The test checks isolated Candidate and receipt counts while source store stays unchanged."],
+                    liability_score=4,
+                    scope={"code": ["cmu/runner_scenarios.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                    confidence=0.85,
+                    checkpoint_hash="scenario123",
+                    checkpoint_message="Add runner scenario evidence",
+                    checkpoint_files=["cmu/runner_scenarios.py", "tests/test_cmu_spine.py"],
+                    expect_start="action-note",
+                    expect_memory=practice.id,
+                    expect_candidate="candidate-saved",
+                    expect_checkpoint="checkpoint-linked",
+                ),
+                work_dir=root / ".manual" / "test-runner-scenario",
+            )
+
+            rendered = report.render()
+            self.assertEqual(report.start.status, "action-note")
+            self.assertEqual(report.after_task.status, "candidate-saved")
+            self.assertEqual(report.checkpoint.status, "checkpoint-linked")
+            self.assertEqual(report.review.status, "review-ready")
+            self.assertTrue(report.passed, rendered)
+            self.assertEqual(report.source_memory_count, 1)
+            self.assertEqual(report.source_receipt_count, 0)
+            self.assertEqual(report.isolated_memory_count, 2)
+            self.assertEqual(report.isolated_receipt_count, 1)
+            self.assertIn("CMU Runner Scenario", rendered)
+            self.assertIn("Mode: read-only source-store proof", rendered)
+            self.assertIn("- start: pass", rendered)
+            self.assertIn("- candidate: pass", rendered)
+            self.assertEqual(before_memories, (root / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+            if before_uses:
+                self.assertEqual(before_uses, (root / ".cmu" / "uses.json").read_text(encoding="utf-8"))
+            else:
+                self.assertFalse((root / ".cmu" / "uses.json").exists())
+
+    def test_runner_scenario_proves_silent_skip_and_after_task_no_learning_skip(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            report = run_runner_scenario(
+                root,
+                RunnerScenarioRequest(
+                    prompt="adjust local label spacing",
+                    actor="agent",
+                    area="ui",
+                    files=["ui/label.css"],
+                    risk="low",
+                    run_after_task=True,
+                    reusable_learning=False,
+                    expect_start="silent-skip",
+                    expect_memory="none",
+                    expect_candidate="skipped-no-reusable-learning",
+                    expect_checkpoint="not-run",
+                ),
+                work_dir=root / ".manual" / "test-runner-scenario",
+            )
+
+            self.assertTrue(report.passed, report.render())
+            self.assertEqual(report.start.status, "silent-skip")
+            self.assertEqual(report.after_task.status, "skipped-no-reusable-learning")
+            self.assertEqual(report.isolated_memory_count, 0)
+            self.assertEqual(report.isolated_receipt_count, 0)
+            self.assertEqual(MemoryStore(root).list(), [])
+            self.assertEqual(MemoryUseStore(root).list(), [])
+
+    def test_cli_runner_scenario_strict_pass_uses_real_hooks_without_source_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Runner scenario CLI proves hook behavior",
+                summary="The CLI runner scenario should execute hooks in an isolated store.",
+                signals=["runner scenario", "cli"],
+                scope=MemoryScope(code=["cmu/runner_scenarios.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["CLI verification should not mutate source receipts."],
+                use_this_path="Use cmu runner-scenario for isolated lifecycle proof.",
+                avoid_this="Do not create source receipts during scenario evaluation.",
+                challenge_only_if="The operator intentionally runs cmu runner-hooks with a prompt.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(root).add(practice)
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        str(root),
+                        "runner-scenario",
+                        "verify runner scenario CLI",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--file",
+                        "cmu/runner_scenarios.py",
+                        "--workflow",
+                        "agent integration",
+                        "--risk",
+                        "high",
+                        "--after-task",
+                        "--expect-start",
+                        "action-note",
+                        "--expect-memory",
+                        practice.id,
+                        "--expect-candidate",
+                        "skipped-no-reusable-learning",
+                        "--expect-checkpoint",
+                        "not-run",
+                        "--strict",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Runner Scenario", rendered)
+            self.assertIn("Verdict: pass", rendered)
+            self.assertEqual(MemoryUseStore(root).list(), [])
+
+    def test_cli_runner_scenario_strict_fails_when_expectation_misses(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "runner-scenario",
+                        "adjust local label spacing",
+                        "--area",
+                        "ui",
+                        "--risk",
+                        "low",
+                        "--expect-start",
+                        "action-note",
+                        "--strict",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertIn("- start: fail (expected action-note; actual silent-skip)", rendered)
+            self.assertIn("Verdict: review", rendered)
 
 
 class McpIntegrationTests(unittest.TestCase):

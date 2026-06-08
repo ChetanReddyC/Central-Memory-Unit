@@ -22,6 +22,7 @@ REQUIRED_README_COMMANDS = [
     "cmu demo-walkthrough",
     "cmu setup-guide --host all",
     "cmu runner-hooks",
+    "cmu runner-scenario",
     "cmu install-check",
     "cmu dist-check",
 ]

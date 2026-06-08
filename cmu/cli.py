@@ -39,6 +39,7 @@ from .retrieval import (
     semantic_proposal_diagnostics,
 )
 from .runner_hooks import runner_hooks_report
+from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
     ScenarioDefinition,
     ScenarioEvaluationRequest,
@@ -140,6 +141,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runner_hooks_parser.add_argument("--json", action="store_true", help="Render the hook manifest/result as JSON.")
     runner_hooks_parser.set_defaults(func=cmd_runner_hooks)
+
+    runner_scenario_parser = subparsers.add_parser("runner-scenario", help="Run a read-only autonomous-runner lifecycle scenario against an isolated store.")
+    runner_scenario_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate through runner hooks.")
+    runner_scenario_parser.add_argument("--actor", default="agent")
+    runner_scenario_parser.add_argument("--area", default="")
+    runner_scenario_parser.add_argument("--file", action="append", default=[])
+    runner_scenario_parser.add_argument("--workflow", action="append", default=[])
+    runner_scenario_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    runner_scenario_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    runner_scenario_parser.add_argument("--repeated-error", action="store_true")
+    runner_scenario_parser.add_argument("--uncertainty", action="store_true")
+    runner_scenario_parser.add_argument("--shared-contract", action="store_true")
+    runner_scenario_parser.add_argument("--irreversible", action="store_true")
+    runner_scenario_parser.add_argument("--unfamiliar", action="store_true")
+    runner_scenario_parser.add_argument("--semantic", choices=["off", "local"], default="off")
+    runner_scenario_parser.add_argument("--after-task", action="store_true", help="Run the after_task hook after before_task.")
+    runner_scenario_parser.add_argument("--reusable-learning", action="store_true", help="Tell after_task to draft Candidate Memory from supplied learning fields.")
+    runner_scenario_parser.add_argument("--title", default="")
+    runner_scenario_parser.add_argument("--situation", default="")
+    runner_scenario_parser.add_argument("--signal", action="append", default=[])
+    runner_scenario_parser.add_argument("--outcome", default="")
+    runner_scenario_parser.add_argument("--worked", default="")
+    runner_scenario_parser.add_argument("--failed", default="")
+    runner_scenario_parser.add_argument("--future-use", default="")
+    runner_scenario_parser.add_argument("--evidence", action="append", default=[])
+    runner_scenario_parser.add_argument("--liability", type=int, default=1)
+    runner_scenario_parser.add_argument("--confidence", type=float, default=0.6)
+    runner_scenario_parser.add_argument("--suggested-next-type", choices=[item.value for item in MemoryType], default=MemoryType.SITUATION.value)
+    runner_scenario_parser.add_argument("--scope-owner", action="append", default=[])
+    runner_scenario_parser.add_argument("--scope-code", action="append", default=[])
+    runner_scenario_parser.add_argument("--scope-workflow", action="append", default=[])
+    runner_scenario_parser.add_argument("--scope-env", action="append", default=[])
+    runner_scenario_parser.add_argument("--scope-actor", action="append", default=[])
+    runner_scenario_parser.add_argument("--scope-time", action="append", default=[])
+    runner_scenario_parser.add_argument("--checkpoint-hash", default="")
+    runner_scenario_parser.add_argument("--checkpoint-message", default="")
+    runner_scenario_parser.add_argument("--checkpoint-file", action="append", default=[])
+    runner_scenario_parser.add_argument("--checkpoint-note", default="")
+    runner_scenario_parser.add_argument("--expect-start", choices=["action-note", "quiet", "silent-skip"], default="")
+    runner_scenario_parser.add_argument("--expect-memory", default="", help="Expected surfaced memory id, or 'none'.")
+    runner_scenario_parser.add_argument(
+        "--expect-candidate",
+        choices=["candidate-saved", "candidate-not-saved", "skipped-no-reusable-learning", "not-run"],
+        default="",
+    )
+    runner_scenario_parser.add_argument("--expect-checkpoint", choices=["checkpoint-linked", "checkpoint-not-linked", "not-run"], default="")
+    runner_scenario_parser.add_argument("--strict", action="store_true", help="Exit non-zero when supplied expectations fail.")
+    runner_scenario_parser.set_defaults(func=cmd_runner_scenario)
 
     portable_export_parser = subparsers.add_parser(
         "portable-export",
@@ -965,6 +1014,61 @@ def cmd_runner_hooks(args: argparse.Namespace, store: MemoryStore) -> int:
     else:
         print(report.render())
     return 0 if report.result is None or report.result.ok else 1
+
+
+def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        raise SystemExit("runner-scenario requires a task prompt")
+    request = RunnerScenarioRequest(
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+        semantic=args.semantic,
+        run_after_task=args.after_task or args.reusable_learning,
+        reusable_learning=args.reusable_learning,
+        title=args.title,
+        situation=args.situation,
+        signals=args.signal,
+        outcome=args.outcome,
+        worked=args.worked,
+        failed=args.failed,
+        future_use=args.future_use,
+        evidence=args.evidence,
+        liability_score=args.liability,
+        suggested_next_type=args.suggested_next_type,
+        confidence=args.confidence,
+        scope={
+            "ownership": args.scope_owner,
+            "code": args.scope_code,
+            "workflow": args.scope_workflow,
+            "environment": args.scope_env,
+            "actor": args.scope_actor,
+            "time": args.scope_time,
+        },
+        checkpoint_hash=args.checkpoint_hash,
+        checkpoint_message=args.checkpoint_message,
+        checkpoint_files=args.checkpoint_file,
+        checkpoint_note=args.checkpoint_note,
+        expect_start=args.expect_start,
+        expect_memory=args.expect_memory,
+        expect_candidate=args.expect_candidate,
+        expect_checkpoint=args.expect_checkpoint,
+    )
+    report = run_runner_scenario(args.root, request)
+    print(report.render())
+    if args.strict and not report.passed:
+        return 1
+    return 0
 
 
 def cmd_portable_export(args: argparse.Namespace, store: MemoryStore) -> int:

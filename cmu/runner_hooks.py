@@ -246,9 +246,9 @@ class RunnerHooksReport:
                     f"- Next Hooks: {', '.join(self.result.next_hooks) if self.result.next_hooks else 'none'}",
                 ]
             )
-            receipt_id = self.result.response.get("receipt", {}).get("id")
-            if receipt_id:
-                lines.append(f"- Receipt: {receipt_id}")
+            receipt = self.result.response.get("receipt")
+            if isinstance(receipt, dict) and receipt.get("id"):
+                lines.append(f"- Receipt: {receipt['id']}")
             matched = self.result.response.get("matched_memory", {})
             if matched:
                 lines.append(f"- Matched Memory: {matched.get('id')} {matched.get('title')}")

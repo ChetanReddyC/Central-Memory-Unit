@@ -17,6 +17,7 @@ cmu quickstart-demo --apply
 cmu demo-walkthrough
 cmu setup-guide --host all
 cmu runner-hooks
+cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 cmu install-check
 cmu dist-check
 ```
@@ -26,6 +27,8 @@ Use `cmu quickstart-demo` first for a dry run. Use `cmu quickstart-demo --apply`
 Use `cmu demo-walkthrough` when you want the whole adoption path in one report: install validation, setup guidance, quickstart proof plan, and the next real work-cycle handoff. Use `cmu demo-walkthrough --apply` inside a Git repository to run the same Git-backed proof loop as part of that walkthrough.
 
 Use `cmu runner-hooks` when wiring an autonomous runner. With no prompt, it renders the event hook contract for `before_task`, `after_task`, `after_checkpoint`, and `review` without mutating memory. With a prompt, it runs the real `before_task` hook through the same AgentIntegration path as the SDK and MCP surfaces.
+
+Use `cmu runner-scenario` when you want scenario evidence for runner behavior without mutating the source memory base. It copies the current memories and receipts into a temporary isolated store, executes the real runner hooks there, then checks expectations such as start status, surfaced memory, Candidate outcome, and checkpoint linking.
 
 Use `cmu dist-check` when you want a stronger packaging proof. It creates a temporary validation environment, installs CMU as a built package, then checks installed `cmu`, `python -m cmu`, `cmu install-check`, `cmu demo-walkthrough`, and `cmu-mcp` tool discovery from outside the source checkout.
 
@@ -38,6 +41,7 @@ python -m cmu quickstart-demo
 python -m cmu demo-walkthrough
 python -m cmu setup-guide --host all
 python -m cmu runner-hooks
+python -m cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 python -m cmu install-check
 python -m cmu dist-check
 ```
@@ -157,9 +161,11 @@ cmu install-check
 cmu demo-walkthrough
 cmu dist-check
 cmu runner-hooks
+cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 cmu quickstart-demo
 python -m unittest tests.test_cmu_spine.QuickstartDemoTests
 python -m unittest tests.test_cmu_spine.AutonomousRunnerHooksTests
+python -m unittest tests.test_cmu_spine.RunnerScenarioEvidenceTests
 ```
 
-`cmu setup-guide`, `cmu install-check`, `cmu runner-hooks` without a prompt, and `cmu demo-walkthrough` without `--apply` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu runner-hooks <task>` executes the real `before_task` hook and can create a Memory Use Receipt when memory surfaces. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.
+`cmu setup-guide`, `cmu install-check`, `cmu runner-hooks` without a prompt, `cmu runner-scenario`, and `cmu demo-walkthrough` without `--apply` are read-only with respect to the source CMU memory base. They should not initialize source stores, create source memories, create source receipts, or write Git checkpoints. `cmu runner-hooks <task>` executes the real `before_task` hook against the source store and can create a Memory Use Receipt when memory surfaces. `cmu runner-scenario` executes hooks only inside a temporary isolated copy under `.manual`. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.

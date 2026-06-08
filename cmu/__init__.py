@@ -7,6 +7,7 @@ from .install_check import install_check
 from .mcp import CmuMcpAdapter, mcp_tool_definitions
 from .portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from .runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
+from .runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from .setup import setup_guide
 from .sdk import CentralMemoryUnit
 
@@ -23,10 +24,13 @@ __all__ = [
     "mcp_tool_definitions",
     "PORTABLE_BUNDLE_VERSION",
     "RUNNER_HOOKS_VERSION",
+    "RUNNER_SCENARIO_VERSION",
+    "RunnerScenarioRequest",
     "export_bundle_from_root",
     "import_portable_bundle",
     "install_check",
     "runner_hooks_report",
+    "run_runner_scenario",
     "setup_guide",
     "validate_portable_bundle",
 ]
