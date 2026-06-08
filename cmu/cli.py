@@ -10,6 +10,7 @@ from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .demo_walkthrough import demo_walkthrough
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .governance import governance_report
 from .graphview import graph_memory_view_report
@@ -86,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_parser = subparsers.add_parser("quickstart-demo", help="Run a small Git-backed CMU proof loop.")
     quickstart_parser.add_argument("--apply", action="store_true", help="Create the demo memory, receipt, commit, and link evidence.")
     quickstart_parser.set_defaults(func=cmd_quickstart_demo)
+
+    demo_parser = subparsers.add_parser("demo-walkthrough", help="Run the scripted local CMU adoption and proof walkthrough.")
+    demo_parser.add_argument("--apply", action="store_true", help="Apply the Git-backed quickstart proof inside the walkthrough.")
+    demo_parser.set_defaults(func=cmd_demo_walkthrough)
 
     setup_parser = subparsers.add_parser("setup-guide", help="Show read-only CLI, SDK, and MCP host setup guidance.")
     setup_parser.add_argument("--host", choices=HOST_CHOICES, default="all", help="Limit guidance to one host surface.")
@@ -716,6 +721,12 @@ def cmd_quickstart_demo(args: argparse.Namespace, store: MemoryStore) -> int:
     report = quickstart_demo(args.root, apply=args.apply)
     print(report.render())
     return 0 if report.applied or not args.apply else 1
+
+
+def cmd_demo_walkthrough(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = demo_walkthrough(args.root, apply=args.apply)
+    print(report.render())
+    return 0 if report.passed else 1
 
 
 def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:

@@ -14,6 +14,7 @@ from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
 from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
+from cmu.demo_walkthrough import demo_walkthrough
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -8835,6 +8836,67 @@ class ImportExportPortabilityTests(unittest.TestCase):
 
 
 class QuickstartDemoTests(unittest.TestCase):
+    def test_demo_walkthrough_dry_run_composes_real_install_setup_and_quickstart_surfaces(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")
+        before_uses = (root / ".cmu" / "uses.json").read_text(encoding="utf-8")
+
+        report = demo_walkthrough(root)
+        rendered = report.render()
+
+        self.assertTrue(report.passed, rendered)
+        self.assertFalse(report.applied)
+        self.assertTrue(report.install_report.passed)
+        self.assertEqual(report.setup_report.status.pyproject_scripts, REQUIRED_SCRIPTS)
+        self.assertFalse(report.quickstart_report.applied)
+        self.assertEqual(report.quickstart_report.reason, "dry run")
+        self.assertIn("CMU Demo Walkthrough", rendered)
+        self.assertIn("Validate adoption surface", rendered)
+        self.assertIn("Inspect host setup", rendered)
+        self.assertIn("Run memory proof loop", rendered)
+        self.assertIn("Rehearse real work-cycle handoff", rendered)
+        self.assertIn("cmu install-check", rendered)
+        self.assertIn("cmu setup-guide --host all", rendered)
+        self.assertIn("cmu quickstart-demo", rendered)
+        self.assertEqual(before_memories, (root / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+        self.assertEqual(before_uses, (root / ".cmu" / "uses.json").read_text(encoding="utf-8"))
+
+    def test_demo_walkthrough_cli_dry_run_returns_zero_without_mutating(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")
+        before_uses = (root / ".cmu" / "uses.json").read_text(encoding="utf-8")
+
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["--root", str(root), "demo-walkthrough"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Status: pass", output.getvalue())
+        self.assertIn("Mode: read-only walkthrough", output.getvalue())
+        self.assertEqual(before_memories, (root / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+        self.assertEqual(before_uses, (root / ".cmu" / "uses.json").read_text(encoding="utf-8"))
+
+    def test_demo_walkthrough_apply_uses_real_quickstart_git_receipt_loop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(tmp)
+            write_install_ready_fixture(root)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "demo-walkthrough", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Applied: yes", rendered)
+            self.assertIn("Demo Git Checkpoint", rendered)
+            [memory] = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.memory_id, memory.id)
+            self.assertEqual(receipt.outcome_signal, "committed")
+            self.assertTrue(receipt.commit_hash)
+            self.assertEqual(receipt.commit_files, ["quickstart_demo/rollback_notes.txt"])
+
     def test_install_check_passes_real_checkout_against_live_adoption_surfaces(self) -> None:
         root = Path(__file__).resolve().parents[1]
         report = install_check(root)
@@ -9030,6 +9092,36 @@ def init_git_repo(root: str) -> None:
     run_git_test(root, ["init"])
     run_git_test(root, ["config", "user.email", "cmu@example.test"])
     run_git_test(root, ["config", "user.name", "CMU Test"])
+
+
+def write_install_ready_fixture(root: Path) -> None:
+    readme_lines = [
+        "# Fixture README",
+        MCP_SERVER_NAME,
+        *REQUIRED_README_COMMANDS,
+        *(tool["name"] for tool in mcp_tool_definitions()),
+        "",
+    ]
+    (root / "README.md").write_text("\n".join(readme_lines), encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                "name = \"fixture\"",
+                "readme = \"README.md\"",
+                "[project.scripts]",
+                "cmu = \"cmu.cli:main\"",
+                "cmu-mcp = \"cmu.mcp:main\"",
+                "[build-system]",
+                "requires = [\"setuptools>=68\"]",
+                "build-backend = \"setuptools.build_meta\"",
+                "[tool.setuptools.packages.find]",
+                "include = [\"cmu*\"]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def call_mcp_tool(adapter: CmuMcpAdapter, name: str, arguments: dict | list | None) -> dict:
