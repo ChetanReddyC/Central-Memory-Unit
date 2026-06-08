@@ -7,3 +7,5 @@ archives/
 .manual/
 __pycache__/
 .pytest_cache/
+build/
+*.egg-info/

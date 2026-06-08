@@ -17,11 +17,14 @@ cmu quickstart-demo --apply
 cmu demo-walkthrough
 cmu setup-guide --host all
 cmu install-check
+cmu dist-check
 ```
 
 Use `cmu quickstart-demo` first for a dry run. Use `cmu quickstart-demo --apply` inside a Git repository when you want the proof loop to create a scoped Practice memory, run task-start retrieval, create a Memory Use Receipt, write a tiny Git checkpoint, link the receipt to that checkpoint, and show usefulness evidence.
 
 Use `cmu demo-walkthrough` when you want the whole adoption path in one report: install validation, setup guidance, quickstart proof plan, and the next real work-cycle handoff. Use `cmu demo-walkthrough --apply` inside a Git repository to run the same Git-backed proof loop as part of that walkthrough.
+
+Use `cmu dist-check` when you want a stronger packaging proof. It creates a temporary validation environment, installs CMU as a built package, then checks installed `cmu`, `python -m cmu`, `cmu install-check`, `cmu demo-walkthrough`, and `cmu-mcp` tool discovery from outside the source checkout.
 
 If the `cmu` script is not installed yet, run the same commands through the module entrypoint:
 
@@ -32,6 +35,7 @@ python -m cmu quickstart-demo
 python -m cmu demo-walkthrough
 python -m cmu setup-guide --host all
 python -m cmu install-check
+python -m cmu dist-check
 ```
 
 On Windows, the Python launcher form also works when `py` is available:
@@ -127,8 +131,9 @@ Useful local checks:
 cmu setup-guide --host all
 cmu install-check
 cmu demo-walkthrough
+cmu dist-check
 cmu quickstart-demo
 python -m unittest tests.test_cmu_spine.QuickstartDemoTests
 ```
 
-`cmu setup-guide`, `cmu install-check`, and `cmu demo-walkthrough` without `--apply` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.
+`cmu setup-guide`, `cmu install-check`, and `cmu demo-walkthrough` without `--apply` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.

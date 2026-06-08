@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
 from cmu.demo_walkthrough import demo_walkthrough
+from cmu.dist_check import dist_check
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -8836,6 +8838,22 @@ class ImportExportPortabilityTests(unittest.TestCase):
 
 
 class QuickstartDemoTests(unittest.TestCase):
+    def test_dist_check_builds_installs_and_validates_installed_cli_and_mcp(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as tmp:
+            report = dist_check(root, python_executable=sys.executable, work_dir=Path(tmp))
+            rendered = report.render()
+
+            self.assertTrue(report.passed, rendered)
+            self.assertIn("CMU Distribution Check", rendered)
+            self.assertIn("Status: pass", rendered)
+            self.assertIn("installed cmu console script", rendered)
+            self.assertIn("installed module entrypoint", rendered)
+            self.assertIn("installed install-check", rendered)
+            self.assertIn("installed demo-walkthrough", rendered)
+            self.assertIn("installed MCP discovery", rendered)
+            self.assertFalse(Path(report.work_dir).exists())
+
     def test_demo_walkthrough_dry_run_composes_real_install_setup_and_quickstart_surfaces(self) -> None:
         root = Path(__file__).resolve().parents[1]
         before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")

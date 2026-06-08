@@ -11,6 +11,7 @@ from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .demo_walkthrough import demo_walkthrough
+from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .governance import governance_report
 from .graphview import graph_memory_view_report
@@ -98,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     install_check_parser = subparsers.add_parser("install-check", help="Validate README, package, SDK, CLI, and MCP adoption surfaces.")
     install_check_parser.set_defaults(func=cmd_install_check)
+
+    dist_check_parser = subparsers.add_parser("dist-check", help="Build/install CMU in a temporary venv and validate installed CLI/MCP behavior.")
+    dist_check_parser.add_argument("--python", default="", help="Python executable used to create the validation venv. Defaults to the current Python.")
+    dist_check_parser.add_argument("--work-dir", default="", help="Directory for temporary validation files. Defaults to .manual under the project root.")
+    dist_check_parser.add_argument("--keep-work-dir", action="store_true", help="Keep temporary validation files for inspection.")
+    dist_check_parser.set_defaults(func=cmd_dist_check)
 
     mcp_parser = subparsers.add_parser("mcp", help="Run the CMU MCP stdio server.")
     mcp_parser.set_defaults(func=cmd_mcp)
@@ -737,6 +744,17 @@ def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_install_check(args: argparse.Namespace, store: MemoryStore) -> int:
     report = install_check(args.root)
+    print(report.render())
+    return 0 if report.passed else 1
+
+
+def cmd_dist_check(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = dist_check(
+        args.root,
+        python_executable=args.python or None,
+        work_dir=args.work_dir or None,
+        keep_work_dir=args.keep_work_dir,
+    )
     print(report.render())
     return 0 if report.passed else 1
 
