@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -6262,6 +6263,194 @@ class RawTraceDistillationTests(unittest.TestCase):
             updated_trace = RawTraceStore(tmp).get(trace.id)
             self.assertEqual(updated_trace.status, "rejected")
             self.assertEqual(updated_trace.distilled_memory_id, "")
+
+
+class DocumentCurationTests(unittest.TestCase):
+    def test_cli_doc_curate_preview_is_read_only_and_apply_saves_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "CMU_Implementation_Progress.md"
+            skipped_path = Path(tmp) / "CMU_Product_Spec_Outline.md"
+            doc_path.write_text(
+                "\n".join(
+                    [
+                        "# CMU Implementation Progress",
+                        "",
+                        "Decision: markdown curation should treat docs as evidence, not authority.",
+                        "Known gap: stale docs can create retrieval drag if imported blindly.",
+                        "Next best implementation slice: build a curation gate before seeding memory.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            skipped_path.write_text(
+                "\n".join(
+                    [
+                        "# CMU Product Spec Outline",
+                        "",
+                        "Decision: product integration should keep authority and governance visible.",
+                        "Readiness and lifecycle evidence should shape the next best implementation slice.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            preview_output = StringIO()
+            with redirect_stdout(preview_output):
+                preview_code = main(["--root", tmp, "doc-curate", str(doc_path), str(skipped_path)])
+
+            self.assertEqual(preview_code, 0)
+            preview_rendered = preview_output.getvalue()
+            self.assertIn("CMU Document History Curation", preview_rendered)
+            self.assertIn("Mode: preview", preview_rendered)
+            self.assertIn("Candidate Ready: 2", preview_rendered)
+            self.assertIn("Applied Candidates: 0", preview_rendered)
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
+
+            apply_output = StringIO()
+            with redirect_stdout(apply_output):
+                apply_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "doc-curate",
+                        str(doc_path),
+                        str(skipped_path),
+                        "--select",
+                        "CMU_Implementation_Progress.md",
+                        "--apply",
+                    ]
+                )
+
+            self.assertEqual(apply_code, 0)
+            apply_rendered = apply_output.getvalue()
+            self.assertIn("Mode: apply", apply_rendered)
+            self.assertIn("Selection Filter: CMU_Implementation_Progress.md", apply_rendered)
+            self.assertIn("Applied Candidates: 1", apply_rendered)
+            memories = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(memories), 1)
+            self.assertIn("Curated doc evidence", memories[0].title)
+            self.assertIn("CMU_Implementation_Progress.md", memories[0].scope.code)
+            self.assertNotIn("CMU_Product_Spec_Outline.md", memories[0].scope.code)
+            self.assertIn("documentation-curation", memories[0].scope.workflow)
+            self.assertTrue(any("Curated from markdown document" in item for item in memories[0].evidence))
+
+    def test_cli_doc_curate_rejects_stale_and_superseded_markdown(self) -> None:
+        with TemporaryDirectory() as tmp:
+            stale_path = Path(tmp) / "old_plan.md"
+            stale_path.write_text(
+                "# Historical Notes\n\nDecision and practice notes about retrieval governance and readiness.",
+                encoding="utf-8",
+            )
+            old_time = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+            os.utime(stale_path, (old_time, old_time))
+
+            superseded_path = Path(tmp) / "superseded.md"
+            superseded_path.write_text(
+                "# Superseded Plan\n\nThis decision is superseded by newer implementation progress and should not guide practice.",
+                encoding="utf-8",
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "doc-curate",
+                        str(stale_path),
+                        str(superseded_path),
+                        "--stale-days",
+                        "7",
+                        "--apply",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Stale Rejected: 1", rendered)
+            self.assertIn("Superseded Rejected: 1", rendered)
+            self.assertIn("stale-rejected", rendered)
+            self.assertIn("superseded-rejected", rendered)
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
+
+
+class SeedPlanTests(unittest.TestCase):
+    def test_cli_seed_plan_reports_real_candidate_coverage_and_graph_suggestions(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Curated doc evidence needs review",
+                summary="Markdown curation found current evidence for memory-base cleanup.",
+                signals=["new convention"],
+                scope=MemoryScope(code=["CMU_Implementation_Progress.md"], workflow=["memory-base-cleanup"], actor=["agent"]),
+                evidence=["Curated from markdown document: CMU_Implementation_Progress.md"],
+                use_this_path="Review curated docs before promotion.",
+                avoid_this="Do not promote stale markdown directly.",
+                challenge_only_if="Use when seeding memory from project docs.",
+                liability_score=4,
+                confidence=0.7,
+            )
+            anti_pattern = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Blind markdown import",
+                summary="Importing old markdown as stable memory can create context drag.",
+                scope=MemoryScope(code=["CMU_Major_Unfinished_Work.md"], workflow=["memory-base-cleanup"], actor=["agent"]),
+                evidence=["Stale docs can become drag."],
+                use_this_path="Curate markdown against current implementation evidence.",
+                avoid_this="Do not bulk-import markdown into stable memory.",
+                challenge_only_if="Only use when a doc is current and reviewed.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(candidate)
+            store.add(anti_pattern)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "seed-plan"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Memory Seeding Plan", rendered)
+            self.assertIn("Mode: read-only workbench", rendered)
+            self.assertIn("promotion", rendered)
+            self.assertIn(f"cmu review {candidate.id} --to situation", rendered)
+            self.assertIn("coverage: question", rendered)
+            self.assertIn("cmu add --type question", rendered)
+            self.assertIn("graph", rendered)
+            self.assertIn(f"cmu relate {anti_pattern.id} --type related_practice --target {candidate.id}", rendered)
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)[0].type, MemoryType.CANDIDATE)
+
+    def test_cli_seed_plan_uses_doc_curation_rejections_for_manual_draft_suggestions(self) -> None:
+        with TemporaryDirectory() as tmp:
+            stale_drag_doc = Path(tmp) / "stale_drag.md"
+            stale_drag_doc.write_text(
+                "\n".join(
+                    [
+                        "# Historical Drag Notes",
+                        "",
+                        "Anti-pattern: stale markdown can create retrieval drag if treated as authority.",
+                        "Known gap: unresolved memory seeding workflow needs a question before promotion.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            old_time = (datetime.now(timezone.utc) - timedelta(days=20)).timestamp()
+            os.utime(stale_drag_doc, (old_time, old_time))
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "seed-plan", "--doc", str(stale_drag_doc), "--stale-days", "1"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Document Curation Decisions Reviewed: 1", rendered)
+            self.assertIn("anti-pattern-draft", rendered)
+            self.assertIn("Rejected doc-curate source: stale_drag.md", rendered)
+            self.assertIn("question-draft", rendered)
+            self.assertIn("Doc-curate source: stale_drag.md", rendered)
+            self.assertEqual(MemoryStore(tmp).list(), [])
 
 
 class LifecycleTests(unittest.TestCase):

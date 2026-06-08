@@ -10,6 +10,7 @@ from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
@@ -41,6 +42,7 @@ from .scenarios import (
     evaluate_scenario,
     run_scenario_library,
 )
+from .seed_plan import seed_plan_report
 from .store import MemoryStore
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
@@ -400,6 +402,23 @@ def build_parser() -> argparse.ArgumentParser:
     trace_distill_parser.add_argument("--apply", action="store_true", help="Persist Candidate Memories and trace distillation status.")
     trace_distill_parser.add_argument("--include-distilled", action="store_true", help="Include traces that were already distilled or rejected.")
     trace_distill_parser.set_defaults(func=cmd_trace_distill)
+
+    doc_curate_parser = subparsers.add_parser(
+        "doc-curate",
+        help="Curate markdown history into Candidate Memory drafts through stale-doc gates.",
+    )
+    doc_curate_parser.add_argument("path", nargs="*", help="Markdown file or directory to curate. Defaults to the repository root.")
+    doc_curate_parser.add_argument("--apply", action="store_true", help="Persist Candidate Memories that pass the curation gates.")
+    doc_curate_parser.add_argument("--select", action="append", default=[], help="With --apply, persist only matching curation paths, titles, or candidate ids.")
+    doc_curate_parser.add_argument("--stale-days", type=int, default=120, help="Reject documents older than this many days unless --allow-stale is used.")
+    doc_curate_parser.add_argument("--allow-stale", action="store_true", help="Allow old documents to draft Candidate Memory when other gates pass.")
+    doc_curate_parser.set_defaults(func=cmd_doc_curate)
+
+    seed_plan_parser = subparsers.add_parser("seed-plan", help="Show a read-only memory seeding workbench.")
+    seed_plan_parser.add_argument("--doc", action="append", default=[], help="Markdown file or directory to include as doc-curation preview evidence.")
+    seed_plan_parser.add_argument("--stale-days", type=int, default=120, help="Doc-curation stale gate when --doc is used.")
+    seed_plan_parser.add_argument("--allow-stale", action="store_true", help="Allow old docs into seed-plan curation preview.")
+    seed_plan_parser.set_defaults(func=cmd_seed_plan)
 
     remember_parser = subparsers.add_parser("remember", help="Store a direct agent-submitted Candidate Memory.")
     remember_parser.add_argument("--situation", required=True)
@@ -1219,6 +1238,55 @@ def cmd_trace_distill(args: argparse.Namespace, store: MemoryStore) -> int:
                 memories.append(distillation.decision.memory)
             apply_distillation(trace_store, trace, distillation.decision)
     print(TraceDistillationReport(distillations=distillations, apply=args.apply).render())
+    return 0
+
+
+def cmd_doc_curate(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.stale_days < 0:
+        raise SystemExit("doc-curate --stale-days must be zero or greater")
+    memories = store.list()
+    decisions = curate_documents(
+        args.root,
+        args.path,
+        memories,
+        stale_days=args.stale_days,
+        allow_stale=args.allow_stale,
+    )
+    if args.apply:
+        for memory in apply_selected_curation_decisions(decisions, args.select):
+            store.add(memory)
+    print(
+        DocumentCurationReport(
+            decisions=decisions,
+            apply=args.apply,
+            stale_days=args.stale_days,
+            selected=args.select,
+        ).render()
+    )
+    return 0
+
+
+def cmd_seed_plan(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.stale_days < 0:
+        raise SystemExit("seed-plan --stale-days must be zero or greater")
+    memories = store.list()
+    doc_decisions = (
+        curate_documents(
+            args.root,
+            args.doc,
+            memories,
+            stale_days=args.stale_days,
+            allow_stale=args.allow_stale,
+        )
+        if args.doc
+        else []
+    )
+    report = seed_plan_report(
+        memories,
+        MemoryUseStore(args.root).list(),
+        doc_decisions=doc_decisions,
+    )
+    print(report.render())
     return 0
 
 
