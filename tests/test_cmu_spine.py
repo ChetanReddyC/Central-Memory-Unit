@@ -14,6 +14,7 @@ from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
 from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
+from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
@@ -8834,6 +8835,66 @@ class ImportExportPortabilityTests(unittest.TestCase):
 
 
 class QuickstartDemoTests(unittest.TestCase):
+    def test_install_check_passes_real_checkout_against_live_adoption_surfaces(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        report = install_check(root)
+        rendered = report.render()
+
+        self.assertTrue(report.passed, rendered)
+        self.assertIn("CMU Install Check", rendered)
+        self.assertIn("Status: pass", rendered)
+        self.assertIn("README quickstart commands", rendered)
+        self.assertIn("console scripts", rendered)
+        self.assertIn("SDK import", rendered)
+        self.assertIn("module entrypoint", rendered)
+        self.assertIn("MCP schema", rendered)
+        self.assertEqual(set(setup_guide(root).status.pyproject_scripts.items()), set(REQUIRED_SCRIPTS.items()))
+        for command in REQUIRED_README_COMMANDS:
+            self.assertIn(command, (root / "README.md").read_text(encoding="utf-8"))
+        for tool in mcp_tool_definitions():
+            self.assertIn(tool["name"], rendered)
+
+    def test_install_check_cli_is_read_only_and_returns_zero_for_real_checkout(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")
+        before_uses = (root / ".cmu" / "uses.json").read_text(encoding="utf-8")
+
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["--root", str(root), "install-check"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Status: pass", output.getvalue())
+        self.assertEqual(before_memories, (root / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+        self.assertEqual(before_uses, (root / ".cmu" / "uses.json").read_text(encoding="utf-8"))
+
+    def test_install_check_fails_incomplete_checkout_with_specific_reasons(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("cmu init\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                "\n".join(
+                    [
+                        "[project]",
+                        "name = \"broken\"",
+                        "readme = \"WRONG.md\"",
+                        "[project.scripts]",
+                        "cmu = \"cmu.cli:main\"",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            report = install_check(root)
+            rendered = report.render()
+
+            self.assertFalse(report.passed)
+            self.assertIn("Status: fail", rendered)
+            self.assertIn("missing:", rendered)
+            self.assertIn("project.readme is 'WRONG.md'", rendered)
+            self.assertIn("pyproject={'cmu': 'cmu.cli:main'}", rendered)
+
     def test_readme_quickstart_documents_real_package_and_host_surfaces(self) -> None:
         root = Path(__file__).resolve().parents[1]
         readme = (root / "README.md").read_text(encoding="utf-8")

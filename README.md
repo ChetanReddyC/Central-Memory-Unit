@@ -15,6 +15,7 @@ cmu readiness
 cmu quickstart-demo
 cmu quickstart-demo --apply
 cmu setup-guide --host all
+cmu install-check
 ```
 
 Use `cmu quickstart-demo` first for a dry run. Use `cmu quickstart-demo --apply` inside a Git repository when you want the proof loop to create a scoped Practice memory, run task-start retrieval, create a Memory Use Receipt, write a tiny Git checkpoint, link the receipt to that checkpoint, and show usefulness evidence.
@@ -26,6 +27,7 @@ python -m cmu init
 python -m cmu readiness
 python -m cmu quickstart-demo
 python -m cmu setup-guide --host all
+python -m cmu install-check
 ```
 
 On Windows, the Python launcher form also works when `py` is available:
@@ -119,8 +121,9 @@ Useful local checks:
 
 ```powershell
 cmu setup-guide --host all
+cmu install-check
 cmu quickstart-demo
 python -m unittest tests.test_cmu_spine.QuickstartDemoTests
 ```
 
-`cmu setup-guide` is read-only. It should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu quickstart-demo --apply` intentionally mutates the local Git repository by creating the small demo proof checkpoint.
+`cmu setup-guide` and `cmu install-check` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu quickstart-demo --apply` intentionally mutates the local Git repository by creating the small demo proof checkpoint.

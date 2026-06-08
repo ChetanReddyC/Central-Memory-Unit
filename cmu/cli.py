@@ -14,6 +14,7 @@ from .doc_curation import DocumentCurationReport, apply_selected_curation_decisi
 from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
+from .install_check import install_check
 from .lifecycle import lifecycle_report
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -89,6 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser = subparsers.add_parser("setup-guide", help="Show read-only CLI, SDK, and MCP host setup guidance.")
     setup_parser.add_argument("--host", choices=HOST_CHOICES, default="all", help="Limit guidance to one host surface.")
     setup_parser.set_defaults(func=cmd_setup_guide)
+
+    install_check_parser = subparsers.add_parser("install-check", help="Validate README, package, SDK, CLI, and MCP adoption surfaces.")
+    install_check_parser.set_defaults(func=cmd_install_check)
 
     mcp_parser = subparsers.add_parser("mcp", help="Run the CMU MCP stdio server.")
     mcp_parser.set_defaults(func=cmd_mcp)
@@ -718,6 +722,12 @@ def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:
     report = setup_guide(args.root, host=args.host)
     print(report.render())
     return 0
+
+
+def cmd_install_check(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = install_check(args.root)
+    print(report.render())
+    return 0 if report.passed else 1
 
 
 def cmd_mcp(args: argparse.Namespace, store: MemoryStore) -> int:
