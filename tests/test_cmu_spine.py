@@ -39,6 +39,7 @@ from cmu.retrieval import (
 )
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
+from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
 from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
@@ -3140,6 +3141,116 @@ class ScenarioEvaluationTests(unittest.TestCase):
             self.assertIn("Summary: total=1 pass=0 review=1", rendered)
             self.assertIn("review:", rendered)
             self.assertIn("failed=action", rendered)
+
+    def test_scenario_comparison_reports_improvement_from_real_baseline_and_current_stores(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline_root = root / "baseline"
+            current_root = root / "current"
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Compare scenarios before trusting retrieval changes",
+                summary="Scenario comparison should prove whether a memory-base change preserves expected task-start behavior.",
+                signals=["scenario comparison", "retrieval"],
+                scope=MemoryScope(code=["cmu/scenarios.py"], workflow=["hardening"], actor=["agent"]),
+                evidence=["Before/after scenario proof should use real persisted stores."],
+                use_this_path="Run scenario comparison before trusting retrieval or memory-base changes.",
+                avoid_this="Do not rely on a single current-run scenario when a baseline store exists.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(current_root).add(memory)
+            scenario = ScenarioDefinition.create(
+                name="scenario comparison surfaces practice",
+                prompt="implement CMU scenario comparison",
+                actor="agent",
+                area="cmu",
+                files=["cmu/scenarios.py"],
+                workflow=["hardening"],
+                risk="high",
+                expect_trigger="must-call",
+                expect_action="action-note",
+                expect_memory=memory.id,
+            )
+
+            report = compare_scenario_library(
+                [scenario],
+                baseline_memories=MemoryStore(baseline_root).list(),
+                baseline_receipts=MemoryUseStore(baseline_root).list(),
+                current_memories=MemoryStore(current_root).list(),
+                current_receipts=MemoryUseStore(current_root).list(),
+                baseline_root=str(baseline_root),
+                current_root=str(current_root),
+            )
+
+            rendered = report.render()
+            self.assertEqual(report.items[0].classification, "improved")
+            self.assertFalse(report.has_regressions())
+            self.assertIn("CMU Scenario Comparison", rendered)
+            self.assertIn("Summary: total=1 regressed=0 improved=1", rendered)
+            self.assertIn(f"current=supports-cmu-assumption/action-note/{memory.id}", rendered)
+            self.assertEqual(MemoryUseStore(baseline_root).list(), [])
+            self.assertEqual(MemoryUseStore(current_root).list(), [])
+
+    def test_cli_scenario_compare_strict_fails_when_current_store_regresses_from_baseline(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline_root = root / "baseline"
+            current_root = root / "current"
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Keep scenario regression proof anchored",
+                summary="Scenario comparison should fail strict mode when current memory behavior loses a passing baseline.",
+                signals=["scenario compare", "regression"],
+                scope=MemoryScope(code=["cmu/scenarios.py"], workflow=["hardening"], actor=["agent"]),
+                evidence=["Regression comparison must execute the same saved scenario against both stores."],
+                use_this_path="Treat baseline-pass to current-review as a regression before accepting the change.",
+                avoid_this="Do not treat changed memory behavior as harmless when saved expectations fail.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(baseline_root).add(memory)
+            scenario = ScenarioDefinition.create(
+                name="scenario comparison catches lost memory",
+                prompt="implement CMU scenario comparison regression check",
+                actor="agent",
+                area="cmu",
+                files=["cmu/scenarios.py"],
+                workflow=["hardening"],
+                risk="high",
+                expect_trigger="must-call",
+                expect_action="action-note",
+                expect_memory=memory.id,
+                tags=["comparison"],
+            )
+            ScenarioLibraryStore(current_root).add(scenario)
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        str(current_root),
+                        "scenario-compare",
+                        "--baseline-root",
+                        str(baseline_root),
+                        "--tag",
+                        "comparison",
+                        "--strict",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 1, rendered)
+            self.assertIn("CMU Scenario Comparison", rendered)
+            self.assertIn("Summary: total=1 regressed=1 improved=0", rendered)
+            self.assertIn("regressed:", rendered)
+            self.assertIn(f"baseline=supports-cmu-assumption/action-note/{memory.id}", rendered)
+            self.assertIn("current=cmu-gap-found/quiet/none", rendered)
+            self.assertEqual(MemoryUseStore(baseline_root).list(), [])
+            self.assertEqual(MemoryUseStore(current_root).list(), [])
 
 
 class MemoryUseTests(unittest.TestCase):

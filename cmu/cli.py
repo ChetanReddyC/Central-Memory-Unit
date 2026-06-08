@@ -45,6 +45,7 @@ from .scenarios import (
     ScenarioDefinition,
     ScenarioEvaluationRequest,
     ScenarioLibraryStore,
+    compare_scenario_library,
     evaluate_scenario,
     run_scenario_library,
 )
@@ -480,6 +481,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scenario_run_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any scenario needs review.")
     scenario_run_parser.set_defaults(func=cmd_scenario_run)
+
+    scenario_compare_parser = subparsers.add_parser("scenario-compare", help="Compare saved scenarios against a baseline CMU root.")
+    scenario_compare_parser.add_argument("--baseline-root", required=True, help="CMU root to use as the before/baseline store.")
+    scenario_compare_parser.add_argument("scenario", nargs="?", default="", help="Scenario id or exact name. Omit to compare the library.")
+    scenario_compare_parser.add_argument("--tag", default="", help="Compare scenarios with this tag.")
+    scenario_compare_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider for both stores. Defaults to off.",
+    )
+    scenario_compare_parser.add_argument("--strict", action="store_true", help="Exit non-zero when a passing baseline regresses.")
+    scenario_compare_parser.set_defaults(func=cmd_scenario_compare)
 
     trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
     trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
@@ -1420,6 +1434,38 @@ def cmd_scenario_run(args: argparse.Namespace, store: MemoryStore) -> int:
     )
     print(report.render())
     if args.strict and report.has_review_items():
+        return 1
+    return 0
+
+
+def cmd_scenario_compare(args: argparse.Namespace, store: MemoryStore) -> int:
+    library = ScenarioLibraryStore(args.root)
+    if args.scenario:
+        scenarios = [library.get(args.scenario)]
+        tag = ""
+    else:
+        scenarios = library.list(tag=args.tag)
+        tag = args.tag
+    baseline_root = Path(args.baseline_root)
+    baseline_store = MemoryStore(baseline_root)
+    baseline_memories = baseline_store.list()
+    current_memories = store.list()
+    baseline_semantic_index = load_semantic_index(argparse.Namespace(root=baseline_root, semantic=args.semantic), baseline_memories)
+    current_semantic_index = load_semantic_index(args, current_memories)
+    report = compare_scenario_library(
+        scenarios,
+        baseline_memories=baseline_memories,
+        baseline_receipts=MemoryUseStore(baseline_root).list(),
+        current_memories=current_memories,
+        current_receipts=MemoryUseStore(args.root).list(),
+        baseline_root=str(baseline_root),
+        current_root=str(args.root),
+        baseline_semantic_index=baseline_semantic_index,
+        current_semantic_index=current_semantic_index,
+        tag=tag,
+    )
+    print(report.render())
+    if args.strict and report.has_regressions():
         return 1
     return 0
 

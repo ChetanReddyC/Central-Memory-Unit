@@ -365,6 +365,86 @@ class ScenarioLibraryRunReport:
         return any(not item.passed for item in self.items)
 
 
+@dataclass
+class ScenarioComparisonItem:
+    scenario: ScenarioDefinition
+    baseline: ScenarioEvaluationReport
+    current: ScenarioEvaluationReport
+
+    @property
+    def baseline_passed(self) -> bool:
+        return bool(self.baseline.checks) and all(check.passed for check in self.baseline.checks)
+
+    @property
+    def current_passed(self) -> bool:
+        return bool(self.current.checks) and all(check.passed for check in self.current.checks)
+
+    @property
+    def classification(self) -> str:
+        if self.baseline_passed and not self.current_passed:
+            return "regressed"
+        if not self.baseline_passed and self.current_passed:
+            return "improved"
+        if self.baseline_passed and self.current_passed:
+            if self.baseline.action != self.current.action or self.baseline.matched_memory_id != self.current.matched_memory_id:
+                return "changed-pass"
+            return "unchanged-pass"
+        if self.baseline.action != self.current.action or self.baseline.matched_memory_id != self.current.matched_memory_id:
+            return "changed-review"
+        return "unchanged-review"
+
+    def render(self) -> str:
+        return (
+            f"- {self.classification}: {self.scenario.id} {self.scenario.name} "
+            f"baseline={self.baseline.verdict}/{self.baseline.action}/{self.baseline.matched_memory_id or 'none'} "
+            f"current={self.current.verdict}/{self.current.action}/{self.current.matched_memory_id or 'none'}"
+        )
+
+
+@dataclass
+class ScenarioComparisonReport:
+    items: list[ScenarioComparisonItem]
+    baseline_root: str
+    current_root: str
+    tag: str = ""
+
+    def render(self) -> str:
+        counts = {name: 0 for name in ["regressed", "improved", "changed-pass", "changed-review", "unchanged-pass", "unchanged-review"]}
+        for item in self.items:
+            counts[item.classification] += 1
+        lines = [
+            "CMU Scenario Comparison",
+            "Mode: read-only before/after scenario proof; no memories or receipts are mutated.",
+            f"Baseline Root: {self.baseline_root}",
+            f"Current Root: {self.current_root}",
+            f"Filter: tag={self.tag}" if self.tag else "Filter: all scenarios",
+            (
+                "Summary: "
+                f"total={len(self.items)} "
+                f"regressed={counts['regressed']} "
+                f"improved={counts['improved']} "
+                f"changed={counts['changed-pass'] + counts['changed-review']} "
+                f"unchanged={counts['unchanged-pass'] + counts['unchanged-review']}"
+            ),
+        ]
+        if self.items:
+            lines.append("")
+            lines.extend(item.render() for item in self.items)
+        else:
+            lines.extend(["", "No scenarios matched."])
+        lines.extend(
+            [
+                "",
+                "Proof Meaning: this comparison runs the same saved scenarios against two real CMU stores so "
+                "retrieval, trigger, Candidate, and expectation behavior can be checked before trusting a memory-base or runtime change.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def has_regressions(self) -> bool:
+        return any(item.classification == "regressed" for item in self.items)
+
+
 def evaluate_scenario(
     memories: list[Memory],
     receipts: list[MemoryUseReceipt],
@@ -445,6 +525,40 @@ def run_scenario_library(
         for scenario in scenarios
     ]
     return ScenarioLibraryRunReport(items=items, tag=tag)
+
+
+def compare_scenario_library(
+    scenarios: list[ScenarioDefinition],
+    *,
+    baseline_memories: list[Memory],
+    baseline_receipts: list[MemoryUseReceipt],
+    current_memories: list[Memory],
+    current_receipts: list[MemoryUseReceipt],
+    baseline_root: str,
+    current_root: str,
+    baseline_semantic_index: SemanticIndex | None = None,
+    current_semantic_index: SemanticIndex | None = None,
+    tag: str = "",
+) -> ScenarioComparisonReport:
+    items = [
+        ScenarioComparisonItem(
+            scenario=scenario,
+            baseline=evaluate_scenario(
+                baseline_memories,
+                baseline_receipts,
+                scenario.request(),
+                semantic_index=baseline_semantic_index,
+            ),
+            current=evaluate_scenario(
+                current_memories,
+                current_receipts,
+                scenario.request(),
+                semantic_index=current_semantic_index,
+            ),
+        )
+        for scenario in scenarios
+    ]
+    return ScenarioComparisonReport(items=items, baseline_root=baseline_root, current_root=current_root, tag=tag)
 
 
 def evaluate_candidate_signal(request: ScenarioEvaluationRequest) -> ScenarioCandidateSignal:
