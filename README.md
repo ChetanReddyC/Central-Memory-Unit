@@ -16,6 +16,7 @@ cmu quickstart-demo
 cmu quickstart-demo --apply
 cmu demo-walkthrough
 cmu setup-guide --host all
+cmu runner-hooks
 cmu install-check
 cmu dist-check
 ```
@@ -23,6 +24,8 @@ cmu dist-check
 Use `cmu quickstart-demo` first for a dry run. Use `cmu quickstart-demo --apply` inside a Git repository when you want the proof loop to create a scoped Practice memory, run task-start retrieval, create a Memory Use Receipt, write a tiny Git checkpoint, link the receipt to that checkpoint, and show usefulness evidence.
 
 Use `cmu demo-walkthrough` when you want the whole adoption path in one report: install validation, setup guidance, quickstart proof plan, and the next real work-cycle handoff. Use `cmu demo-walkthrough --apply` inside a Git repository to run the same Git-backed proof loop as part of that walkthrough.
+
+Use `cmu runner-hooks` when wiring an autonomous runner. With no prompt, it renders the event hook contract for `before_task`, `after_task`, `after_checkpoint`, and `review` without mutating memory. With a prompt, it runs the real `before_task` hook through the same AgentIntegration path as the SDK and MCP surfaces.
 
 Use `cmu dist-check` when you want a stronger packaging proof. It creates a temporary validation environment, installs CMU as a built package, then checks installed `cmu`, `python -m cmu`, `cmu install-check`, `cmu demo-walkthrough`, and `cmu-mcp` tool discovery from outside the source checkout.
 
@@ -34,6 +37,7 @@ python -m cmu readiness
 python -m cmu quickstart-demo
 python -m cmu demo-walkthrough
 python -m cmu setup-guide --host all
+python -m cmu runner-hooks
 python -m cmu install-check
 python -m cmu dist-check
 ```
@@ -79,6 +83,26 @@ start = cmu.task_start(
 ```
 
 After work, call `cmu.after_work(...)` only if a reusable lesson appeared, then use `cmu.link_checkpoint(...)` and `cmu.review(...)` to keep usefulness evidence grounded in real checkpoints.
+
+## Autonomous Runner Hooks
+
+Use the Python hook facade when an autonomous runner wants event-shaped integration instead of raw tool names:
+
+```python
+from cmu import AutonomousRunnerHooks
+
+hooks = AutonomousRunnerHooks(root=".")
+start = hooks.before_task(
+    "debug repeated checkout rollback failure",
+    actor="agent",
+    area="release",
+    files=["quickstart_demo/rollback_notes.txt"],
+    workflow=["debugging", "rollback"],
+    risk="high",
+)
+```
+
+The hook facade delegates to the same `AgentIntegration` tools as the SDK and MCP adapter. `before_task` may create a receipt only when an Action Note surfaces. `after_task` should be called with reusable learning only, `after_checkpoint` links receipt evidence, and `review` reads usefulness/drag cards without changing stable trust.
 
 ## MCP Host Setup
 
@@ -132,8 +156,10 @@ cmu setup-guide --host all
 cmu install-check
 cmu demo-walkthrough
 cmu dist-check
+cmu runner-hooks
 cmu quickstart-demo
 python -m unittest tests.test_cmu_spine.QuickstartDemoTests
+python -m unittest tests.test_cmu_spine.AutonomousRunnerHooksTests
 ```
 
-`cmu setup-guide`, `cmu install-check`, and `cmu demo-walkthrough` without `--apply` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.
+`cmu setup-guide`, `cmu install-check`, `cmu runner-hooks` without a prompt, and `cmu demo-walkthrough` without `--apply` are read-only. They should not initialize stores, create memories, create receipts, or write Git checkpoints. `cmu runner-hooks <task>` executes the real `before_task` hook and can create a Memory Use Receipt when memory surfaces. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.

@@ -36,6 +36,7 @@ from cmu.retrieval import (
     preflight,
     rank_memories,
 )
+from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
@@ -8112,6 +8113,206 @@ class AgentIntegrationBoundaryTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["status"], "unknown-tool")
         self.assertIn("cmu_task_start", response["available_tools"])
+
+
+class AutonomousRunnerHooksTests(unittest.TestCase):
+    def test_runner_hooks_manifest_maps_events_to_stable_agent_tools(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manifest = AutonomousRunnerHooks(tmp).manifest()
+
+            self.assertEqual(manifest["version"], RUNNER_HOOKS_VERSION)
+            self.assertEqual(manifest["agent_api_version"], AGENT_API_VERSION)
+            self.assertEqual(
+                [(hook["name"], hook["delegates_to"], hook["mutates"]) for hook in manifest["hooks"]],
+                [
+                    ("before_task", "cmu_task_start", True),
+                    ("after_task", "cmu_after_work", True),
+                    ("after_checkpoint", "cmu_link_checkpoint", True),
+                    ("review", "cmu_review", False),
+                ],
+            )
+
+    def test_runner_hooks_run_real_guidance_learning_checkpoint_and_review_loop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use CMU runner hooks for autonomous integrations",
+                summary="Autonomous runners should call CMU through event hooks that delegate to the stable agent boundary.",
+                signals=["runner hooks", "agent integration"],
+                scope=MemoryScope(code=["cmu/runner_hooks.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["The runner hook layer should keep autonomous integrations out of human CLI parsing."],
+                use_this_path="Call before_task, after_task, after_checkpoint, and review through the runner hook facade.",
+                avoid_this="Do not rebuild task-start retrieval or Candidate Memory gates inside runner adapters.",
+                challenge_only_if="A host already provides the same AgentIntegration tool-call protocol directly.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            hooks = AutonomousRunnerHooks(tmp)
+
+            started = hooks.before_task(
+                "wire CMU autonomous runner hooks",
+                actor="agent",
+                area="cmu",
+                files=["cmu/runner_hooks.py"],
+                workflow=["agent integration"],
+                risk="high",
+            )
+
+            self.assertTrue(started.ok)
+            self.assertEqual(started.hook, "before_task")
+            self.assertEqual(started.status, "action-note")
+            self.assertTrue(started.mutates)
+            self.assertEqual(started.response["matched_memory"]["id"], practice.id)
+            self.assertEqual(started.response["action_note"]["recognized_situation"], practice.title)
+            use_id = started.response["receipt"]["id"]
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.id, use_id)
+            self.assertEqual(receipt.source_command, "agent.task-start")
+            self.assertEqual(started.next_hooks, ["after_task", "after_checkpoint", "review"])
+
+            skipped = hooks.after_task(reusable_learning=False)
+
+            self.assertEqual(skipped.status, "skipped-no-reusable-learning")
+            self.assertFalse(skipped.mutates)
+            self.assertEqual(MemoryStore(tmp).list(type=MemoryType.CANDIDATE), [])
+
+            learned = hooks.after_task(
+                reusable_learning=True,
+                title="Autonomous runner hooks delegate to AgentIntegration",
+                situation="Autonomous runner hooks should stay event-shaped while delegating to AgentIntegration.",
+                signals=["runner hooks", "agent integration"],
+                outcome="The hook facade gives runners before-task, after-task, checkpoint, and review events.",
+                worked="Keep hook code thin and let CentralMemoryUnit enforce CMU behavior.",
+                failed="Parsing human CLI reports would make autonomous runners brittle.",
+                future_use="Use this hook layer when wiring autonomous agent runners into CMU.",
+                evidence=["The runner hook test exercises the real persisted Candidate Memory path."],
+                liability_score=4,
+                scope={"code": ["cmu/runner_hooks.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                confidence=0.85,
+            )
+
+            self.assertTrue(learned.ok)
+            self.assertEqual(learned.status, "candidate-saved")
+            self.assertTrue(learned.mutates)
+            [candidate] = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(candidate.title, "Autonomous runner hooks delegate to AgentIntegration")
+            self.assertEqual(candidate.summary, "Autonomous runner hooks should stay event-shaped while delegating to AgentIntegration.")
+
+            linked = hooks.after_checkpoint(
+                use_id,
+                manual_commit={
+                    "hash": "runner123",
+                    "message": "Add autonomous runner hooks",
+                    "files": ["cmu/runner_hooks.py", "tests/test_cmu_spine.py"],
+                },
+            )
+
+            self.assertTrue(linked.ok)
+            self.assertEqual(linked.status, "checkpoint-linked")
+            self.assertTrue(linked.mutates)
+            linked_receipt = MemoryUseStore(tmp).get(use_id)
+            self.assertEqual(linked_receipt.commit_hash, "runner123")
+            self.assertEqual(linked_receipt.outcome_signal, "committed")
+
+            reviewed = hooks.review(practice.id)
+
+            self.assertTrue(reviewed.ok)
+            self.assertEqual(reviewed.status, "review-ready")
+            self.assertFalse(reviewed.mutates)
+            self.assertEqual(reviewed.response["cards"][0]["memory_id"], practice.id)
+            self.assertEqual(reviewed.response["cards"][0]["linked_uses"], 1)
+            self.assertEqual(reviewed.response["cards"][0]["source_counts"], {"agent.task-start": 1})
+
+    def test_runner_hooks_preserve_silent_skip_without_receipts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result = AutonomousRunnerHooks(tmp).before_task(
+                "adjust local label spacing",
+                actor="agent",
+                area="ui",
+                files=["ui/label.css"],
+                risk="low",
+            )
+
+            self.assertEqual(result.status, "silent-skip")
+            self.assertFalse(result.mutates)
+            self.assertIsNone(result.response["receipt"])
+            self.assertEqual(result.next_hooks, ["after_task", "review"])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_cli_runner_hooks_renders_contract_and_executes_real_before_task_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Runner hook CLI can inspect autonomous integration",
+                summary="The runner-hooks command should expose the hook contract and execute before_task when prompted.",
+                signals=["runner hooks", "cli"],
+                scope=MemoryScope(code=["cmu/runner_hooks.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["Manual verification needs a CLI path over the real hook code."],
+                use_this_path="Use cmu runner-hooks to inspect the hook sequence or run a before_task proof.",
+                avoid_this="Do not treat runner hook docs as proof unless the executed hook reaches the real store.",
+                challenge_only_if="The runner already calls AgentIntegration directly.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+
+            contract_output = StringIO()
+            with redirect_stdout(contract_output):
+                contract_exit = main(["--root", tmp, "runner-hooks"])
+
+            self.assertEqual(contract_exit, 0)
+            rendered_contract = contract_output.getvalue()
+            self.assertIn("CMU Autonomous Runner Hooks", rendered_contract)
+            self.assertIn("before_task (task.start): cmu_task_start", rendered_contract)
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+            json_output = StringIO()
+            with redirect_stdout(json_output):
+                json_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "runner-hooks",
+                        "wire runner hook CLI proof",
+                        "--actor",
+                        "agent",
+                        "--area",
+                        "cmu",
+                        "--file",
+                        "cmu/runner_hooks.py",
+                        "--workflow",
+                        "agent integration",
+                        "--risk",
+                        "high",
+                        "--json",
+                    ]
+                )
+            payload = json.loads(json_output.getvalue())
+
+            self.assertEqual(json_exit, 0)
+            self.assertEqual(payload["manifest"]["version"], RUNNER_HOOKS_VERSION)
+            self.assertEqual(payload["result"]["hook"], "before_task")
+            self.assertEqual(payload["result"]["status"], "action-note")
+            self.assertEqual(payload["result"]["response"]["matched_memory"]["id"], practice.id)
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.id, payload["result"]["response"]["receipt"]["id"])
+
+    def test_runner_hooks_report_is_read_only_without_prompt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            before_memories = MemoryStore(tmp).list()
+            before_receipts = MemoryUseStore(tmp).list()
+
+            report = runner_hooks_report(tmp)
+            rendered = report.render()
+
+            self.assertIn("CMU Autonomous Runner Hooks", rendered)
+            self.assertIn("Proof Meaning: autonomous runners can use these event hooks", rendered)
+            self.assertIsNone(report.result)
+            self.assertEqual(MemoryStore(tmp).list(), before_memories)
+            self.assertEqual(MemoryUseStore(tmp).list(), before_receipts)
 
 
 class McpIntegrationTests(unittest.TestCase):

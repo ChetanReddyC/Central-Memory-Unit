@@ -38,6 +38,7 @@ from .retrieval import (
     semantic_index_status,
     semantic_proposal_diagnostics,
 )
+from .runner_hooks import runner_hooks_report
 from .scenarios import (
     ScenarioDefinition,
     ScenarioEvaluationRequest,
@@ -117,6 +118,28 @@ def build_parser() -> argparse.ArgumentParser:
     agent_call_parser.add_argument("--input", default="", help="Inline JSON object containing the tool arguments.")
     agent_call_parser.add_argument("--input-file", default="", help="Read JSON arguments from a file, or '-' for stdin.")
     agent_call_parser.set_defaults(func=cmd_agent_call)
+
+    runner_hooks_parser = subparsers.add_parser("runner-hooks", help="Show or execute autonomous-runner CMU hook integration.")
+    runner_hooks_parser.add_argument("prompt", nargs="*", help="Optional task prompt. When supplied, runs the real before_task hook.")
+    runner_hooks_parser.add_argument("--actor", default="agent")
+    runner_hooks_parser.add_argument("--area", default="")
+    runner_hooks_parser.add_argument("--file", action="append", default=[])
+    runner_hooks_parser.add_argument("--workflow", action="append", default=[])
+    runner_hooks_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    runner_hooks_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    runner_hooks_parser.add_argument("--repeated-error", action="store_true")
+    runner_hooks_parser.add_argument("--uncertainty", action="store_true")
+    runner_hooks_parser.add_argument("--shared-contract", action="store_true")
+    runner_hooks_parser.add_argument("--irreversible", action="store_true")
+    runner_hooks_parser.add_argument("--unfamiliar", action="store_true")
+    runner_hooks_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider for the executed before_task hook.",
+    )
+    runner_hooks_parser.add_argument("--json", action="store_true", help="Render the hook manifest/result as JSON.")
+    runner_hooks_parser.set_defaults(func=cmd_runner_hooks)
 
     portable_export_parser = subparsers.add_parser(
         "portable-export",
@@ -916,6 +939,32 @@ def cmd_agent_call(args: argparse.Namespace, store: MemoryStore) -> int:
     response = AgentIntegration(args.root).invoke(args.tool, arguments)
     print(json.dumps(response, indent=2, ensure_ascii=True))
     return 0 if response["ok"] else 1
+
+
+def cmd_runner_hooks(args: argparse.Namespace, store: MemoryStore) -> int:
+    prompt = " ".join(args.prompt).strip()
+    report = runner_hooks_report(
+        args.root,
+        prompt=prompt,
+        actor=args.actor,
+        area=args.area,
+        files=args.file,
+        workflow=args.workflow,
+        environment=args.environment,
+        risk=args.risk,
+        repeated_error=args.repeated_error,
+        uncertainty=args.uncertainty,
+        shared_contract=args.shared_contract,
+        irreversible=args.irreversible,
+        unfamiliar=args.unfamiliar,
+        semantic=args.semantic,
+    )
+    if args.json:
+        payload = {"root": report.root, "manifest": report.manifest, "result": report.result.to_dict() if report.result else None}
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
+    else:
+        print(report.render())
+    return 0 if report.result is None or report.result.ok else 1
 
 
 def cmd_portable_export(args: argparse.Namespace, store: MemoryStore) -> int:
