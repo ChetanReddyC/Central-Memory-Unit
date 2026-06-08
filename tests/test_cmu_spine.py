@@ -12,6 +12,7 @@ from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
 from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
+from cmu.mcp import CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
@@ -7781,6 +7782,201 @@ class AgentIntegrationBoundaryTests(unittest.TestCase):
         self.assertIn("cmu_task_start", response["available_tools"])
 
 
+class McpIntegrationTests(unittest.TestCase):
+    def test_mcp_exposes_exact_cmu_tools_with_host_usable_schemas(self) -> None:
+        tools = mcp_tool_definitions()
+
+        self.assertEqual(
+            [tool["name"] for tool in tools],
+            ["cmu_task_start", "cmu_after_work", "cmu_link_checkpoint", "cmu_review"],
+        )
+        for tool in tools:
+            self.assertEqual(tool["inputSchema"]["type"], "object")
+            self.assertIn("properties", tool["inputSchema"])
+            self.assertIn("readOnlyHint", tool["annotations"])
+        self.assertEqual(next(tool for tool in tools if tool["name"] == "cmu_review")["annotations"]["readOnlyHint"], True)
+        self.assertEqual(next(tool for tool in tools if tool["name"] == "cmu_task_start")["inputSchema"]["required"], ["prompt"])
+
+    def test_mcp_initialize_and_tools_list_use_json_rpc_shape(self) -> None:
+        with TemporaryDirectory() as tmp:
+            adapter = CmuMcpAdapter(tmp)
+
+            initialized = adapter.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            listed = adapter.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+
+            assert initialized is not None
+            assert listed is not None
+            self.assertEqual(initialized["result"]["serverInfo"]["name"], "central-memory-unit")
+            self.assertEqual(initialized["result"]["capabilities"], {"tools": {}})
+            self.assertEqual([tool["name"] for tool in listed["result"]["tools"]], [tool["name"] for tool in mcp_tool_definitions()])
+
+    def test_mcp_task_start_silent_skip_creates_no_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            response = call_mcp_tool(
+                CmuMcpAdapter(tmp),
+                "cmu_task_start",
+                {"prompt": "Adjust local style label", "area": "ui", "files": ["ui/label.css"], "risk": "low"},
+            )
+
+            self.assertFalse(response["isError"])
+            structured = response["structuredContent"]
+            self.assertEqual(structured["status"], "silent-skip")
+            self.assertIsNone(structured["receipt"])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
+
+    def test_mcp_task_start_matching_practice_returns_action_note_and_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = add_mcp_practice(tmp)
+
+            response = call_mcp_tool(
+                CmuMcpAdapter(tmp),
+                "cmu_task_start",
+                {
+                    "prompt": "Build the CMU MCP adapter",
+                    "actor": "agent",
+                    "area": "cmu",
+                    "files": ["cmu/mcp.py"],
+                    "workflow": ["agent integration"],
+                    "risk": "high",
+                },
+            )
+
+            structured = response["structuredContent"]
+            self.assertFalse(response["isError"])
+            self.assertEqual(structured["status"], "action-note")
+            self.assertEqual(structured["matched_memory"]["id"], practice.id)
+            self.assertEqual(structured["action_note"]["recognized_situation"], practice.title)
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.id, structured["receipt"]["id"])
+            self.assertEqual(receipt.source_command, "agent.task-start")
+
+    def test_mcp_after_work_uses_existing_candidate_quality_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            adapter = CmuMcpAdapter(tmp)
+
+            saved = call_mcp_tool(
+                adapter,
+                "cmu_after_work",
+                {
+                    "situation": "MCP adapters for CMU must delegate to AgentIntegration instead of duplicating memory logic.",
+                    "signals": ["new convention"],
+                    "outcome": "The adapter exposes MCP tools while preserving the direct agent boundary.",
+                    "worked": "Keep MCP protocol code thin and route tool calls through AgentIntegration.invoke.",
+                    "failed": "Reimplementing task-start or after-work logic in MCP would bypass safety gates.",
+                    "future_use": "Use this pattern for future external host adapters.",
+                    "evidence": ["MCP integration tests exercise the adapter through temporary stores."],
+                    "liability_score": 4,
+                    "scope": {"code": ["cmu/mcp.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                    "confidence": 0.85,
+                },
+            )
+
+            rejected = call_mcp_tool(
+                adapter,
+                "cmu_after_work",
+                {
+                    "situation": "Changed a label.",
+                    "future_use": "Probably no future reuse.",
+                    "scope": {},
+                    "liability_score": 1,
+                },
+            )
+
+            self.assertEqual(saved["structuredContent"]["status"], "candidate-saved")
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 1)
+            self.assertTrue(saved["structuredContent"]["decision"]["memory"]["id"].startswith("mem_"))
+            self.assertTrue(rejected["isError"])
+            self.assertEqual(rejected["structuredContent"]["status"], "candidate-not-saved")
+            self.assertIn("Missing required Candidate Memory fields", rejected["structuredContent"]["decision"]["reason"])
+
+    def test_mcp_link_checkpoint_and_review_return_structured_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = add_mcp_practice(tmp)
+            adapter = CmuMcpAdapter(tmp)
+            started = call_mcp_tool(
+                adapter,
+                "cmu_task_start",
+                {
+                    "prompt": "Build CMU MCP adapter",
+                    "actor": "agent",
+                    "area": "cmu",
+                    "files": ["cmu/mcp.py"],
+                    "workflow": ["agent integration"],
+                    "risk": "high",
+                },
+            )["structuredContent"]
+            use_id = started["receipt"]["id"]
+
+            linked = call_mcp_tool(
+                adapter,
+                "cmu_link_checkpoint",
+                {
+                    "use_id": use_id,
+                    "manual_commit": {
+                        "hash": "mcp123",
+                        "message": "Add CMU MCP adapter",
+                        "files": ["cmu/mcp.py", "tests/test_cmu_spine.py"],
+                    },
+                },
+            )
+            reviewed = call_mcp_tool(adapter, "cmu_review", {"memory_id": practice.id})
+
+            self.assertFalse(linked["isError"])
+            self.assertEqual(linked["structuredContent"]["status"], "checkpoint-linked")
+            self.assertEqual(linked["structuredContent"]["decision"]["receipt"]["commit_hash"], "mcp123")
+            self.assertFalse(reviewed["isError"])
+            self.assertEqual(reviewed["structuredContent"]["status"], "review-ready")
+            self.assertEqual(reviewed["structuredContent"]["cards"][0]["memory_id"], practice.id)
+            self.assertEqual(reviewed["structuredContent"]["cards"][0]["linked_uses"], 1)
+
+    def test_mcp_invalid_input_returns_structured_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            adapter = CmuMcpAdapter(tmp)
+
+            bad_arguments = adapter.call_tool({"name": "cmu_task_start", "arguments": ["not", "an", "object"]})
+            missing_required = adapter.call_tool({"name": "cmu_task_start", "arguments": {"risk": "high"}})
+            unknown_tool = adapter.call_tool({"name": "cmu_missing_tool", "arguments": {}})
+
+            self.assertTrue(bad_arguments["isError"])
+            self.assertEqual(bad_arguments["structuredContent"]["status"], "invalid-request")
+            self.assertTrue(missing_required["isError"])
+            self.assertEqual(missing_required["structuredContent"]["status"], "invalid-request")
+            self.assertTrue(unknown_tool["isError"])
+            self.assertEqual(unknown_tool["structuredContent"]["status"], "unknown-tool")
+
+    def test_mcp_store_root_errors_return_structured_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            bad_root = Path(tmp) / "not-a-directory"
+            bad_root.write_text("not a CMU root", encoding="utf-8")
+
+            response = call_mcp_tool(CmuMcpAdapter(bad_root), "cmu_review", {})
+
+            self.assertTrue(response["isError"])
+            self.assertEqual(response["structuredContent"]["status"], "store-error")
+            self.assertIn("CMU store/root error", response["structuredContent"]["error"])
+
+    def test_mcp_tool_call_delegates_to_agent_integration_invoke(self) -> None:
+        adapter = CmuMcpAdapter(".")
+        calls = []
+
+        class FakeIntegration:
+            def invoke(self, tool, arguments):
+                calls.append((tool, arguments))
+                return {
+                    "api_version": AGENT_API_VERSION,
+                    "tool": tool,
+                    "ok": True,
+                    "status": "fake",
+                    "arguments": arguments,
+                }
+
+        adapter.integration = FakeIntegration()
+        response = adapter.call_tool({"name": "cmu_review", "arguments": {"memory_id": "mem_test"}})
+
+        self.assertEqual(calls, [("cmu_review", {"memory_id": "mem_test"})])
+        self.assertEqual(response["structuredContent"]["status"], "fake")
+
+
 class PythonSdkFacadeTests(unittest.TestCase):
     def test_sdk_facade_runs_named_methods_over_agent_boundary(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -8350,6 +8546,38 @@ def init_git_repo(root: str) -> None:
     run_git_test(root, ["init"])
     run_git_test(root, ["config", "user.email", "cmu@example.test"])
     run_git_test(root, ["config", "user.name", "CMU Test"])
+
+
+def call_mcp_tool(adapter: CmuMcpAdapter, name: str, arguments: dict | list | None) -> dict:
+    response = adapter.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+    )
+    assert response is not None
+    return response["result"]
+
+
+def add_mcp_practice(root: str) -> Memory:
+    practice = Memory.create(
+        type=MemoryType.PRACTICE,
+        title="Use AgentIntegration for MCP adapters",
+        summary="CMU protocol adapters should wrap the stable AgentIntegration boundary.",
+        signals=["mcp", "agent integration", "adapter"],
+        scope=MemoryScope(code=["cmu/mcp.py"], workflow=["agent integration"], actor=["agent"]),
+        evidence=["The direct agent boundary already enforces trigger, retrieval, receipt, and Candidate gates."],
+        use_this_path="Expose protocol tools, then delegate each call to AgentIntegration.invoke.",
+        avoid_this="Do not rebuild CMU task-start, checkpoint, review, or Candidate logic inside MCP.",
+        challenge_only_if="A future MCP SDK provides the same delegation without changing CMU behavior.",
+        liability_score=4,
+        confidence=0.9,
+        approved_by="CMU core owner",
+    )
+    MemoryStore(root).add(practice)
+    return practice
 
 
 def add_drag_receipts(root: str, memory: Memory, *, count: int) -> None:

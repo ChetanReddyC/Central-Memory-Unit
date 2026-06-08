@@ -14,6 +14,7 @@ from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .lifecycle import lifecycle_report
+from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
@@ -80,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_parser = subparsers.add_parser("quickstart-demo", help="Run a small Git-backed CMU proof loop.")
     quickstart_parser.add_argument("--apply", action="store_true", help="Create the demo memory, receipt, commit, and link evidence.")
     quickstart_parser.set_defaults(func=cmd_quickstart_demo)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Run the CMU MCP stdio server.")
+    mcp_parser.set_defaults(func=cmd_mcp)
 
     agent_tools_parser = subparsers.add_parser("agent-tools", help="Show the stable direct agent tool-call manifest as JSON.")
     agent_tools_parser.set_defaults(func=cmd_agent_tools)
@@ -679,6 +683,10 @@ def cmd_quickstart_demo(args: argparse.Namespace, store: MemoryStore) -> int:
     report = quickstart_demo(args.root, apply=args.apply)
     print(report.render())
     return 0 if report.applied or not args.apply else 1
+
+
+def cmd_mcp(args: argparse.Namespace, store: MemoryStore) -> int:
+    return StdioMcpServer(CmuMcpAdapter(args.root)).serve_forever()
 
 
 def cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
