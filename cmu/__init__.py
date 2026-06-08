@@ -1,6 +1,7 @@
 """Central Memory Unit local v0 spine."""
 
 from .agent_api import AGENT_API_VERSION, AgentIntegration
+from .codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, codex_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .install_check import install_check
@@ -18,7 +19,10 @@ __all__ = [
     "AgentIntegration",
     "AutonomousRunnerHooks",
     "CentralMemoryUnit",
+    "CODEX_RUNNER_ADAPTER_VERSION",
+    "CodexRunnerAdapter",
     "CmuMcpAdapter",
+    "codex_runner_report",
     "demo_walkthrough",
     "dist_check",
     "mcp_tool_definitions",

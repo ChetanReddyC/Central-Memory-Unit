@@ -188,6 +188,8 @@ def codex_section(root: Path) -> SetupSection:
             "Add a project-scoped MCP server named `central-memory-unit`.",
             "Use command `cmu-mcp` after installation, or `python` with args "
             "`['-m', 'cmu', '--root', '<project-root>', 'mcp']` during local development.",
+            "For autonomous-runner event wiring, inspect `cmu codex-runner` and send JSON events with "
+            "`cmu codex-runner --input-file <event.json>`.",
             f"Set the project root argument to `{root}`.",
             "Keep CMU calls task-bound: call task-start before meaningful work, after-work only for reusable learning, "
             "checkpoint linking after commits, and review for evidence.",

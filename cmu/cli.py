@@ -10,6 +10,7 @@ from .antipatterns import anti_pattern_report
 from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
+from .codex_adapter import codex_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
@@ -141,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runner_hooks_parser.add_argument("--json", action="store_true", help="Render the hook manifest/result as JSON.")
     runner_hooks_parser.set_defaults(func=cmd_runner_hooks)
+
+    codex_runner_parser = subparsers.add_parser("codex-runner", help="Show or execute the Codex host adapter for autonomous-runner events.")
+    codex_runner_parser.add_argument("--input", default="", help="Inline JSON event object.")
+    codex_runner_parser.add_argument("--input-file", default="", help="Read JSON event object from a file, or '-' for stdin.")
+    codex_runner_parser.add_argument("--json", action="store_true", help="Render the adapter manifest/result as JSON.")
+    codex_runner_parser.set_defaults(func=cmd_codex_runner)
 
     runner_scenario_parser = subparsers.add_parser("runner-scenario", help="Run a read-only autonomous-runner lifecycle scenario against an isolated store.")
     runner_scenario_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate through runner hooks.")
@@ -1008,6 +1015,30 @@ def cmd_runner_hooks(args: argparse.Namespace, store: MemoryStore) -> int:
         unfamiliar=args.unfamiliar,
         semantic=args.semantic,
     )
+    if args.json:
+        payload = {"root": report.root, "manifest": report.manifest, "result": report.result.to_dict() if report.result else None}
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
+    else:
+        print(report.render())
+    return 0 if report.result is None or report.result.ok else 1
+
+
+def cmd_codex_runner(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.input and args.input_file:
+        raise SystemExit("codex-runner accepts either --input or --input-file, not both")
+    event = None
+    if args.input or args.input_file:
+        raw_input = args.input
+        if args.input_file:
+            if args.input_file == "-":
+                raw_input = sys.stdin.read()
+            else:
+                raw_input = Path(args.input_file).read_text(encoding="utf-8-sig")
+        try:
+            event = json.loads(raw_input)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"codex-runner input must be valid JSON: {error.msg}") from error
+    report = codex_runner_report(args.root, event)
     if args.json:
         payload = {"root": report.root, "manifest": report.manifest, "result": report.result.to_dict() if report.result else None}
         print(json.dumps(payload, indent=2, ensure_ascii=True))

@@ -15,6 +15,7 @@ from cmu.agent_api import AGENT_API_VERSION, AgentIntegration
 from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
+from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, codex_runner_report
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
@@ -8314,6 +8315,208 @@ class AutonomousRunnerHooksTests(unittest.TestCase):
             self.assertIsNone(report.result)
             self.assertEqual(MemoryStore(tmp).list(), before_memories)
             self.assertEqual(MemoryUseStore(tmp).list(), before_receipts)
+
+
+class CodexRunnerAdapterTests(unittest.TestCase):
+    def test_codex_runner_manifest_is_read_only_and_maps_events_to_hooks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            before_memories = MemoryStore(tmp).list()
+            before_receipts = MemoryUseStore(tmp).list()
+
+            report = codex_runner_report(tmp)
+            rendered = report.render()
+
+            self.assertEqual(report.manifest["version"], CODEX_RUNNER_ADAPTER_VERSION)
+            self.assertEqual(report.manifest["host"], "codex")
+            self.assertEqual(
+                [(event["event"], event["hook"], event["mutates"]) for event in report.manifest["events"]],
+                [
+                    ("codex.task_started", "before_task", True),
+                    ("codex.task_finished", "after_task", True),
+                    ("codex.checkpoint_created", "after_checkpoint", True),
+                    ("codex.review_requested", "review", False),
+                ],
+            )
+            self.assertIn("CMU Codex Runner Adapter", rendered)
+            self.assertIn("Proof Meaning: Codex-style runner events", rendered)
+            self.assertIsNone(report.result)
+            self.assertEqual(MemoryStore(tmp).list(), before_memories)
+            self.assertEqual(MemoryUseStore(tmp).list(), before_receipts)
+
+    def test_codex_runner_task_finish_checkpoint_and_review_use_real_store_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use Codex runner adapter for host events",
+                summary="Codex-style runner events should enter CMU through the host adapter and existing hooks.",
+                signals=["codex runner", "host adapter"],
+                scope=MemoryScope(code=["cmu/codex_adapter.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["The adapter should translate host events without duplicating memory logic."],
+                use_this_path="Route Codex task, finish, checkpoint, and review events through the adapter.",
+                avoid_this="Do not create a separate Codex memory path outside AgentIntegration.",
+                challenge_only_if="Codex can call AgentIntegration directly with the same lifecycle semantics.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            adapter = CodexRunnerAdapter(tmp)
+
+            started = adapter.handle(
+                {
+                    "event": "codex.task_started",
+                    "payload": {
+                        "prompt": "wire Codex runner host adapter",
+                        "actor": "agent",
+                        "area": "cmu",
+                        "files": ["cmu/codex_adapter.py"],
+                        "workflow": ["agent integration"],
+                        "risk": "high",
+                    },
+                }
+            )
+
+            self.assertTrue(started.ok)
+            self.assertEqual(started.status, "action-note")
+            self.assertEqual(started.hook_result["hook"], "before_task")
+            self.assertEqual(started.hook_result["response"]["matched_memory"]["id"], practice.id)
+            use_id = started.hook_result["response"]["receipt"]["id"]
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.id, use_id)
+            self.assertEqual(receipt.source_command, "agent.task-start")
+
+            learned = adapter.handle(
+                {
+                    "event": "task_finished",
+                    "payload": {
+                        "reusable_learning": True,
+                        "title": "Codex runner adapter delegates to hooks",
+                        "situation": "Codex host adapters should translate runner events while leaving CMU logic in hooks.",
+                        "signals": ["codex runner", "host adapter"],
+                        "outcome": "The adapter can handle start, finish, checkpoint, and review events.",
+                        "worked": "Normalize Codex event JSON and call AutonomousRunnerHooks.",
+                        "failed": "Adding Codex-only memory logic would bypass existing receipt and Candidate gates.",
+                        "future_use": "Use this adapter pattern for future host-specific runner integrations.",
+                        "evidence": ["The test verifies persisted Candidate Memory through MemoryStore."],
+                        "liability_score": 4,
+                        "scope": {"code": ["cmu/codex_adapter.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                        "confidence": 0.85,
+                    },
+                }
+            )
+
+            self.assertTrue(learned.ok)
+            self.assertEqual(learned.status, "candidate-saved")
+            [candidate] = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(candidate.title, "Codex runner adapter delegates to hooks")
+
+            linked = adapter.handle(
+                {
+                    "event": "checkpoint_created",
+                    "payload": {
+                        "use_id": use_id,
+                        "note": "manual adapter proof",
+                        "manual_commit": {
+                            "hash": "codex123",
+                            "message": "Add Codex runner adapter",
+                            "files": ["cmu/codex_adapter.py", "tests/test_cmu_spine.py"],
+                        },
+                    },
+                }
+            )
+
+            self.assertTrue(linked.ok)
+            self.assertEqual(linked.status, "checkpoint-linked")
+            linked_receipt = MemoryUseStore(tmp).get(use_id)
+            self.assertEqual(linked_receipt.commit_hash, "codex123")
+            self.assertEqual(linked_receipt.outcome_signal, "committed")
+
+            reviewed = adapter.handle({"event": "review_requested", "payload": {"memory_id": practice.id}})
+
+            self.assertTrue(reviewed.ok)
+            self.assertEqual(reviewed.status, "review-ready")
+            self.assertFalse(reviewed.hook_result["mutates"])
+            self.assertEqual(reviewed.hook_result["response"]["cards"][0]["memory_id"], practice.id)
+
+    def test_cli_codex_runner_executes_json_event_and_reports_invalid_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Codex runner CLI can execute host events",
+                summary="The codex-runner command should execute JSON host events through the adapter.",
+                signals=["codex runner", "cli"],
+                scope=MemoryScope(code=["cmu/codex_adapter.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["CLI adapter proof should touch the same receipt store as direct adapter use."],
+                use_this_path="Use cmu codex-runner --input for a local host event proof.",
+                avoid_this="Do not judge host integration from manifest output only.",
+                challenge_only_if="The host uses MCP or SDK directly.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            event = {
+                "event": "task_started",
+                "payload": {
+                    "prompt": "execute Codex runner CLI event",
+                    "actor": "agent",
+                    "area": "cmu",
+                    "files": ["cmu/codex_adapter.py"],
+                    "workflow": ["agent integration"],
+                    "risk": "high",
+                },
+            }
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "codex-runner", "--input", json.dumps(event), "--json"])
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["manifest"]["version"], CODEX_RUNNER_ADAPTER_VERSION)
+            self.assertEqual(payload["result"]["event"], "codex.task_started")
+            self.assertEqual(payload["result"]["status"], "action-note")
+            self.assertEqual(payload["result"]["hook_result"]["response"]["matched_memory"]["id"], practice.id)
+            self.assertEqual(len(MemoryUseStore(tmp).list()), 1)
+
+            bad_output = StringIO()
+            with redirect_stdout(bad_output):
+                bad_exit = main(["--root", tmp, "codex-runner", "--input", json.dumps({"event": "codex.unknown"}), "--json"])
+
+            bad_payload = json.loads(bad_output.getvalue())
+            self.assertEqual(bad_exit, 1)
+            self.assertEqual(bad_payload["result"]["status"], "invalid-event")
+            self.assertIn("Unknown Codex runner event", bad_payload["result"]["error"])
+
+    def test_cli_codex_runner_accepts_utf8_bom_input_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            event_path = Path(tmp) / "codex-event.json"
+            event_path.write_text(
+                json.dumps(
+                    {
+                        "event": "task_started",
+                        "payload": {
+                            "prompt": "adjust local label spacing",
+                            "actor": "agent",
+                            "area": "ui",
+                            "files": ["ui/label.css"],
+                            "risk": "low",
+                        },
+                    }
+                ),
+                encoding="utf-8-sig",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "codex-runner", "--input-file", str(event_path), "--json"])
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["result"]["event"], "codex.task_started")
+            self.assertEqual(payload["result"]["status"], "silent-skip")
+            self.assertIsNone(payload["result"]["hook_result"]["response"]["receipt"])
+            self.assertEqual(MemoryUseStore(tmp).list(), [])
 
 
 class RunnerScenarioEvidenceTests(unittest.TestCase):
