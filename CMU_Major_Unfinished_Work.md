@@ -53,6 +53,12 @@ First before/after scenario comparison slice now implemented:
 - `--strict` exits non-zero only when a passing baseline becomes a current review case, giving memory-base and retrieval changes a practical regression gate.
 - The comparison is read-only with respect to memory/use evidence: it evaluates real persisted stores without creating Memory Use Receipts.
 
+First fixture-backed host-path suite slice now implemented:
+
+- `cmu host-path-suite` generates the current fixture repository catalog and exercises each fixture through saved scenario evaluation, isolated `runner-scenario` hooks, the Codex runner adapter, and before/after `scenario-compare` behavior.
+- `--strict` exits non-zero unless every generated fixture passes all four host-path checks, giving runner and adapter changes a concrete repo-shaped regression gate instead of only manifest validation.
+- Automated tests verify both checkout-release and billing-incident fixtures through the real suite path. Manual verification under `.manual/host-path-suite-proof` passed both fixtures with scenario, runner, Codex adapter, and unchanged comparison checks.
+
 Still needed:
 
 - Additional host-specific runner adapters for common autonomous agent runtimes.
@@ -71,6 +77,12 @@ First checkpoint monitor slice now implemented:
 - The monitor is dry-run by default and leaves WIP, reverted, mixed, delayed, ambiguous, no-overlap, low-confidence, or otherwise risky checkpoint evidence for human review instead of silently linking it.
 - Automated tests verify clean-match dry-run/apply behavior and WIP checkpoint review behavior against real Git repositories, real Memory Use Receipts, and real persisted stores.
 - Manual verification created a temp Git repo under `.manual/evidence-monitor-proof`, surfaced a real receipt through `cmu start`, committed a matching file, ran `cmu evidence-monitor --apply`, and confirmed `cmu use-list` showed the linked committed receipt.
+
+First evidence session workflow slice now implemented:
+
+- `cmu evidence-session` wraps the conservative checkpoint monitor as a session-level workflow that can be run by schedulers or long-running hosts, apply only clean high-confidence links, and optionally record the session summary under `.cmu/evidence_sessions.json`.
+- The session record stores linked/review/skipped counts and item ids without weakening the existing WIP, delayed, ambiguous, or low-confidence review gates.
+- Automated tests verify clean-link apply plus real session-record persistence through a Git-backed store. Manual verification under `.manual/evidence-session-proof` surfaced a real receipt through `cmu start`, committed matching work, and linked `use_edcad18f6949` to commit `1c1e19c` with `cmu evidence-session --apply --record`.
 
 Still needed:
 
@@ -104,6 +116,12 @@ First machine-readable reminder delivery slice now implemented:
 - The payload is still deliberately non-mutating: it does not renew authority, promote memories, resolve challenges, apply decay, link receipts, or send notifications.
 - Automated tests verify payload shape, combined authority/review-queue categories, CLI JSON parsing, read-only persisted-store behavior, and hardening-cycle JSON handoff through real stores, portable fixtures, and Git-backed temporary roots.
 - Manual verification under `.manual/reminder-delivery-proof` created a real expired stable Practice memory, confirmed the JSON digest stayed read-only, and confirmed a strict five-surface hardening-cycle pass using the JSON reminder-delivery contract.
+
+First owner/team handoff and outbox delivery slices now implemented:
+
+- `cmu team-review-handoff` turns missing team-scope metadata, uncovered repo/team boundaries, and stable-memory authority gaps into focused owner/team handoff cards with exact follow-up commands.
+- `cmu reminder-delivery` writes the existing machine-readable reminder payload to a local JSONL notification outbox only with `--apply`, giving schedulers a durable handoff event without applying governance decisions.
+- Automated tests verify both surfaces through real stores and CLI paths, including read-only handoff behavior and preview-vs-apply outbox delivery. Manual verification on the workspace rendered an empty handoff queue and wrote `.manual/reminder-delivery-proof/outbox.jsonl` with two urgent reminders.
 
 Still needed:
 
@@ -293,6 +311,12 @@ First portable compatibility fixture gate now implemented:
 - Automated tests build fixtures from real exported bundles, then verify valid, invalid, future-schema, and failing-valid fixture behavior through the real CLI and validation path.
 - Manual verification under `.manual/portable-compat-proof` created a real memory through `cmu add`, exported a current bundle through `cmu portable-export`, derived invalid and future-schema fixtures from that bundle, and confirmed `cmu portable-compat` passed all three expected fixture outcomes.
 
+First portable fixture corpus seeding slice now implemented:
+
+- `cmu portable-fixture-seed` derives a compatibility corpus from the real CMU store: valid current export, intentionally invalid bundle, unsupported future schema, and legacy v0 migration fixture.
+- `cmu portable-compat` now recognizes `legacy-*.json` fixtures and requires them to fail safely instead of being silently imported under the current schema.
+- Automated tests verify fixture seeding and compatibility through the real export/validate path. Manual verification under `.manual/portable-fixture-seed-proof` seeded all four fixture classes and confirmed `cmu portable-compat` passed them.
+
 First hardening-cycle adoption gate now implemented:
 
 - `cmu hardening-cycle --portable-fixture-dir <dir>` gives adopters one cautious pass/review report over the five current product-hardening tracks: team owner metadata, checkpoint evidence monitoring, fixture catalog coverage, portable compatibility fixtures, and review reminders.
@@ -333,11 +357,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu review-reminders --json` now exposes reminder delivery as a deterministic machine-readable contract, and `cmu hardening-cycle` validates that JSON delivery readiness as its fifth product-hardening surface. This cycle deepened the reminder-delivery check without adding background mutation, notification side effects, or text-scraping shortcuts.
+This cycle implemented five concrete unfinished CMU capabilities end to end: `team-review-handoff`, `evidence-session`, `reminder-delivery`, `portable-fixture-seed` plus legacy portable compatibility, and `host-path-suite`. Each slice has real code, CLI wiring, tests, and manual verification against stores, Git, generated fixtures, or outbox files.
 
 Next best implementation slice:
 
-The next product-hardening slice should deepen one of the remaining hardening-cycle checks into a stronger workflow: add richer owner/team review handoffs, expand evidence monitoring toward session/watch mode, run fixture-backed host-path suites through `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable fixture corpus with historical migration cases, or connect the machine-readable reminder payload to a real scheduler/notification adapter. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these new workflow surfaces from local proof to richer operation: add a real watch loop around `evidence-session`, add another host adapter beyond Codex and include it in `host-path-suite`, add historical portable fixtures from real older bundles, or build an interactive review surface that can approve/narrow/split/retire from `team-review-handoff` cards. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

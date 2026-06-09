@@ -20,6 +20,7 @@ from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .hardening_cycle import hardening_cycle_report
+from .host_path_suite import run_host_path_suite
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
@@ -29,6 +30,7 @@ from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
 from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle, validate_portable_bundle
 from .portable_compat import portable_compat_report
+from .portable_fixture_seed import seed_portable_fixtures
 from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
@@ -46,6 +48,7 @@ from .retrieval import (
 )
 from .review_queue import review_queue
 from .review_reminders import review_reminders
+from .reminder_delivery import deliver_reminders_to_outbox
 from .runner_hooks import runner_hooks_report
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
@@ -60,6 +63,7 @@ from .seed_plan import seed_plan_report
 from .setup import HOST_CHOICES, setup_guide
 from .store import MemoryStore
 from .team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
+from .team_review_handoff import team_review_handoffs
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
 from .usage import (
@@ -79,6 +83,7 @@ from .usage import (
     use_summary,
     use_threshold_report,
 )
+from .evidence_session import run_evidence_session
 from .workcycle import WorkCycleRequest, work_cycle_report
 
 
@@ -247,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     portable_compat_parser.add_argument("--fixture-dir", required=True, help="Directory containing valid-, invalid-, and future- portable bundle JSON fixtures.")
     portable_compat_parser.set_defaults(func=cmd_portable_compat)
+
+    portable_seed_parser = subparsers.add_parser("portable-fixture-seed", help="Seed portable compatibility fixtures from the real CMU store.")
+    portable_seed_parser.add_argument("--output", required=True, help="Directory to receive valid, invalid, future, and legacy bundle fixtures.")
+    portable_seed_parser.add_argument("--overwrite", action="store_true", help="Allow writing into a non-empty fixture directory.")
+    portable_seed_parser.set_defaults(func=cmd_portable_fixture_seed)
 
     hardening_cycle_parser = subparsers.add_parser("hardening-cycle", help="Run the five-surface CMU product-hardening operator gate.")
     hardening_cycle_parser.add_argument("--portable-fixture-dir", default="", help="Directory containing portable compatibility fixtures.")
@@ -617,6 +627,13 @@ def build_parser() -> argparse.ArgumentParser:
     review_reminders_parser.add_argument("--json", action="store_true", help="Render a machine-readable reminder delivery payload.")
     review_reminders_parser.set_defaults(func=cmd_review_reminders)
 
+    reminder_delivery_parser = subparsers.add_parser("reminder-delivery", help="Write review reminder payloads to a local notification outbox.")
+    reminder_delivery_parser.add_argument("--days", type=int, default=14, help="Due-soon authority review window in days.")
+    reminder_delivery_parser.add_argument("--channel", default="local-jsonl", help="Logical delivery channel label.")
+    reminder_delivery_parser.add_argument("--outbox", default="", help="Outbox JSONL path. Defaults to .cmu/reminder_outbox.jsonl.")
+    reminder_delivery_parser.add_argument("--apply", action="store_true", help="Append a delivery event to the outbox. Defaults to preview.")
+    reminder_delivery_parser.set_defaults(func=cmd_reminder_delivery)
+
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
     authority_parser.add_argument("--all", action="store_true", help="Include non-stable memories in the authority view.")
@@ -644,6 +661,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     team_scope_parser = subparsers.add_parser("team-scope", help="Inspect local repo/team ownership boundaries and memory coverage.")
     team_scope_parser.set_defaults(func=cmd_team_scope)
+
+    team_handoff_parser = subparsers.add_parser("team-review-handoff", help="Show focused owner/team review handoff cards.")
+    team_handoff_parser.set_defaults(func=cmd_team_review_handoff)
 
     quality_parser = subparsers.add_parser("quality", help="Show the read-only Memory Quality and Decay Model.")
     quality_parser.add_argument("--memory", default="", help="Limit quality view to one memory id.")
@@ -802,6 +822,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evidence_monitor_parser.add_argument("--apply", action="store_true", help="Persist high-confidence clean checkpoint links. Defaults to dry-run.")
     evidence_monitor_parser.set_defaults(func=cmd_evidence_monitor)
+
+    evidence_session_parser = subparsers.add_parser("evidence-session", help="Run and optionally record a session-level evidence monitor pass.")
+    evidence_session_parser.add_argument("--limit", type=int, default=20, help="Number of recent commits to inspect.")
+    evidence_session_parser.add_argument("--hours", type=int, default=72, help="Maximum hours after a receipt to consider a commit.")
+    evidence_session_parser.add_argument("--min-score", type=float, default=DEFAULT_MONITOR_MIN_SCORE, help="Minimum auto-link score before monitor review.")
+    evidence_session_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MONITOR_MIN_CONFIDENCE, help="Minimum clean link confidence before applying.")
+    evidence_session_parser.add_argument("--apply", action="store_true", help="Persist high-confidence clean checkpoint links.")
+    evidence_session_parser.add_argument("--record", action="store_true", help="Record the session summary under .cmu/evidence_sessions.json.")
+    evidence_session_parser.set_defaults(func=cmd_evidence_session)
+
+    host_path_parser = subparsers.add_parser("host-path-suite", help="Run fixture-backed scenario, runner, Codex adapter, and compare host-path checks.")
+    host_path_parser.add_argument("--work-dir", default="", help="Directory for generated fixture repositories. Defaults to a temporary directory.")
+    host_path_parser.add_argument("--strict", action="store_true", help="Exit non-zero unless every host-path fixture passes.")
+    host_path_parser.set_defaults(func=cmd_host_path_suite)
 
     use_resolve_parser = subparsers.add_parser("use-resolve", help="Resolve a memory use receipt without linking a Git commit.")
     use_resolve_parser.add_argument("use_id", help="Memory use receipt id to resolve.")
@@ -1247,6 +1281,15 @@ def cmd_portable_compat(args: argparse.Namespace, store: MemoryStore) -> int:
     report = portable_compat_report(args.fixture_dir)
     print(report.render())
     return 0 if report.passed else 1
+
+
+def cmd_portable_fixture_seed(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = seed_portable_fixtures(args.root, args.output, overwrite=args.overwrite)
+    except ValueError as error:
+        raise SystemExit(f"portable-fixture-seed failed: {error}") from error
+    print(report.render())
+    return 0
 
 
 def cmd_hardening_cycle(args: argparse.Namespace, store: MemoryStore) -> int:
@@ -1775,6 +1818,24 @@ def cmd_review_reminders(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_reminder_delivery(args: argparse.Namespace, store: MemoryStore) -> int:
+    reminders = review_reminders(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        team_scopes=TeamDirectoryStore(args.root).list(),
+        days=args.days,
+    )
+    report = deliver_reminders_to_outbox(
+        reminders,
+        root=args.root,
+        channel=args.channel,
+        outbox=args.outbox or None,
+        apply=args.apply,
+    )
+    print(report.render())
+    return 0
+
+
 def cmd_authority(args: argparse.Namespace, store: MemoryStore) -> int:
     print(authority_report(store.list(), memory_id=args.memory, include_all=args.all).render())
     return 0
@@ -1816,6 +1877,12 @@ def cmd_team_scope_add(args: argparse.Namespace, store: MemoryStore) -> int:
 def cmd_team_scope(args: argparse.Namespace, store: MemoryStore) -> int:
     records = TeamDirectoryStore(args.root).list()
     report = team_directory_report(records, store.list())
+    print(report.render())
+    return 0
+
+
+def cmd_team_review_handoff(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = team_review_handoffs(store.list(), TeamDirectoryStore(args.root).list())
     print(report.render())
     return 0
 
@@ -2086,6 +2153,28 @@ def cmd_evidence_monitor(args: argparse.Namespace, store: MemoryStore) -> int:
     )
     print(report.render())
     return 0 if not report.error else 1
+
+
+def cmd_evidence_session(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = run_evidence_session(
+        args.root,
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        limit=args.limit,
+        hours=args.hours,
+        min_score=args.min_score,
+        min_confidence=args.min_confidence,
+        apply=args.apply,
+        record=args.record,
+    )
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_host_path_suite(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = run_host_path_suite(args.work_dir or None, keep=bool(args.work_dir))
+    print(report.render())
+    return 1 if args.strict and not report.passed else 0
 
 
 def cmd_use_resolve(args: argparse.Namespace, store: MemoryStore) -> int:

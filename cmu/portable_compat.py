@@ -115,12 +115,16 @@ def evaluate_fixture(path: Path) -> PortableCompatFixture:
         if not validation.valid and unsupported and schema != PORTABLE_BUNDLE_VERSION:
             return PortableCompatFixture(path, expectation, schema, "pass", "future schema failed safely as unsupported")
         return PortableCompatFixture(path, expectation, schema, "fail", "future fixture did not fail solely through unsupported-schema validation")
+    if expectation == "legacy":
+        if not validation.valid and schema and schema != PORTABLE_BUNDLE_VERSION:
+            return PortableCompatFixture(path, expectation, schema, "pass", "legacy schema fixture failed validation instead of importing silently")
+        return PortableCompatFixture(path, expectation, schema, "fail", "legacy fixture did not fail safely")
     return PortableCompatFixture(path, expectation, schema, "fail", "fixture filename must start with valid-, invalid-, or future-")
 
 
 def expectation_for_path(path: Path) -> str:
     name = path.name.lower()
-    for expectation in ["valid", "invalid", "future"]:
+    for expectation in ["valid", "invalid", "future", "legacy"]:
         if name.startswith(f"{expectation}-"):
             return expectation
     return "unknown"

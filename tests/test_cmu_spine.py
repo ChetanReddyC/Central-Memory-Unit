@@ -19,14 +19,17 @@ from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, 
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
+from cmu.evidence_session import run_evidence_session
 from cmu.fixture_repos import create_fixture_repo
 from cmu.hardening_cycle import hardening_cycle_report
+from cmu.host_path_suite import run_host_path_suite
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from cmu.portable_compat import portable_compat_report
+from cmu.portable_fixture_seed import seed_portable_fixtures
 from cmu.promotion import promote_memory, review_promotion
 from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.readiness import readiness_report
@@ -43,6 +46,7 @@ from cmu.retrieval import (
 )
 from cmu.review_queue import review_queue
 from cmu.review_reminders import review_reminders
+from cmu.reminder_delivery import deliver_reminders_to_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
@@ -50,6 +54,7 @@ from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
 from cmu.team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
+from cmu.team_review_handoff import team_review_handoffs
 from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
 from cmu.usage import (
@@ -10679,6 +10684,173 @@ def add_drag_receipts(root: str, memory: Memory, *, count: int) -> None:
         receipt.link_confidence = 0.25
         receipt.flags = ["no_file_overlap"]
         MemoryUseStore(root).add(receipt)
+
+class ProductHardeningWorkflowTests(unittest.TestCase):
+    def test_team_review_handoff_surfaces_owner_and_authority_next_steps(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="High-risk deploys need owner approval",
+                summary="Stable deploy memory should not guide high-risk work without authority metadata.",
+                scope=MemoryScope(ownership=["Release team"], code=["deploy"], workflow=["release"]),
+                liability_score=5,
+                approved_by="Release owner",
+            )
+            store.add(memory)
+            TeamDirectoryStore(tmp).add(
+                TeamScopeRecord.create(
+                    repo="checkout",
+                    team="Release",
+                    owner="Release team",
+                    code=["checkout"],
+                )
+            )
+
+            report = team_review_handoffs(store.list(), TeamDirectoryStore(tmp).list())
+            rendered = report.render()
+
+            self.assertIn("CMU Team Review Handoffs", rendered)
+            self.assertIn("stable-authority-handoff", rendered)
+            self.assertIn(memory.id, rendered)
+            self.assertIn("team-scope-metadata", rendered)
+            self.assertIn("team-scope-coverage", rendered)
+            self.assertIn("cmu authority-set", rendered)
+            self.assertEqual(len(MemoryStore(tmp).list()), 1)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "team-review-handoff"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Team Review Handoffs", output.getvalue())
+
+    def test_evidence_session_records_real_monitor_summary_and_applies_clean_link(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                signals=["billing", "deploy"],
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            report = run_evidence_session(
+                tmp,
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                apply=True,
+                record=True,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertTrue(report.recorded)
+            self.assertEqual(report.record.linked, 1)
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.commit_hash, metadata.commit_hash)
+            session_file = Path(tmp) / ".cmu" / "evidence_sessions.json"
+            self.assertTrue(session_file.exists())
+            session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual(session_data["sessions"][0]["linked"], 1)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-session", "--record"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Evidence Session", output.getvalue())
+
+    def test_reminder_delivery_writes_jsonl_outbox_only_with_apply(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Expired checkout authority",
+                summary="Checkout Practice needs renewed authority.",
+                approved_by="Checkout owner",
+                authority_owner="Checkout team",
+                authority_role="owner",
+                authority_consequence="high",
+                authority_review_due_at="2026-01-01T00:00:00+00:00",
+            )
+            MemoryStore(tmp).add(memory)
+            reminders = review_reminders(MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), days=30)
+            outbox = Path(tmp) / ".cmu" / "outbox.jsonl"
+
+            preview = deliver_reminders_to_outbox(reminders, root=tmp, outbox=outbox, apply=False)
+            self.assertFalse(outbox.exists())
+            self.assertGreaterEqual(preview.urgent_count, 1)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "reminder-delivery", "--outbox", str(outbox), "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertTrue(outbox.exists())
+            [line] = outbox.read_text(encoding="utf-8").strip().splitlines()
+            event = json.loads(line)
+            self.assertEqual(event["schema"], "cmu-reminder-delivery/v1")
+            self.assertEqual(event["payload"]["schema"], "cmu-review-reminders/v1")
+            self.assertGreaterEqual(event["payload"]["summary"]["total"], 1)
+
+    def test_portable_fixture_seed_creates_current_invalid_future_and_legacy_fixtures(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Portable fixtures come from real stores",
+                summary="Portable migration tests should derive fixtures from real exported memory.",
+            )
+            MemoryStore(tmp).add(memory)
+            fixture_dir = Path(tmp) / "fixtures"
+
+            report = seed_portable_fixtures(tmp, fixture_dir)
+            compat = portable_compat_report(fixture_dir)
+
+            self.assertEqual(
+                sorted(report.files),
+                [
+                    "future-v999-export.json",
+                    "invalid-missing-memories.json",
+                    "legacy-v0-export.json",
+                    "valid-current-export.json",
+                ],
+            )
+            self.assertTrue(compat.passed, compat.render())
+            self.assertIn("legacy schema fixture failed validation", compat.render())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
+            self.assertEqual(exit_code, 0, output.getvalue())
+
+    def test_host_path_suite_runs_fixture_scenarios_runner_codex_and_compare(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = run_host_path_suite(Path(tmp) / "suite", keep=True)
+            rendered = report.render()
+
+            self.assertTrue(report.passed, rendered)
+            self.assertEqual({item.kind for item in report.items}, {"billing-incident", "checkout-release"})
+            self.assertTrue(all(item.scenario_passed for item in report.items))
+            self.assertTrue(all(item.runner_passed for item in report.items))
+            self.assertTrue(all(item.codex_ok for item in report.items))
+            self.assertTrue(all(item.comparison_class == "unchanged-pass" for item in report.items))
+            self.assertIn("CMU Host Path Suite", rendered)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["host-path-suite", "--work-dir", str(Path(tmp) / "cli-suite"), "--strict"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("Status: pass", output.getvalue())
 
 
 def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:
