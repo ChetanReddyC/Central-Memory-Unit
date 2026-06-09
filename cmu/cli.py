@@ -15,6 +15,7 @@ from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
+from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
@@ -203,6 +204,11 @@ def build_parser() -> argparse.ArgumentParser:
     runner_scenario_parser.add_argument("--expect-checkpoint", choices=["checkpoint-linked", "checkpoint-not-linked", "not-run"], default="")
     runner_scenario_parser.add_argument("--strict", action="store_true", help="Exit non-zero when supplied expectations fail.")
     runner_scenario_parser.set_defaults(func=cmd_runner_scenario)
+
+    fixture_repo_parser = subparsers.add_parser("fixture-repo-create", help="Create a local repository fixture with CMU memory and scenario data.")
+    fixture_repo_parser.add_argument("--kind", choices=sorted(FIXTURE_KINDS), default="checkout-release")
+    fixture_repo_parser.add_argument("--output", required=True, help="Empty or new directory where the fixture repository should be created.")
+    fixture_repo_parser.set_defaults(func=cmd_fixture_repo_create)
 
     portable_export_parser = subparsers.add_parser(
         "portable-export",
@@ -1166,6 +1172,15 @@ def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     print(report.render())
     if args.strict and not report.passed:
         return 1
+    return 0
+
+
+def cmd_fixture_repo_create(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = create_fixture_repo(args.kind, args.output)
+    except ValueError as error:
+        raise SystemExit(f"fixture-repo-create failed: {error}") from error
+    print(report.render())
     return 0
 
 

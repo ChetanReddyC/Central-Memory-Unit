@@ -198,6 +198,8 @@ Current portable compatibility fixture slice now completed: `cmu portable-compat
 
 Current review reminder slice now completed: `cmu review-reminders` turns expired or due-soon stable-memory authority reviews and open high-priority approval cards into a compact read-only reminder list. This keeps the intended governance feel: CMU can tap the shoulder when trust needs renewal without turning stable-memory review into automatic mutation or ceremony.
 
+Current fixture repository slice now completed: `cmu fixture-repo-create --kind checkout-release` creates a real repo-shaped scenario fixture with source files, tests, scoped Practice memory, and a saved strict scenario. This is a practical step toward serious evaluation because CMU behavior can now be checked against concrete host-path repositories rather than only abstract prompts.
+
 Future industry-patterns to borrow after the main engine is dependable:
 
 - From Mem0-style systems, borrow fast SDK ergonomics, simple setup, clear memory APIs, and the feeling that adding memory to an agent takes minutes rather than a deep platform migration.

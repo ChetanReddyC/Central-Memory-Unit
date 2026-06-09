@@ -189,10 +189,17 @@ Still needed:
 
 Motive: CMU should prove that memory improves execution. The scenario library exists, but it must grow into a serious evaluation system.
 
+First fixture repository slice now implemented:
+
+- `cmu fixture-repo-create --kind checkout-release --output <dir>` creates a local repo-shaped fixture with real source/test files, a scoped Practice memory, and a saved scenario-library case.
+- The generated fixture initializes Git when available and stores its CMU data under the fixture root, so scenario and runner host-path tests can run against a concrete repository instead of hand-built temporary snippets.
+- Automated tests verify fixture creation through the Python API and CLI, inspect the real generated files and CMU stores, run the saved scenario with `scenario-run --strict`, and confirm non-empty output directories are refused.
+- Manual verification under `.manual/fixture-repo-proof/checkout-release` created the checkout-release fixture and confirmed `cmu --root <fixture> scenario-run --tag fixture --strict` passed with the seeded Practice memory.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Rich fixture repositories.
+- Richer fixture repository catalog beyond the first checkout-release fixture.
 - Before/after comparisons of agent behavior with and without CMU.
 - Longitudinal scenario suites.
 - Measurable usefulness and drag metrics.
@@ -293,11 +300,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu review-reminders` now provides the first lightweight expiry/review reminder surface. It turns expired or due-soon stable-memory authority reviews and open high-priority review cards into small read-only reminders that point back to explicit governance commands.
+`cmu fixture-repo-create` now provides the first repeatable scenario fixture repository. The checkout-release fixture creates real files, scoped memory, and a saved strict scenario so host-path and evaluation work can run against a concrete repository.
 
 Next best implementation slice:
 
-The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, build richer fixture repositories and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable compatibility gate with historical/future migration fixtures, or move review reminders toward non-CLI delivery. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, grow the fixture repository catalog and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable compatibility gate with historical/future migration fixtures, or move review reminders toward non-CLI delivery. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

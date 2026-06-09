@@ -24,6 +24,7 @@ REQUIRED_README_COMMANDS = [
     "cmu runner-hooks",
     "cmu codex-runner",
     "cmu runner-scenario",
+    "cmu fixture-repo-create",
     "cmu evidence-monitor",
     "cmu review-queue",
     "cmu review-reminders",

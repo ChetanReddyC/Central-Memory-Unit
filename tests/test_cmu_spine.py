@@ -19,6 +19,7 @@ from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, 
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
+from cmu.fixture_repos import create_fixture_repo
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -3256,6 +3257,53 @@ class ScenarioEvaluationTests(unittest.TestCase):
             self.assertIn("current=cmu-gap-found/quiet/none", rendered)
             self.assertEqual(MemoryUseStore(baseline_root).list(), [])
             self.assertEqual(MemoryUseStore(current_root).list(), [])
+
+    def test_fixture_repo_create_builds_real_repo_memory_and_passing_scenario(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "checkout-release"
+            report = create_fixture_repo("checkout-release", fixture_root)
+            rendered = report.render()
+
+            self.assertIn("CMU Fixture Repository", rendered)
+            self.assertEqual(report.kind, "checkout-release")
+            self.assertTrue((fixture_root / ".git").exists())
+            self.assertTrue((fixture_root / "src" / "checkout" / "release.py").exists())
+            self.assertTrue((fixture_root / "tests" / "test_checkout_release.py").exists())
+            memories = MemoryStore(fixture_root).list()
+            scenarios = ScenarioLibraryStore(fixture_root).list(tag="fixture")
+            self.assertEqual(len(memories), 1)
+            self.assertEqual(memories[0].id, report.memory_id)
+            self.assertEqual(len(scenarios), 1)
+            self.assertEqual(scenarios[0].expect_memory, report.memory_id)
+            self.assertIn("runner-host-path", scenarios[0].tags)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(fixture_root), "scenario-run", "--tag", "fixture", "--strict"])
+
+            scenario_rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, scenario_rendered)
+            self.assertIn("CMU Scenario Library Run", scenario_rendered)
+            self.assertIn("Summary: total=1 pass=1 review=0", scenario_rendered)
+            self.assertEqual(MemoryUseStore(fixture_root).list(), [])
+
+    def test_cli_fixture_repo_create_writes_fixture_and_refuses_non_empty_output(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "fixture"
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "fixture-repo-create", "--kind", "checkout-release", "--output", str(fixture_root)])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Fixture Repository", rendered)
+            self.assertIn("Kind: checkout-release", rendered)
+            self.assertTrue((fixture_root / ".cmu" / "memories.json").exists())
+            self.assertTrue((fixture_root / ".cmu" / "scenarios.json").exists())
+
+            with self.assertRaises(SystemExit) as raised:
+                main(["--root", tmp, "fixture-repo-create", "--kind", "checkout-release", "--output", str(fixture_root)])
+            self.assertIn("fixture output directory already exists", str(raised.exception))
 
 
 class MemoryUseTests(unittest.TestCase):
