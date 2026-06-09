@@ -248,10 +248,18 @@ First isolated built-distribution validation slice now implemented:
 - Automated tests run the real distribution check in a temporary validation workspace and assert the installed CLI/module/MCP checks pass.
 - Manual verification confirmed `cmu --root . dist-check` builds and installs the package, validates the installed adoption commands, and discovers the stable MCP tools.
 
+First portable compatibility fixture gate now implemented:
+
+- `cmu portable-compat --fixture-dir <dir>` runs saved portable bundle JSON fixtures without importing them.
+- Fixture names encode expectations: `valid-*.json` must validate under the current bundle schema, `invalid-*.json` must fail validation, and `future-*.json` must fail safely as an unsupported schema.
+- This gives portability a repeatable compatibility gate instead of relying only on one-off `portable-validate` checks.
+- Automated tests build fixtures from real exported bundles, then verify valid, invalid, future-schema, and failing-valid fixture behavior through the real CLI and validation path.
+- Manual verification under `.manual/portable-compat-proof` created a real memory through `cmu add`, exported a current bundle through `cmu portable-export`, derived invalid and future-schema fixtures from that bundle, and confirmed `cmu portable-compat` passed all three expected fixture outcomes.
+
 Still needed:
 
 - Published/package workflow beyond local built-distribution validation.
-- Portable bundle compatibility fixtures across future schema versions.
+- Broader portable bundle fixture corpus across future schema migrations and historical real-world bundles.
 
 ## Strategic Priority Order
 
@@ -278,11 +286,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu team-scope-add`, `cmu team-scope`, and the new `review-queue` team-scope cards now provide the first local Multi-Repo/Team/Org Memory slice. They make repo/team ownership boundaries explicit, compare them against active memory coverage, reject environment-only false coverage, and surface uncovered boundaries for human review.
+`cmu portable-compat` now provides the first portable bundle compatibility fixture gate. It validates current-schema fixtures, requires intentionally invalid fixtures to fail, and proves future-schema bundles fail safely as unsupported instead of being imported silently.
 
 Next best implementation slice:
 
-The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, or build richer fixture repositories and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, build richer fixture repositories and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, or grow the new portable compatibility gate with historical/future migration fixtures. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

@@ -28,6 +28,7 @@ REQUIRED_README_COMMANDS = [
     "cmu review-queue",
     "cmu lifecycle-apply",
     "cmu team-scope",
+    "cmu portable-compat",
     "cmu install-check",
     "cmu dist-check",
 ]

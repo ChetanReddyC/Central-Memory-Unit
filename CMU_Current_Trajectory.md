@@ -194,6 +194,8 @@ Current lifecycle automation slice now completed: `cmu lifecycle-apply --candida
 
 Current local team-scope directory slice now completed: `cmu team-scope-add`, `cmu team-scope`, and `cmu review-queue` provide the first explicit repo/team boundary map plus human review moment. CMU can now record local ownership boundaries with code/workflow/environment scope, authority role, and consequence, report whether active memories cover those boundaries, and surface uncovered boundaries as review cards. This is useful in exactly the planned sense: it makes false transfer across repos and teams visible before broader multi-repo or organization-level authority exists, and it rejects environment-only overlap as insufficient coverage.
 
+Current portable compatibility fixture slice now completed: `cmu portable-compat` gives portable memory bundles a saved-fixture regression gate. Current valid bundles must keep validating, intentionally invalid bundles must keep failing, and future-schema bundles must fail safely as unsupported until an explicit migration path exists. This matters because organizational memory should be movable without becoming silently corrupt or silently over-trusted across schema changes.
+
 Future industry-patterns to borrow after the main engine is dependable:
 
 - From Mem0-style systems, borrow fast SDK ergonomics, simple setup, clear memory APIs, and the feeling that adding memory to an agent takes minutes rather than a deep platform migration.

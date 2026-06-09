@@ -26,6 +26,7 @@ from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope,
 from .onboarding import build_onboarding_seed
 from .pipeline import hybrid_pipeline_report
 from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle, validate_portable_bundle
+from .portable_compat import portable_compat_report
 from .promotion import promote_memory, review_promotion
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
@@ -231,6 +232,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     portable_validate_parser.add_argument("bundle", help="Portable bundle JSON file.")
     portable_validate_parser.set_defaults(func=cmd_portable_validate)
+
+    portable_compat_parser = subparsers.add_parser(
+        "portable-compat",
+        help="Run saved portable bundle compatibility fixtures.",
+    )
+    portable_compat_parser.add_argument("--fixture-dir", required=True, help="Directory containing valid-, invalid-, and future- portable bundle JSON fixtures.")
+    portable_compat_parser.set_defaults(func=cmd_portable_compat)
 
     add_parser = subparsers.add_parser("add", help="Add a structured CMU memory.")
     add_parser.add_argument("--type", choices=[item.value for item in MemoryType], default=MemoryType.SITUATION.value)
@@ -1203,6 +1211,12 @@ def cmd_portable_validate(args: argparse.Namespace, store: MemoryStore) -> int:
     report = validate_portable_bundle(bundle)
     print(report.render())
     return 0 if report.valid else 1
+
+
+def cmd_portable_compat(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = portable_compat_report(args.fixture_dir)
+    print(report.render())
+    return 0 if report.passed else 1
 
 
 def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:

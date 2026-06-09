@@ -24,6 +24,7 @@ from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
+from cmu.portable_compat import portable_compat_report
 from cmu.promotion import promote_memory, review_promotion
 from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.readiness import readiness_report
@@ -9977,6 +9978,72 @@ class ImportExportPortabilityTests(unittest.TestCase):
             output = StringIO()
             with redirect_stdout(output):
                 exit_code = main(["--root", tmp, "portable-validate", str(bundle_path)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Status: fail", output.getvalue())
+
+    def test_portable_compat_passes_valid_invalid_and_future_schema_fixtures(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_dir = Path(tmp) / "fixtures"
+            fixture_dir.mkdir()
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Portable compatibility fixture",
+                summary="Compatibility fixtures should validate exported bundles across schema expectations.",
+                evidence=["Fixture exported from the real store."],
+                approved_by="Portability owner",
+            )
+            MemoryStore(tmp).add(memory)
+            bundle = export_bundle_from_root(tmp).to_dict()
+            (fixture_dir / "valid-current-v1.json").write_text(json.dumps(bundle), encoding="utf-8")
+            invalid = json.loads(json.dumps(bundle))
+            invalid["integrity"]["memory_count"] = 99
+            (fixture_dir / "invalid-bad-count.json").write_text(json.dumps(invalid), encoding="utf-8")
+            future = json.loads(json.dumps(bundle))
+            future["schema"] = "cmu-portable-bundle/v2"
+            (fixture_dir / "future-v2.json").write_text(json.dumps(future), encoding="utf-8")
+
+            report = portable_compat_report(fixture_dir)
+            rendered = report.render()
+
+            self.assertTrue(report.passed, rendered)
+            self.assertIn("CMU Portable Compatibility Fixtures", rendered)
+            self.assertIn("valid-current-v1.json", rendered)
+            self.assertIn("invalid-bad-count.json", rendered)
+            self.assertIn("future-v2.json", rendered)
+            self.assertIn("future schema failed safely as unsupported", rendered)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Status: pass", output.getvalue())
+
+    def test_portable_compat_fails_when_expected_valid_fixture_is_tampered(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_dir = Path(tmp) / "fixtures"
+            fixture_dir.mkdir()
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Portable compatibility failure fixture",
+                summary="A valid-named fixture should fail when tampered.",
+            )
+            MemoryStore(tmp).add(memory)
+            bundle = export_bundle_from_root(tmp).to_dict()
+            bundle["integrity"]["contents_sha256"] = "bad-digest"
+            (fixture_dir / "valid-tampered.json").write_text(json.dumps(bundle), encoding="utf-8")
+
+            report = portable_compat_report(fixture_dir)
+            rendered = report.render()
+
+            self.assertFalse(report.passed)
+            self.assertIn("Status: fail", rendered)
+            self.assertIn("integrity.contents_sha256 mismatch", rendered)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
 
             self.assertEqual(exit_code, 1)
             self.assertIn("Status: fail", output.getvalue())
