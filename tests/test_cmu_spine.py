@@ -7046,6 +7046,218 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(loaded[blocked.id].type, MemoryType.CANDIDATE)
             self.assertIn("evidence_or_outcome", rendered)
 
+    def test_cli_lifecycle_proposals_generates_stable_review_cards(self) -> None:
+        with TemporaryDirectory() as tmp:
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing incident replay needs reconciliation guard",
+                summary="Incident replay should verify reconciliation before closing billing repair work.",
+                signals=["billing incident", "reconciliation"],
+                scope=MemoryScope(code=["billing"], workflow=["incident"], actor=["agent"]),
+                evidence=["Two incident replays passed after reconciliation verification."],
+                use_this_path="Run reconciliation verification before closing billing incident replay.",
+                avoid_this="Do not close replay from log inspection alone.",
+                challenge_only_if="The incident path no longer changes ledger state.",
+                liability_score=4,
+                confidence=0.82,
+            )
+            MemoryStore(tmp).add(situation)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-proposals", "--target", "practice"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Lifecycle Stable Proposal Workbench", rendered)
+            self.assertIn("ready:", rendered)
+            self.assertIn(f"cmu review {situation.id} --to practice", rendered)
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.type, MemoryType.SITUATION)
+
+    def test_cli_lifecycle_merge_retires_source_and_combines_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback checks release marker",
+                summary="Checkout rollback should inspect release marker state before retry.",
+                signals=["rollback"],
+                scope=MemoryScope(code=["checkout"], workflow=["rollback"]),
+                evidence=["Rollback succeeded after marker inspection."],
+                use_this_path="Inspect release marker before retrying rollback.",
+                challenge_only_if="No release marker participates in rollback.",
+                confidence=0.75,
+            )
+            source = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout rollback checks deploy flag",
+                summary="Checkout rollback should inspect deploy flag state before retry.",
+                signals=["deploy flag"],
+                scope=MemoryScope(code=["checkout"], workflow=["rollback"]),
+                evidence=["Retry stopped after stale deploy flag was found."],
+                use_this_path="Inspect deploy flag before retrying rollback.",
+                challenge_only_if="No deploy flag participates in rollback.",
+                confidence=0.8,
+            )
+            store = MemoryStore(tmp)
+            store.add(target)
+            store.add(source)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "lifecycle-merge",
+                        "--target",
+                        target.id,
+                        "--source",
+                        source.id,
+                        "--reason",
+                        "same rollback lesson with duplicate operational signals",
+                        "--approved-by",
+                        "Release owner",
+                        "--apply",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Lifecycle Merge", rendered)
+            self.assertIn("merged:", rendered)
+            active = {memory.id: memory for memory in MemoryStore(tmp).list()}
+            retired = {memory.id: memory for memory in MemoryStore(tmp).list(status=MemoryStatus.RETIRED)}
+            self.assertIn(target.id, active)
+            self.assertIn(source.id, retired)
+            self.assertIn("Retry stopped after stale deploy flag was found.", active[target.id].evidence)
+            self.assertTrue(any(rel.target_id == source.id for rel in active[target.id].relationships))
+
+    def test_cli_lifecycle_demote_requires_stable_authority_and_applies(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use billing replay checklist",
+                summary="Billing incident replay should use the checklist before closing.",
+                signals=["billing incident"],
+                scope=MemoryScope(code=["billing"], workflow=["incident"]),
+                evidence=["Checklist prevented a missed reconciliation."],
+                use_this_path="Use the billing replay checklist.",
+                challenge_only_if="The replay path no longer touches ledger state.",
+                liability_score=4,
+                confidence=0.86,
+                approved_by="Billing owner",
+                authority_owner="Billing",
+                authority_role="owner",
+                authority_consequence="high",
+            )
+            MemoryStore(tmp).add(practice)
+
+            blocked = StringIO()
+            with redirect_stdout(blocked):
+                blocked_exit = main(
+                    ["--root", tmp, "lifecycle-demote", practice.id, "--reason", "scope evidence is weaker than expected", "--apply"]
+                )
+            self.assertEqual(blocked_exit, 1)
+            self.assertIn("sufficient_high_authority", blocked.getvalue())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "lifecycle-demote",
+                        practice.id,
+                        "--reason",
+                        "scope evidence is weaker than expected",
+                        "--approved-by",
+                        "Billing owner",
+                        "--approver-role",
+                        "owner",
+                        "--apply",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            loaded = MemoryStore(tmp).list()[0]
+            self.assertEqual(loaded.type, MemoryType.SITUATION)
+            self.assertEqual(loaded.approved_by, "")
+            self.assertIn("Lifecycle demotion: practice -> situation", loaded.evidence)
+
+    def test_cli_lifecycle_archive_writes_retired_memory_archive(self) -> None:
+        with TemporaryDirectory() as tmp:
+            retired = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Retired checkout staging lesson",
+                summary="Old staging-only checkout lesson no longer applies.",
+                scope=MemoryScope(code=["checkout"], workflow=["staging"]),
+                evidence=["Retired after staging pipeline removal."],
+            )
+            retired.status = MemoryStatus.RETIRED
+            MemoryStore(tmp).add(retired)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-archive", "--memory", retired.id, "--apply"])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("CMU Lifecycle Archive", rendered)
+            self.assertIn("archived:", rendered)
+            archive = json.loads((Path(tmp) / ".cmu" / "memory_archive.json").read_text(encoding="utf-8"))
+            self.assertEqual(archive["archived_memories"][0]["id"], retired.id)
+
+    def test_cli_lifecycle_scope_record_creates_candidate_for_broad_scope_change(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout rollback marker practice",
+                summary="Checkout rollback should inspect markers before retry.",
+                signals=["rollback"],
+                scope=MemoryScope(code=["checkout/service.py"], workflow=["rollback"], actor=["agent"]),
+                evidence=["Marker inspection prevented duplicate rollback."],
+                use_this_path="Inspect checkout marker before retry.",
+                challenge_only_if="No checkout marker participates in rollback.",
+                liability_score=4,
+                confidence=0.84,
+                approved_by="Release owner",
+            )
+            MemoryStore(tmp).add(practice)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "lifecycle-scope-record",
+                        practice.id,
+                        "--reason",
+                        "similar rollback failures now appear across checkout and billing",
+                        "--requested-by",
+                        "Release owner",
+                        "--scope-code",
+                        "checkout",
+                        "--scope-code",
+                        "billing",
+                        "--scope-workflow",
+                        "rollback",
+                        "--apply",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("CMU Lifecycle Scope Change Record", rendered)
+            self.assertIn("recorded:", rendered)
+            candidates = [memory for memory in MemoryStore(tmp).list() if memory.type == MemoryType.CANDIDATE]
+            self.assertEqual(len(candidates), 1)
+            self.assertIn("scope change proposal", candidates[0].signals)
+            self.assertIn(f"Scope change target: {practice.id}", candidates[0].evidence)
+            loaded_practice = [memory for memory in MemoryStore(tmp).list() if memory.id == practice.id][0]
+            self.assertEqual(loaded_practice.scope.code, ["checkout/service.py"])
+
 
 class MemoryGravityTests(unittest.TestCase):
     def test_cli_gravity_reports_promotion_governance_graph_and_use_pressures(self) -> None:

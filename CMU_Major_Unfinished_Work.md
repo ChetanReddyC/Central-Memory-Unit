@@ -177,12 +177,20 @@ First controlled lifecycle apply slice now implemented:
 - Automated tests verify dry-run no-mutation behavior, apply behavior for eligible Candidates, and blocked Candidate preservation through real persisted memory stores and CLI output.
 - Manual verification on the current workspace store showed a read-only dry run with no eligible Candidate memories and no mutations.
 
+First lifecycle operations slice now implemented:
+
+- `cmu lifecycle-proposals` generates assisted Situation -> Practice/Anchor proposal cards from the real promotion gates, including exact `cmu review <id> --to practice|anchor` follow-up commands without mutating memory.
+- `cmu lifecycle-merge` applies explicit approved memory merges by combining evidence/signals/relationships on the target and retiring the source memory.
+- `cmu lifecycle-demote` applies explicit demotion through a lifecycle path; stable Practice/Anchor demotion requires sufficient consequence authority and clears stable authority metadata when demoted.
+- `cmu lifecycle-archive` writes retired memories into `.cmu/memory_archive.json` so archival is a durable local workflow instead of an informal status flag.
+- `cmu lifecycle-scope-record` stores broad or ambiguous scope-change requests as Candidate Memories with current/proposed scope evidence, preventing silent stable-memory broadening.
+- Automated tests verify all five commands through real CLI dispatch and persisted memory/archive stores. Manual verification under `.manual/lifecycle-ops-proof-20260609` exercised proposal, merge, scope-record, demotion, archive, list, and archive inspection paths against a real `.cmu` store.
+
 Still needed:
 
-- Assisted Situation -> Practice/Anchor proposal generation.
-- Controlled merge, split, settling, demotion, decay, and archival flows.
+- Additional settling automation and richer merge/split/decay policy beyond the first controlled lifecycle operation paths.
 - Scope refinement automation based on evidence and Memory Gravity.
-- Explicit scope-change records for broad or ambiguous changes.
+- Cross-surface lifecycle review UX beyond CLI commands.
 
 ### 6. Real Memory Base Cleanup
 
@@ -397,11 +405,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU capabilities end to end inside the owner/team review workflow: controlled `team-review-action --action challenge`, `--action strengthen`, `--action retire`, `--action split`, and `--action narrow-scope`. Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/team-review-action-five-proof`.
+This cycle implemented five concrete unfinished CMU lifecycle capabilities end to end: assisted stable proposal generation (`cmu lifecycle-proposals`), controlled memory merge (`cmu lifecycle-merge`), controlled demotion (`cmu lifecycle-demote`), retired-memory archival (`cmu lifecycle-archive`), and explicit broad/ambiguous scope-change records (`cmu lifecycle-scope-record`). Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/lifecycle-ops-proof-20260609`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, seed more historical portable fixtures from older real bundles, or add non-CLI owner/team review moments on top of the controlled CLI apply paths. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, add non-CLI owner/team or lifecycle review moments on top of the controlled CLI apply paths, or deepen lifecycle settling/scope-refinement automation from Memory Gravity and linked-use evidence. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

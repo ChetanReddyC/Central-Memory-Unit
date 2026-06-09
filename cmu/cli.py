@@ -25,6 +25,13 @@ from .host_path_suite import run_host_path_suite
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
+from .lifecycle_ops import (
+    lifecycle_archive,
+    lifecycle_demote,
+    lifecycle_merge,
+    lifecycle_proposals,
+    lifecycle_scope_record,
+)
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
@@ -620,6 +627,45 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_apply_parser.add_argument("--limit", type=int, default=50, help="Maximum Candidate memories to inspect.")
     lifecycle_apply_parser.add_argument("--apply", action="store_true", help="Persist eligible lifecycle transitions. Defaults to dry-run.")
     lifecycle_apply_parser.set_defaults(func=cmd_lifecycle_apply)
+
+    lifecycle_proposals_parser = subparsers.add_parser("lifecycle-proposals", help="Generate assisted Situation -> Practice/Anchor proposal cards.")
+    lifecycle_proposals_parser.add_argument("--target", choices=["all", "practice", "anchor"], default="all")
+    lifecycle_proposals_parser.add_argument("--limit", type=int, default=50)
+    lifecycle_proposals_parser.set_defaults(func=cmd_lifecycle_proposals)
+
+    lifecycle_merge_parser = subparsers.add_parser("lifecycle-merge", help="Merge one memory into another through an explicit lifecycle action.")
+    lifecycle_merge_parser.add_argument("--target", required=True, help="Memory id that should remain active.")
+    lifecycle_merge_parser.add_argument("--source", required=True, help="Memory id to retire into the target.")
+    lifecycle_merge_parser.add_argument("--reason", required=True)
+    lifecycle_merge_parser.add_argument("--approved-by", required=True)
+    lifecycle_merge_parser.add_argument("--apply", action="store_true", help="Persist the merge. Defaults to preview.")
+    lifecycle_merge_parser.set_defaults(func=cmd_lifecycle_merge)
+
+    lifecycle_demote_parser = subparsers.add_parser("lifecycle-demote", help="Demote a memory through an explicit lifecycle action.")
+    lifecycle_demote_parser.add_argument("memory_id")
+    lifecycle_demote_parser.add_argument("--reason", required=True)
+    lifecycle_demote_parser.add_argument("--approved-by", default="", help="Required for stable memory demotion.")
+    lifecycle_demote_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    lifecycle_demote_parser.add_argument("--apply", action="store_true", help="Persist the demotion. Defaults to preview.")
+    lifecycle_demote_parser.set_defaults(func=cmd_lifecycle_demote)
+
+    lifecycle_archive_parser = subparsers.add_parser("lifecycle-archive", help="Archive retired memories into a durable local archive.")
+    lifecycle_archive_parser.add_argument("--memory", default="", help="Retired memory id to archive. Defaults to all retired memories.")
+    lifecycle_archive_parser.add_argument("--apply", action="store_true", help="Write .cmu/memory_archive.json. Defaults to preview.")
+    lifecycle_archive_parser.set_defaults(func=cmd_lifecycle_archive)
+
+    lifecycle_scope_record_parser = subparsers.add_parser("lifecycle-scope-record", help="Record a broad or ambiguous scope change as a Candidate review item.")
+    lifecycle_scope_record_parser.add_argument("memory_id")
+    lifecycle_scope_record_parser.add_argument("--reason", required=True)
+    lifecycle_scope_record_parser.add_argument("--requested-by", required=True)
+    lifecycle_scope_record_parser.add_argument("--scope-owner", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--scope-code", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--scope-workflow", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--scope-env", "--scope-environment", dest="scope_env", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--scope-actor", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--scope-time", action="append", default=[])
+    lifecycle_scope_record_parser.add_argument("--apply", action="store_true", help="Persist the Candidate scope-change record. Defaults to preview.")
+    lifecycle_scope_record_parser.set_defaults(func=cmd_lifecycle_scope_record)
 
     gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
     gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
@@ -1853,6 +1899,71 @@ def cmd_lifecycle_apply(args: argparse.Namespace, store: MemoryStore) -> int:
                 store.update(find_memory(memories, item.memory_id))
     print(report.render())
     return 0
+
+
+def cmd_lifecycle_proposals(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_proposals(store.list(), target=args.target, limit=args.limit)
+    print(report.render())
+    return 0
+
+
+def cmd_lifecycle_merge(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_merge(
+        store.list(),
+        target_id=args.target,
+        source_id=args.source,
+        reason=args.reason,
+        approved_by=args.approved_by,
+        apply=args.apply,
+    )
+    for memory in report.changed_memories:
+        store.update(memory)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_lifecycle_demote(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_demote(
+        store.list(),
+        memory_id=args.memory_id,
+        reason=args.reason,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+        apply=args.apply,
+    )
+    for memory in report.changed_memories:
+        store.update(memory)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_lifecycle_archive(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = [*store.list(), *store.list(status=MemoryStatus.RETIRED)]
+    report = lifecycle_archive(memories, root=args.root, memory_id=args.memory, apply=args.apply)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_lifecycle_scope_record(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_scope_record(
+        store.list(),
+        memory_id=args.memory_id,
+        proposed_scope=MemoryScope(
+            ownership=args.scope_owner,
+            code=args.scope_code,
+            workflow=args.scope_workflow,
+            environment=args.scope_env,
+            actor=args.scope_actor,
+            time=args.scope_time,
+        ),
+        reason=args.reason,
+        requested_by=args.requested_by,
+        apply=args.apply,
+    )
+    for memory in report.created_memories:
+        store.add(memory)
+    print(report.render())
+    return 0 if report.ok else 1
 
 
 def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:

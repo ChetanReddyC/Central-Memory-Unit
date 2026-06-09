@@ -715,6 +715,18 @@ This cycle implemented five separate unfinished CMU capabilities rather than ano
 
 Automated verification now covers 288 tests, including new OpenAI adapter tests and product-hardening workflow tests against real stores, Git-backed receipts, generated fixtures, CLI dispatch, portable JSON fixtures, and team-scope records. Manual verification ran `openai-runner --input-file`, `evidence-watch --apply --record`, `team-review-action`, `portable-fixture-seed --historical`, `portable-compat`, and `host-path-suite --strict` under `.manual/five-slice-proof`. The Git-backed proof linked receipt `use_3cbcb25eb439` to commit `7206c14`, the review-action proof updated memory `mem_909041ccdc28` and team scope `team_d63d4a08397b`, and the host-path suite passed checkout-release and billing-incident with `openai=pass`.
 
+Current lifecycle operations cycle completed:
+
+This cycle implemented five separate unfinished CMU lifecycle capabilities rather than another hardening-cycle meta-check:
+
+- `cmu lifecycle-proposals` provides assisted Situation -> Practice/Anchor proposal cards from the real promotion gates and keeps stable promotion under explicit authority review.
+- `cmu lifecycle-merge` applies approved memory merges by combining source evidence/signals/relationships into the target and retiring the source.
+- `cmu lifecycle-demote` applies explicit demotion, including sufficient authority checks and authority metadata clearing for stable Practice/Anchor memory.
+- `cmu lifecycle-archive` writes retired memories to `.cmu/memory_archive.json` so archival has a durable local workflow.
+- `cmu lifecycle-scope-record` records broad or ambiguous scope changes as Candidate Memories with target/current/proposed-scope evidence instead of silently broadening stable memory.
+
+Automated verification now covers 294 tests, including five new lifecycle operation tests through real CLI dispatch and persisted memory/archive stores. Manual verification under `.manual/lifecycle-ops-proof-20260609` ran proposal, merge, scope-record, demotion, archive, list, and archive inspection paths against a real `.cmu` store.
+
 Current five-workflow product hardening cycle completed:
 
 This cycle implemented five separate unfinished CMU capabilities rather than another hardening-cycle meta-check:
@@ -756,9 +768,9 @@ When the user says "implement our next large slice", "implement our next massive
 Structural skeleton backlog:
 
 1. Scenario/evaluation harness (first slice implemented through `cmu evaluate-scenario`; first persisted scenario-library hardening slice implemented through `cmu scenario-add`, `cmu scenario-list`, and `cmu scenario-run`; first runner-hook scenario evidence slice implemented through `cmu runner-scenario`; first before/after comparison slice implemented through `cmu scenario-compare`; expand with richer fixture repositories and host-path suites later).
-2. Core memory lifecycle (first structural view implemented through `cmu lifecycle`; expand later with lifecycle automation).
+2. Core memory lifecycle (first structural view implemented through `cmu lifecycle`; first apply path through `cmu lifecycle-apply`; first operations path through `cmu lifecycle-proposals`, `lifecycle-merge`, `lifecycle-demote`, `lifecycle-archive`, and `lifecycle-scope-record`; expand later with settling automation and richer review UX).
 3. Raw trace to distilled memory pipeline (first slice implemented through `cmu trace-add` and `cmu trace-distill`; expand later with background/agent-runtime capture).
-4. Memory Gravity (first structural view implemented through `cmu gravity`; expand later with settling/merge/split automation).
+4. Memory Gravity (first structural view implemented through `cmu gravity`; expand later by feeding gravity pressure into controlled settling, merge, split, demotion, decay, and scope-refinement workflows).
 5. Full Hybrid Retrieval pipeline (first inspection surface implemented through `cmu retrieval-pipeline`; expand later by feeding pipeline diagnostics into preflight/start controls).
 6. Practice/Anchor governance loop (first read-only governance view implemented through `cmu governance`; expand later with controlled approval/review UX).
 7. Usefulness and drag analytics (first read-only analytics view implemented through `cmu analytics`; expand later with longitudinal scenario metrics).
@@ -776,9 +788,9 @@ Structural skeleton backlog:
 
 - Scenario/evaluation harness: first read-only CLI slice implemented through `cmu evaluate-scenario`, persisted scenario-library runs now exist through `cmu scenario-add`, `cmu scenario-list`, and `cmu scenario-run`, runner-hook lifecycle proof now exists through `cmu runner-scenario`, before/after behavior comparison now exists through `cmu scenario-compare`, the generated fixture repository catalog now includes checkout-release and billing-incident through `cmu fixture-repo-create`, and `cmu host-path-suite` now checks Codex and OpenAI host adapters; still needs richer longitudinal evidence cases later.
 - Demo/quickstart flow: first Git-backed proof loop implemented through `cmu quickstart-demo`, setup guidance now points hosts at that proof loop through `cmu setup-guide`, the root README now documents the fresh-checkout proof path, `cmu install-check` validates adoption/package readiness, `cmu demo-walkthrough` ties those surfaces into one local walkthrough, and `cmu dist-check` validates installed distribution behavior; still needs richer hosted/autonomous-runner examples later.
-- Core memory lifecycle: first read-only structural view implemented through `cmu lifecycle`; still needs lifecycle automation and richer harness scenarios later.
+- Core memory lifecycle: first read-only structural view, Candidate -> Situation apply path, assisted stable proposals, controlled merge, controlled demotion, retired-memory archival, and broad/ambiguous scope-change records are implemented; still needs evidence-driven settling automation and richer harness scenarios later.
 - Raw trace vs distilled memory pipeline: first local CLI slice implemented through `cmu trace-add` and `cmu trace-distill`; still needs deeper scenario integration and agent-runtime/background capture later.
-- Memory Gravity: first read-only structural view implemented through `cmu gravity`; still needs settling, merge/split, demotion, decay, and scope-evolution automation later.
+- Memory Gravity: first read-only structural view implemented through `cmu gravity`; still needs direct integration with settling, split, decay, and scope-evolution automation later.
 - Hybrid Retrieval v1: first full inspection surface implemented through `cmu retrieval-pipeline`; still needs deeper control integration with preflight/start and richer rejection metrics later.
 - Practice/Anchor governance loop: first read-only stable governance view implemented through `cmu governance`; still needs richer approval UX and controlled automation later.
 - Usefulness and drag analytics: first read-only analytics view implemented through `cmu analytics`; still needs richer longitudinal scenario metrics, time/turn estimates, and product-level dashboards later.
@@ -788,7 +800,7 @@ Structural skeleton backlog:
 - Onboarding Seed integration beyond CLI, including new-human, new-agent, and swarm onboarding flows.
 - Agent/runtime integration: first versioned direct tool-call boundary implemented, first Python SDK facade implemented through `cmu.sdk.CentralMemoryUnit`, first local MCP stdio adapter implemented through `cmu.mcp`, `cmu mcp`, and `cmu-mcp`, first host setup guide implemented through `cmu setup-guide`, first autonomous-runner event hooks implemented through `cmu.runner_hooks` / `cmu runner-hooks`, first Codex host adapter implemented through `cmu.codex_adapter` / `cmu codex-runner`, and first OpenAI host adapter implemented through `cmu.openai_adapter` / `cmu openai-runner`; still needs additional host adapters and richer IDE/coding-agent integration.
 - Background Git watcher or checkpoint monitor: bounded `cmu evidence-watch` now exists; still needs unbounded daemon/service operation and richer long-session policy.
-- Candidate scope-change records: explicit records for broad or ambiguous scope changes instead of only immediate safe narrowing.
+- Candidate scope-change records: first explicit broad/ambiguous scope-change record path now exists through `cmu lifecycle-scope-record`; still needs richer review and resolution UX.
 - Practice/Anchor review UX: compact approval moments, lightweight reminders, and first authority/team-metadata handoff application now exist; still needs richer non-CLI approval, narrowing, challenge, split, retirement, or strengthening surfaces.
 - Team/org authority model: first policy/report/apply slice, first local team-scope directory, and first owner/team handoff apply path are implemented; still needs richer delegation, owner/team review, and cross-repo authority later.
 - Multi-repo and organization-level memory: local repo/team boundary records now exist; still needs cross-repo memory scope, org-wide patterns, and evidence-backed expansion rules without false transfer.
