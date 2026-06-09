@@ -21,6 +21,7 @@ cmu codex-runner
 cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 cmu evidence-monitor
 cmu review-queue
+cmu review-reminders
 cmu lifecycle-apply --candidate-ready
 cmu team-scope
 cmu portable-compat --fixture-dir tests/fixtures/portable
@@ -41,6 +42,8 @@ Use `cmu runner-scenario` when you want scenario evidence for runner behavior wi
 Use `cmu evidence-monitor` when you want CMU to inspect recent Git checkpoints and link only clean high-confidence receipt matches. It is dry-run by default; `--apply` persists only safe committed matches and leaves WIP, reverted, mixed, delayed, ambiguous, or weak evidence for review.
 
 Use `cmu review-queue` when you want compact human approval cards across promotion, stable authority, team-scope coverage, challenge resolution, strengthen, governance review, and decay decisions without mutating memory.
+
+Use `cmu review-reminders` when you want a lightweight reminder list for expired or due-soon stable-memory authority reviews plus open high-priority review-queue cards.
 
 Use `cmu lifecycle-apply --candidate-ready` to preview safe Candidate -> Situation promotion through the existing promotion gate. Add `--apply` only when you want eligible Candidate memories persisted as Situation memories; Practice and Anchor promotion still requires explicit authority.
 
@@ -63,6 +66,7 @@ python -m cmu codex-runner
 python -m cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 python -m cmu evidence-monitor
 python -m cmu review-queue
+python -m cmu review-reminders
 python -m cmu lifecycle-apply --candidate-ready
 python -m cmu team-scope
 python -m cmu portable-compat --fixture-dir tests/fixtures/portable
@@ -189,6 +193,7 @@ cmu codex-runner
 cmu runner-scenario "adjust local label spacing" --area ui --risk low --expect-start silent-skip --strict
 cmu evidence-monitor
 cmu review-queue
+cmu review-reminders
 cmu lifecycle-apply --candidate-ready
 cmu team-scope
 cmu portable-compat --fixture-dir tests/fixtures/portable
@@ -199,4 +204,4 @@ python -m unittest tests.test_cmu_spine.CodexRunnerAdapterTests
 python -m unittest tests.test_cmu_spine.RunnerScenarioEvidenceTests
 ```
 
-`cmu setup-guide`, `cmu install-check`, `cmu runner-hooks` without a prompt, `cmu codex-runner` without input, `cmu runner-scenario`, `cmu evidence-monitor` without `--apply`, `cmu review-queue`, `cmu lifecycle-apply --candidate-ready` without `--apply`, `cmu team-scope`, `cmu portable-compat`, and `cmu demo-walkthrough` without `--apply` are read-only with respect to the source CMU memory base. They should not initialize source stores, create source memories, create source receipts, or write Git checkpoints. `cmu runner-hooks <task>` and `cmu codex-runner --input ...` execute real hooks against the source store and can create a Memory Use Receipt when memory surfaces. `cmu runner-scenario` executes hooks only inside a temporary isolated copy under `.manual`. `cmu evidence-monitor --apply` updates only existing unlinked receipts when recent Git evidence is clean and high-confidence. `cmu review-queue` gathers existing promotion, authority, team-scope coverage, challenge, use-review, and decay commands into compact approval cards without applying them. `cmu lifecycle-apply --candidate-ready --apply` promotes only Candidate memories that already pass the existing Situation promotion gate. `cmu team-scope-add` writes local repo/team boundary records, while `cmu team-scope` only inspects them. `cmu portable-compat` validates saved bundle fixtures without importing them. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.
+`cmu setup-guide`, `cmu install-check`, `cmu runner-hooks` without a prompt, `cmu codex-runner` without input, `cmu runner-scenario`, `cmu evidence-monitor` without `--apply`, `cmu review-queue`, `cmu review-reminders`, `cmu lifecycle-apply --candidate-ready` without `--apply`, `cmu team-scope`, `cmu portable-compat`, and `cmu demo-walkthrough` without `--apply` are read-only with respect to the source CMU memory base. They should not initialize source stores, create source memories, create source receipts, or write Git checkpoints. `cmu runner-hooks <task>` and `cmu codex-runner --input ...` execute real hooks against the source store and can create a Memory Use Receipt when memory surfaces. `cmu runner-scenario` executes hooks only inside a temporary isolated copy under `.manual`. `cmu evidence-monitor --apply` updates only existing unlinked receipts when recent Git evidence is clean and high-confidence. `cmu review-queue` gathers existing promotion, authority, team-scope coverage, challenge, use-review, and decay commands into compact approval cards without applying them. `cmu review-reminders` turns stable-memory authority expiry and high-priority review cards into a small reminder list without applying anything. `cmu lifecycle-apply --candidate-ready --apply` promotes only Candidate memories that already pass the existing Situation promotion gate. `cmu team-scope-add` writes local repo/team boundary records, while `cmu team-scope` only inspects them. `cmu portable-compat` validates saved bundle fixtures without importing them. `cmu install-check` validates the README, package metadata, SDK import, module entrypoint, setup-guide consistency, and MCP schema against the live checkout. `cmu dist-check` writes only temporary validation files under `.manual` by default. `cmu quickstart-demo --apply` and `cmu demo-walkthrough --apply` intentionally mutate the local Git repository by creating the small demo proof checkpoint.

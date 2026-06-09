@@ -196,6 +196,8 @@ Current local team-scope directory slice now completed: `cmu team-scope-add`, `c
 
 Current portable compatibility fixture slice now completed: `cmu portable-compat` gives portable memory bundles a saved-fixture regression gate. Current valid bundles must keep validating, intentionally invalid bundles must keep failing, and future-schema bundles must fail safely as unsupported until an explicit migration path exists. This matters because organizational memory should be movable without becoming silently corrupt or silently over-trusted across schema changes.
 
+Current review reminder slice now completed: `cmu review-reminders` turns expired or due-soon stable-memory authority reviews and open high-priority approval cards into a compact read-only reminder list. This keeps the intended governance feel: CMU can tap the shoulder when trust needs renewal without turning stable-memory review into automatic mutation or ceremony.
+
 Future industry-patterns to borrow after the main engine is dependable:
 
 - From Mem0-style systems, borrow fast SDK ergonomics, simple setup, clear memory APIs, and the feeling that adding memory to an agent takes minutes rather than a deep platform migration.

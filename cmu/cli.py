@@ -43,6 +43,7 @@ from .retrieval import (
     semantic_proposal_diagnostics,
 )
 from .review_queue import review_queue
+from .review_reminders import review_reminders
 from .runner_hooks import runner_hooks_report
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
@@ -595,6 +596,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     review_queue_parser = subparsers.add_parser("review-queue", help="Show compact human approval and governance review cards.")
     review_queue_parser.set_defaults(func=cmd_review_queue)
+
+    review_reminders_parser = subparsers.add_parser("review-reminders", help="Show lightweight stable-memory review and approval reminders.")
+    review_reminders_parser.add_argument("--days", type=int, default=14, help="Due-soon authority review window in days.")
+    review_reminders_parser.set_defaults(func=cmd_review_reminders)
 
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
@@ -1712,6 +1717,17 @@ def cmd_governance(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_review_queue(args: argparse.Namespace, store: MemoryStore) -> int:
     report = review_queue(store.list(), MemoryUseStore(args.root).list(), TeamDirectoryStore(args.root).list())
+    print(report.render())
+    return 0
+
+
+def cmd_review_reminders(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = review_reminders(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        team_scopes=TeamDirectoryStore(args.root).list(),
+        days=args.days,
+    )
     print(report.render())
     return 0
 

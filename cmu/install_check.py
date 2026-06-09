@@ -26,6 +26,7 @@ REQUIRED_README_COMMANDS = [
     "cmu runner-scenario",
     "cmu evidence-monitor",
     "cmu review-queue",
+    "cmu review-reminders",
     "cmu lifecycle-apply",
     "cmu team-scope",
     "cmu portable-compat",

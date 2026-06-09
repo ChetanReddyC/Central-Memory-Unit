@@ -40,6 +40,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.review_queue import review_queue
+from cmu.review_reminders import review_reminders
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
@@ -7303,6 +7304,96 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("CMU Review Queue", output.getvalue())
             self.assertFalse(team_file.exists())
+
+    def test_review_reminders_surface_expired_due_soon_unscheduled_and_open_cards(self) -> None:
+        now = datetime(2026, 6, 9, tzinfo=timezone.utc)
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            expired = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Expired deploy authority",
+                summary="Deployment Practice needs renewed authority.",
+                approved_by="Release owner",
+                authority_owner="Release team",
+                authority_role="owner",
+                authority_consequence="high",
+                authority_review_due_at="2026-06-01T00:00:00+00:00",
+            )
+            due_soon = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Due soon security authority",
+                summary="Security Anchor needs near-term review.",
+                approved_by="Security council",
+                authority_owner="Security team",
+                authority_role="org",
+                authority_consequence="critical",
+                authority_review_due_at="2026-06-15T00:00:00+00:00",
+            )
+            unscheduled = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Approved but unscheduled",
+                summary="Approved Practice should get a lightweight review date.",
+                approved_by="CMU owner",
+                authority_owner="CMU team",
+                authority_role="owner",
+                authority_consequence="high",
+            )
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Candidate ready for reminder queue",
+                summary="Candidate has enough detail to become Situation.",
+                scope=MemoryScope(code=["cmu"], workflow=["governance"]),
+                evidence=["Reminder tests exercise real review queue."],
+                use_this_path="Promote when the gate passes.",
+                avoid_this="Do not ignore ready Candidates.",
+                challenge_only_if="The lesson is no longer reusable.",
+                liability_score=3,
+                confidence=0.75,
+            )
+            for memory in [expired, due_soon, unscheduled, candidate]:
+                store.add(memory)
+
+            report = review_reminders(store.list(), MemoryUseStore(tmp).list(), days=7, now=now)
+            rendered = report.render()
+
+            self.assertIn("CMU Review Reminders", rendered)
+            self.assertIn("authority-review-expired", rendered)
+            self.assertIn(expired.id, rendered)
+            self.assertIn("authority-review-due-soon", rendered)
+            self.assertIn(due_soon.id, rendered)
+            self.assertIn("authority-review-not-scheduled", rendered)
+            self.assertIn(unscheduled.id, rendered)
+            self.assertIn("open-candidate-promotion", rendered)
+            self.assertIn(f"cmu promote {candidate.id}", rendered)
+            self.assertTrue(any(reminder.priority == "P0" for reminder in report.reminders))
+
+    def test_cli_review_reminders_is_read_only_and_uses_real_store(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Expired checkout authority",
+                summary="Checkout Practice needs authority renewal.",
+                approved_by="Checkout owner",
+                authority_owner="Checkout team",
+                authority_role="owner",
+                authority_consequence="high",
+                authority_review_due_at="2020-01-01T00:00:00+00:00",
+            )
+            store.add(memory)
+            before = (Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-reminders", "--days", "30"])
+
+            self.assertEqual(exit_code, 0)
+            rendered = output.getvalue()
+            self.assertIn("CMU Review Reminders", rendered)
+            self.assertIn("authority-review-expired", rendered)
+            self.assertIn(memory.id, rendered)
+            after = (Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8")
+            self.assertEqual(after, before)
 
 
 class UsefulnessDragAnalyticsTests(unittest.TestCase):

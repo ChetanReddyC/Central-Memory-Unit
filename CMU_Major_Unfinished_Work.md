@@ -90,13 +90,20 @@ First compact review-queue slice now implemented:
 - Automated tests verify candidate promotion cards, Practice/Anchor approval cards, missing-authority cards, strengthen approval cards, challenge-resolution cards, and decay-review cards through real persisted memories, receipts, and CLI output.
 - Manual verification on the current workspace store showed two stable-promotion approval cards for the curated Situation memory and did not mutate memory or receipts.
 
+First lightweight review-reminders slice now implemented:
+
+- `cmu review-reminders` surfaces expired authority reviews, due-soon authority reviews, approved stable memories with no review date, and open high-priority review-queue cards as small reminders.
+- The command is read-only and deliberately points back to existing explicit commands such as `cmu authority`, `cmu authority-set`, `cmu promote`, and other review-queue follow-ups rather than applying governance decisions itself.
+- Automated tests verify expired, due-soon, unscheduled, and open Candidate-promotion reminders through real `MemoryStore`, `MemoryUseStore`, and CLI paths, including a read-only persisted-store check.
+- Manual verification under `.manual/review-reminders-proof` created a stable Practice memory with expired authority through `cmu add`, then confirmed `cmu review-reminders --days 30` reported a P0 `authority-review-expired` reminder without mutation.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows for approve, narrow, split, retire, strengthen, or challenge outcomes beyond command handoff cards.
 - Clear human review moments in non-CLI surfaces.
 - Better owner/team review flows.
-- Expiry and review reminders that feel lightweight, not bureaucratic.
+- Richer scheduling/notification delivery beyond lightweight CLI reminders.
 
 ### 5. Memory Lifecycle Automation
 
@@ -286,11 +293,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu portable-compat` now provides the first portable bundle compatibility fixture gate. It validates current-schema fixtures, requires intentionally invalid fixtures to fail, and proves future-schema bundles fail safely as unsupported instead of being imported silently.
+`cmu review-reminders` now provides the first lightweight expiry/review reminder surface. It turns expired or due-soon stable-memory authority reviews and open high-priority review cards into small read-only reminders that point back to explicit governance commands.
 
 Next best implementation slice:
 
-The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, build richer fixture repositories and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, or grow the new portable compatibility gate with historical/future migration fixtures. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, build richer fixture repositories and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable compatibility gate with historical/future migration fixtures, or move review reminders toward non-CLI delivery. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
