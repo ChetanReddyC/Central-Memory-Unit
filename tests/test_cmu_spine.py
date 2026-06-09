@@ -20,6 +20,7 @@ from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
 from cmu.fixture_repos import create_fixture_repo
+from cmu.hardening_cycle import hardening_cycle_report
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -3304,6 +3305,127 @@ class ScenarioEvaluationTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 main(["--root", tmp, "fixture-repo-create", "--kind", "checkout-release", "--output", str(fixture_root)])
             self.assertIn("fixture output directory already exists", str(raised.exception))
+
+    def test_fixture_repo_catalog_includes_billing_incident_fixture_with_passing_scenario(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "billing-incident"
+            report = create_fixture_repo("billing-incident", fixture_root)
+            rendered = report.render()
+
+            self.assertEqual(report.kind, "billing-incident")
+            self.assertIn("Billing Incident Fixture", (fixture_root / "README.md").read_text(encoding="utf-8"))
+            self.assertTrue((fixture_root / "src" / "billing" / "reconcile.py").exists())
+            self.assertTrue((fixture_root / "tests" / "test_billing_reconcile.py").exists())
+            self.assertIn("src/billing/reconcile.py", rendered)
+            memories = MemoryStore(fixture_root).list()
+            scenarios = ScenarioLibraryStore(fixture_root).list(tag="owner-review")
+            self.assertEqual(len(memories), 1)
+            self.assertEqual(memories[0].authority_consequence, "critical")
+            self.assertEqual(len(scenarios), 1)
+            self.assertEqual(scenarios[0].expect_memory, report.memory_id)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(fixture_root), "scenario-run", "--tag", "fixture", "--strict"])
+
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("Summary: total=1 pass=1 review=0", output.getvalue())
+
+    def test_hardening_cycle_passes_five_real_operator_checks_without_source_mutation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, capture_output=True, text=True, check=True)
+            record = TeamScopeRecord.create(
+                repo="billing-service",
+                team="Billing",
+                owner="Billing owner",
+                code=["billing"],
+                workflow=["incident"],
+                environment=["prod"],
+                authority_role="owner",
+                consequence="critical",
+            )
+            TeamDirectoryStore(root).add(record)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Billing incident replay needs idempotency",
+                summary="Billing incident replay should confirm idempotency keys before retrying reconciliation.",
+                scope=MemoryScope(ownership=["Billing owner"], code=["billing"], workflow=["incident"], environment=["prod"]),
+                evidence=["Incident replay duplicated invoice events until idempotency was checked."],
+                use_this_path="Check idempotency keys before replaying reconciliation.",
+                avoid_this="Do not replay billing events from logs without idempotency evidence.",
+                challenge_only_if="Billing no longer supports replayed reconciliation.",
+                liability_score=5,
+                confidence=0.9,
+                approved_by="Billing owner",
+            )
+            MemoryStore(root).add(memory)
+            MemoryUseStore(root).init()
+            fixture_dir = root / "portable-fixtures"
+            fixture_dir.mkdir()
+            bundle = export_bundle_from_root(root).to_dict()
+            (fixture_dir / "valid-current-v1.json").write_text(json.dumps(bundle), encoding="utf-8")
+            invalid = json.loads(json.dumps(bundle))
+            invalid["integrity"]["memory_count"] = 99
+            (fixture_dir / "invalid-bad-count.json").write_text(json.dumps(invalid), encoding="utf-8")
+            future = json.loads(json.dumps(bundle))
+            future["schema"] = "cmu-portable-bundle/v2"
+            (fixture_dir / "future-v2.json").write_text(json.dumps(future), encoding="utf-8")
+            before_memories = (root / ".cmu" / "memories.json").read_text(encoding="utf-8")
+            before_team_scopes = (root / ".cmu" / "team_scopes.json").read_text(encoding="utf-8")
+            before_uses = (root / ".cmu" / "uses.json").read_text(encoding="utf-8")
+
+            report = hardening_cycle_report(
+                root,
+                MemoryStore(root).list(),
+                MemoryUseStore(root).list(),
+                team_scopes=TeamDirectoryStore(root).list(),
+                portable_fixture_dir=fixture_dir,
+            )
+            rendered = report.render()
+
+            self.assertTrue(report.passed, rendered)
+            self.assertIn("CMU Hardening Cycle", rendered)
+            self.assertIn("[pass] team-owner-review", rendered)
+            self.assertIn("[pass] evidence-session-monitor", rendered)
+            self.assertIn("[pass] fixture-host-path-catalog", rendered)
+            self.assertIn("[pass] portable-migration-fixtures", rendered)
+            self.assertIn("[pass] review-reminder-delivery", rendered)
+            self.assertEqual((root / ".cmu" / "memories.json").read_text(encoding="utf-8"), before_memories)
+            self.assertEqual((root / ".cmu" / "team_scopes.json").read_text(encoding="utf-8"), before_team_scopes)
+            self.assertEqual((root / ".cmu" / "uses.json").read_text(encoding="utf-8"), before_uses)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(root), "hardening-cycle", "--portable-fixture-dir", str(fixture_dir), "--strict"])
+
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("Status: pass", output.getvalue())
+
+    def test_hardening_cycle_strict_fails_when_portable_fixtures_are_not_provided(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, capture_output=True, text=True, check=True)
+            TeamDirectoryStore(root).add(
+                TeamScopeRecord.create(
+                    repo="checkout-service",
+                    team="Checkout",
+                    owner="Checkout owner",
+                    code=["checkout"],
+                    workflow=["rollback"],
+                    authority_role="owner",
+                    consequence="high",
+                )
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(root), "hardening-cycle", "--strict"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 1, rendered)
+            self.assertIn("Status: review", rendered)
+            self.assertIn("[review] portable-migration-fixtures", rendered)
 
 
 class MemoryUseTests(unittest.TestCase):

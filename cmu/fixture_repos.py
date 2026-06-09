@@ -10,7 +10,7 @@ from .store import MemoryStore
 
 
 FIXTURE_REPO_VERSION = "cmu-fixture-repo/v1"
-FIXTURE_KINDS = {"checkout-release"}
+FIXTURE_KINDS = {"billing-incident", "checkout-release"}
 
 
 @dataclass
@@ -57,6 +57,8 @@ def create_fixture_repo(kind: str, output: Path | str) -> FixtureRepoReport:
     root.mkdir(parents=True, exist_ok=True)
     if normalized == "checkout-release":
         return create_checkout_release_fixture(root)
+    if normalized == "billing-incident":
+        return create_billing_incident_fixture(root)
     raise ValueError(f"unsupported fixture kind: {kind}")
 
 
@@ -142,6 +144,96 @@ def create_checkout_release_fixture(root: Path) -> FixtureRepoReport:
     warnings = init_git(root)
     return FixtureRepoReport(
         kind="checkout-release",
+        output=root,
+        memory_id=memory.id,
+        scenario_id=scenario.id,
+        files=sorted(written + [".cmu/memories.json", ".cmu/scenarios.json"]),
+        warnings=warnings,
+    )
+
+
+def create_billing_incident_fixture(root: Path) -> FixtureRepoReport:
+    written: list[str] = []
+    write_fixture_file(
+        root,
+        "README.md",
+        "# Billing Incident Fixture\n\nA tiny repository used by CMU owner-review, scenario, and runner integration tests.\n",
+        written,
+    )
+    write_fixture_file(
+        root,
+        "src/billing/reconcile.py",
+        "\n".join(
+            [
+                '"""Invoice reconciliation helpers for the CMU billing fixture."""',
+                "",
+                "def needs_idempotency_key(event: dict) -> bool:",
+                '    return not bool(event.get("idempotency_key"))',
+                "",
+            ]
+        ),
+        written,
+    )
+    write_fixture_file(
+        root,
+        "tests/test_billing_reconcile.py",
+        "\n".join(
+            [
+                "from src.billing.reconcile import needs_idempotency_key",
+                "",
+                "",
+                "def test_reconciliation_requires_idempotency_key():",
+                '    assert needs_idempotency_key({})',
+                '    assert not needs_idempotency_key({"idempotency_key": "evt_123"})',
+                "",
+            ]
+        ),
+        written,
+    )
+    memory = Memory.create(
+        type=MemoryType.PRACTICE,
+        title="Billing replay requires idempotency evidence",
+        summary="Billing incident work should prove replay idempotency before retrying invoice reconciliation.",
+        scope=MemoryScope(
+            ownership=["Billing owner"],
+            code=["billing", "src/billing/reconcile.py"],
+            workflow=["incident", "reconciliation"],
+            environment=["prod"],
+            actor=["agent"],
+        ),
+        evidence=["Fixture repository encodes invoice replay idempotency risk."],
+        use_this_path="Confirm idempotency keys before replaying billing reconciliation.",
+        avoid_this="Do not replay invoice reconciliation from incident logs without an idempotency check.",
+        challenge_only_if="The billing system no longer accepts replayed reconciliation events.",
+        liability_score=5,
+        confidence=0.88,
+        approved_by="Billing owner",
+        authority_owner="Billing team",
+        authority_role="owner",
+        authority_consequence="critical",
+    )
+    MemoryStore(root).add(memory)
+    scenario = ScenarioDefinition.create(
+        name="billing incident replay scenario",
+        description="High-risk billing incident replay should surface the fixture Practice memory.",
+        prompt="replay billing invoice reconciliation after incident duplicate event",
+        actor="agent",
+        area="billing",
+        files=["src/billing/reconcile.py"],
+        workflow=["incident", "reconciliation"],
+        environment=["prod"],
+        risk="high",
+        irreversible=True,
+        expect_trigger="must-call",
+        expect_action="action-note",
+        expect_memory=memory.id,
+        expect_candidate="not-recommended",
+        tags=["fixture", "billing", "runner-host-path", "owner-review"],
+    )
+    ScenarioLibraryStore(root).add(scenario)
+    warnings = init_git(root)
+    return FixtureRepoReport(
+        kind="billing-incident",
         output=root,
         memory_id=memory.id,
         scenario_id=scenario.id,

@@ -19,6 +19,7 @@ from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
+from .hardening_cycle import hardening_cycle_report
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
@@ -246,6 +247,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     portable_compat_parser.add_argument("--fixture-dir", required=True, help="Directory containing valid-, invalid-, and future- portable bundle JSON fixtures.")
     portable_compat_parser.set_defaults(func=cmd_portable_compat)
+
+    hardening_cycle_parser = subparsers.add_parser("hardening-cycle", help="Run the five-surface CMU product-hardening operator gate.")
+    hardening_cycle_parser.add_argument("--portable-fixture-dir", default="", help="Directory containing portable compatibility fixtures.")
+    hardening_cycle_parser.add_argument("--evidence-limit", type=int, default=20, help="Number of recent commits for the evidence monitor snapshot.")
+    hardening_cycle_parser.add_argument("--evidence-hours", type=int, default=72, help="Maximum hours after a receipt to consider a commit.")
+    hardening_cycle_parser.add_argument("--reminder-days", type=int, default=14, help="Review-reminder due window.")
+    hardening_cycle_parser.add_argument("--strict", action="store_true", help="Exit non-zero unless all five hardening checks pass.")
+    hardening_cycle_parser.set_defaults(func=cmd_hardening_cycle)
 
     add_parser = subparsers.add_parser("add", help="Add a structured CMU memory.")
     add_parser.add_argument("--type", choices=[item.value for item in MemoryType], default=MemoryType.SITUATION.value)
@@ -1237,6 +1246,21 @@ def cmd_portable_compat(args: argparse.Namespace, store: MemoryStore) -> int:
     report = portable_compat_report(args.fixture_dir)
     print(report.render())
     return 0 if report.passed else 1
+
+
+def cmd_hardening_cycle(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = hardening_cycle_report(
+        args.root,
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        team_scopes=TeamDirectoryStore(args.root).list(),
+        portable_fixture_dir=args.portable_fixture_dir or None,
+        evidence_limit=args.evidence_limit,
+        evidence_hours=args.evidence_hours,
+        reminder_days=args.reminder_days,
+    )
+    print(report.render())
+    return 1 if args.strict and not report.passed else 0
 
 
 def cmd_preflight(args: argparse.Namespace, store: MemoryStore) -> int:

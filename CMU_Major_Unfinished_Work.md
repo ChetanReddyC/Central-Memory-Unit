@@ -177,6 +177,14 @@ First local team-scope directory slice now implemented:
 - Manual verification under `.manual/team-scope-proof` created a real team boundary, added a scoped Practice memory, and confirmed `cmu team-scope` reported one matching memory and no missing coverage.
 - Manual review-queue verification then added an uncovered billing-service/Billing boundary in the same proof root and confirmed `cmu review-queue` reported it as a P1 `team-scope-coverage` card rather than falsely matching the checkout/prod memory.
 
+First five-surface hardening-cycle gate now implemented:
+
+- `cmu hardening-cycle` composes the current owner/team review, dry-run evidence monitor, fixture catalog, portable compatibility, and review-reminder delivery checks into one read-only operator gate.
+- `--strict` exits non-zero unless all five proof surfaces pass, so missing portable fixtures, missing owner metadata, Git monitor failures, or other proof gaps cannot be treated as success.
+- The gate does not apply follow-up commands or mutate memories, receipts, team scopes, portable fixtures, or Git checkpoints.
+- Automated tests verify strict pass and strict failure behavior through real `TeamDirectoryStore`, `MemoryStore`, `MemoryUseStore`, Git initialization, exported portable fixtures, and CLI rendering while checking source-store files remain unchanged.
+- Manual verification under `.manual/hardening-cycle-proof` created a real Git-backed proof root, a team-scope boundary, a critical Practice memory with org-level approval, valid/invalid/future portable fixtures, and confirmed `cmu hardening-cycle --strict` passed all five checks.
+
 Still needed:
 
 - Multi-repo memory boundaries beyond local team-scope records.
@@ -196,10 +204,17 @@ First fixture repository slice now implemented:
 - Automated tests verify fixture creation through the Python API and CLI, inspect the real generated files and CMU stores, run the saved scenario with `scenario-run --strict`, and confirm non-empty output directories are refused.
 - Manual verification under `.manual/fixture-repo-proof/checkout-release` created the checkout-release fixture and confirmed `cmu --root <fixture> scenario-run --tag fixture --strict` passed with the seeded Practice memory.
 
+First fixture catalog expansion slice now implemented:
+
+- `cmu fixture-repo-create --kind billing-incident` adds a second concrete repository fixture with real billing reconciliation source/test files, scoped critical Practice memory, and a saved strict scenario.
+- The billing fixture is tagged for fixture, runner-host-path, and owner-review use, so future host-path suites can exercise a different domain and consequence profile than checkout rollback.
+- Automated tests verify the new fixture files, stable authority metadata, saved scenario expectations, and strict scenario pass behavior through real generated stores.
+- Manual verification created `.manual/billing-incident-proof` and confirmed `cmu --root .manual/billing-incident-proof scenario-run --tag fixture --strict` passed.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Richer fixture repository catalog beyond the first checkout-release fixture.
+- Richer fixture repository catalog beyond the first checkout-release and billing-incident fixtures.
 - Before/after comparisons of agent behavior with and without CMU.
 - Longitudinal scenario suites.
 - Measurable usefulness and drag metrics.
@@ -270,6 +285,11 @@ First portable compatibility fixture gate now implemented:
 - Automated tests build fixtures from real exported bundles, then verify valid, invalid, future-schema, and failing-valid fixture behavior through the real CLI and validation path.
 - Manual verification under `.manual/portable-compat-proof` created a real memory through `cmu add`, exported a current bundle through `cmu portable-export`, derived invalid and future-schema fixtures from that bundle, and confirmed `cmu portable-compat` passed all three expected fixture outcomes.
 
+First hardening-cycle adoption gate now implemented:
+
+- `cmu hardening-cycle --portable-fixture-dir <dir>` gives adopters one cautious pass/review report over the five current product-hardening tracks: team owner metadata, checkpoint evidence monitoring, fixture catalog coverage, portable compatibility fixtures, and review reminders.
+- The README and install-check now include the command so local adoption docs stay aligned with the live CLI.
+
 Still needed:
 
 - Published/package workflow beyond local built-distribution validation.
@@ -300,11 +320,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu fixture-repo-create` now provides the first repeatable scenario fixture repository. The checkout-release fixture creates real files, scoped memory, and a saved strict scenario so host-path and evaluation work can run against a concrete repository.
+`cmu hardening-cycle` now runs the five current product-hardening tracks as one read-only strict operator gate, and `cmu fixture-repo-create --kind billing-incident` expands the fixture catalog beyond checkout rollback. This cycle touched owner/team review metadata, evidence monitoring, fixture-host-path coverage, portable compatibility fixtures, and reminder delivery readiness with real tests and manual proof.
 
 Next best implementation slice:
 
-The next product-hardening slice should continue turning unfinished areas into cautious operator workflows: either deepen local team-scope records into owner/team review flows, expand evidence monitoring toward session/watch workflows, grow the fixture repository catalog and host-path suites around `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable compatibility gate with historical/future migration fixtures, or move review reminders toward non-CLI delivery. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should deepen one of the hardening-cycle checks into a stronger workflow: add richer owner/team review handoffs, expand evidence monitoring toward session/watch mode, run fixture-backed host-path suites through `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable fixture corpus with historical migration cases, or add a machine-readable reminder delivery surface. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
