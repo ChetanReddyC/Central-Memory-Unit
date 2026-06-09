@@ -14,10 +14,12 @@ from .codex_adapter import codex_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
+from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
 from .governance import governance_report
 from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .install_check import install_check
+from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -39,6 +41,7 @@ from .retrieval import (
     semantic_index_status,
     semantic_proposal_diagnostics,
 )
+from .review_queue import review_queue
 from .runner_hooks import runner_hooks_report
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
@@ -52,6 +55,7 @@ from .scenarios import (
 from .seed_plan import seed_plan_report
 from .setup import HOST_CHOICES, setup_guide
 from .store import MemoryStore
+from .team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
 from .usage import (
@@ -567,6 +571,12 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_parser.add_argument("--memory", default="", help="Limit lifecycle view to one memory id.")
     lifecycle_parser.set_defaults(func=cmd_lifecycle)
 
+    lifecycle_apply_parser = subparsers.add_parser("lifecycle-apply", help="Apply controlled lifecycle transitions when safe gates pass.")
+    lifecycle_apply_parser.add_argument("--candidate-ready", action="store_true", help="Promote Candidate memories that already pass the Situation gate.")
+    lifecycle_apply_parser.add_argument("--limit", type=int, default=50, help="Maximum Candidate memories to inspect.")
+    lifecycle_apply_parser.add_argument("--apply", action="store_true", help="Persist eligible lifecycle transitions. Defaults to dry-run.")
+    lifecycle_apply_parser.set_defaults(func=cmd_lifecycle_apply)
+
     gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
     gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
     gravity_parser.set_defaults(func=cmd_gravity)
@@ -574,6 +584,9 @@ def build_parser() -> argparse.ArgumentParser:
     governance_parser = subparsers.add_parser("governance", help="Show the read-only Practice/Anchor governance view.")
     governance_parser.add_argument("--memory", default="", help="Limit governance view to one stable memory id.")
     governance_parser.set_defaults(func=cmd_governance)
+
+    review_queue_parser = subparsers.add_parser("review-queue", help="Show compact human approval and governance review cards.")
+    review_queue_parser.set_defaults(func=cmd_review_queue)
 
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
@@ -588,6 +601,20 @@ def build_parser() -> argparse.ArgumentParser:
     authority_set_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], required=True)
     authority_set_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
     authority_set_parser.set_defaults(func=cmd_authority_set)
+
+    team_scope_add_parser = subparsers.add_parser("team-scope-add", help="Add a local repo/team ownership boundary record.")
+    team_scope_add_parser.add_argument("--repo", required=True)
+    team_scope_add_parser.add_argument("--team", required=True)
+    team_scope_add_parser.add_argument("--owner", required=True)
+    team_scope_add_parser.add_argument("--code", action="append", default=[])
+    team_scope_add_parser.add_argument("--workflow", action="append", default=[])
+    team_scope_add_parser.add_argument("--env", "--environment", dest="environment", action="append", default=[])
+    team_scope_add_parser.add_argument("--authority-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    team_scope_add_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
+    team_scope_add_parser.set_defaults(func=cmd_team_scope_add)
+
+    team_scope_parser = subparsers.add_parser("team-scope", help="Inspect local repo/team ownership boundaries and memory coverage.")
+    team_scope_parser.set_defaults(func=cmd_team_scope)
 
     quality_parser = subparsers.add_parser("quality", help="Show the read-only Memory Quality and Decay Model.")
     quality_parser.add_argument("--memory", default="", help="Limit quality view to one memory id.")
@@ -733,6 +760,19 @@ def build_parser() -> argparse.ArgumentParser:
     use_link_auto_parser.add_argument("--min-score", type=float, default=DEFAULT_AUTO_LINK_MIN_SCORE, help="Minimum auto-match score required.")
     use_link_auto_parser.add_argument("--apply", action="store_true", help="Persist confident auto-links. Defaults to dry-run.")
     use_link_auto_parser.set_defaults(func=cmd_use_link_auto)
+
+    evidence_monitor_parser = subparsers.add_parser("evidence-monitor", help="Monitor recent Git checkpoints and link only clean high-confidence receipt matches.")
+    evidence_monitor_parser.add_argument("--limit", type=int, default=20, help="Number of recent commits to inspect.")
+    evidence_monitor_parser.add_argument("--hours", type=int, default=72, help="Maximum hours after a receipt to consider a commit.")
+    evidence_monitor_parser.add_argument("--min-score", type=float, default=DEFAULT_MONITOR_MIN_SCORE, help="Minimum auto-link score before monitor review.")
+    evidence_monitor_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MONITOR_MIN_CONFIDENCE,
+        help="Minimum clean link confidence before applying.",
+    )
+    evidence_monitor_parser.add_argument("--apply", action="store_true", help="Persist high-confidence clean checkpoint links. Defaults to dry-run.")
+    evidence_monitor_parser.set_defaults(func=cmd_evidence_monitor)
 
     use_resolve_parser = subparsers.add_parser("use-resolve", help="Resolve a memory use receipt without linking a Git commit.")
     use_resolve_parser.add_argument("use_id", help="Memory use receipt id to resolve.")
@@ -1623,6 +1663,19 @@ def cmd_lifecycle(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_lifecycle_apply(args: argparse.Namespace, store: MemoryStore) -> int:
+    if not args.candidate_ready:
+        raise SystemExit("lifecycle-apply currently requires --candidate-ready")
+    memories = store.list()
+    report = apply_lifecycle_candidates(memories, apply=args.apply, limit=args.limit)
+    if args.apply:
+        for item in report.items:
+            if item.status == "promoted":
+                store.update(find_memory(memories, item.memory_id))
+    print(report.render())
+    return 0
+
+
 def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:
     report = gravity_report(
         store.list(),
@@ -1639,6 +1692,12 @@ def cmd_governance(args: argparse.Namespace, store: MemoryStore) -> int:
         MemoryUseStore(args.root).list(),
         memory_id=args.memory,
     )
+    print(report.render())
+    return 0
+
+
+def cmd_review_queue(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = review_queue(store.list(), MemoryUseStore(args.root).list(), TeamDirectoryStore(args.root).list())
     print(report.render())
     return 0
 
@@ -1661,6 +1720,30 @@ def cmd_authority_set(args: argparse.Namespace, store: MemoryStore) -> int:
     if decision.applied and decision.memory is not None:
         store.update(decision.memory)
     print(decision.render())
+    return 0
+
+
+def cmd_team_scope_add(args: argparse.Namespace, store: MemoryStore) -> int:
+    record = TeamScopeRecord.create(
+        repo=args.repo,
+        team=args.team,
+        owner=args.owner,
+        code=args.code,
+        workflow=args.workflow,
+        environment=args.environment,
+        authority_role=args.authority_role,
+        consequence=args.consequence,
+    )
+    TeamDirectoryStore(args.root).add(record)
+    print("CMU Team Scope Added")
+    print(record.render_summary())
+    return 0
+
+
+def cmd_team_scope(args: argparse.Namespace, store: MemoryStore) -> int:
+    records = TeamDirectoryStore(args.root).list()
+    report = team_directory_report(records, store.list())
+    print(report.render())
     return 0
 
 
@@ -1914,6 +1997,22 @@ def cmd_use_link_auto(args: argparse.Namespace, store: MemoryStore) -> int:
                 use_store.update(decision.receipt)
     print(report.render())
     return 0
+
+
+def cmd_evidence_monitor(args: argparse.Namespace, store: MemoryStore) -> int:
+    use_store = MemoryUseStore(args.root)
+    report = monitor_checkpoints(
+        args.root,
+        store.list(),
+        use_store.list(),
+        limit=args.limit,
+        hours=args.hours,
+        min_score=args.min_score,
+        min_confidence=args.min_confidence,
+        apply=args.apply,
+    )
+    print(report.render())
+    return 0 if not report.error else 1
 
 
 def cmd_use_resolve(args: argparse.Namespace, store: MemoryStore) -> int:

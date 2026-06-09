@@ -24,6 +24,10 @@ REQUIRED_README_COMMANDS = [
     "cmu runner-hooks",
     "cmu codex-runner",
     "cmu runner-scenario",
+    "cmu evidence-monitor",
+    "cmu review-queue",
+    "cmu lifecycle-apply",
+    "cmu team-scope",
     "cmu install-check",
     "cmu dist-check",
 ]

@@ -18,6 +18,7 @@ from cmu.cli import main
 from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, codex_runner_report
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
+from cmu.evidence_monitor import monitor_checkpoints
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
@@ -37,12 +38,14 @@ from cmu.retrieval import (
     preflight,
     rank_memories,
 )
+from cmu.review_queue import review_queue
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
 from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
+from cmu.team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
 from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
 from cmu.usage import (
@@ -3897,6 +3900,93 @@ class MemoryUseTests(unittest.TestCase):
             self.assertIn("Review Prompts", output.getvalue())
             self.assertIn("drag signals", output.getvalue())
 
+    def test_evidence_monitor_applies_only_clean_high_confidence_checkpoint_match(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/deploy.py", "deploy = true\n", "Fix billing deploy")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Do migration before deploy",
+                summary="Deploys should respect database migration order.",
+                signals=["billing", "deploy"],
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing deploy", actor="agent", area="billing", files=["billing/deploy.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            dry = monitor_checkpoints(tmp, MemoryStore(tmp).list(), MemoryUseStore(tmp).list())
+
+            self.assertEqual(dry.linked_count, 1, dry.render())
+            self.assertFalse(dry.applied)
+            [loaded_after_dry] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded_after_dry.commit_hash, "")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-monitor", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Evidence Monitor Applied", rendered)
+            self.assertIn("linked=1", rendered)
+            self.assertIn("high-confidence clean checkpoint match", rendered)
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.commit_hash, metadata.commit_hash)
+            self.assertEqual(linked.metadata_source, "git-monitor")
+            self.assertEqual(linked.outcome_signal, "committed")
+            self.assertGreaterEqual(linked.link_confidence, 0.75)
+            self.assertEqual(linked.flags, [])
+
+    def test_cli_evidence_monitor_leaves_wip_checkpoint_for_review_without_mutating_receipt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "auth/tokens.py", "locked = true\n", "WIP auth token checkpoint")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.ANCHOR,
+                title="Auth token rotation ordering",
+                summary="Token rotation must acquire the lock before updating active credentials.",
+                signals=["auth", "token"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.85,
+                approved_by="Security owner",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Change auth token rotation", actor="agent", area="auth", files=["auth/tokens.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 5.0})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-monitor", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Evidence Monitor Applied", rendered)
+            self.assertIn("linked=0", rendered)
+            self.assertIn("needs_review=1", rendered)
+            self.assertIn("wip_commit", rendered)
+            self.assertIn("outcome:checkpoint", rendered)
+            [loaded] = MemoryUseStore(tmp).list()
+            self.assertEqual(loaded.commit_hash, "")
+            self.assertEqual(loaded.outcome_signal, "")
+            self.assertEqual(loaded.flags, [])
+
     def test_cli_use_resolve_marks_receipt_without_commit_and_surfaces_resolution(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -6707,6 +6797,74 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn("evidence_or_outcome", rendered)
             self.assertIn("add missing reusable scenario evidence/scope/future-use lesson", rendered)
 
+    def test_cli_lifecycle_apply_dry_run_does_not_mutate_ready_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Billing rollback marker lesson",
+                summary="Billing rollback retries should inspect release markers before retrying.",
+                signals=["rollback", "marker"],
+                scope=MemoryScope(code=["billing"], workflow=["rollback"], actor=["agent"]),
+                evidence=["Rollback succeeded after stale marker cleanup."],
+                use_this_path="Inspect the release marker before retrying rollback.",
+                avoid_this="Do not retry rollback blindly.",
+                challenge_only_if="The rollback path has no shared marker.",
+                liability_score=4,
+                confidence=0.72,
+            )
+            MemoryStore(tmp).add(candidate)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-apply", "--candidate-ready"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Lifecycle Apply Dry Run", rendered)
+            self.assertIn("would-promote", rendered)
+            [loaded] = MemoryStore(tmp).list()
+            self.assertEqual(loaded.type, MemoryType.CANDIDATE)
+
+    def test_cli_lifecycle_apply_promotes_only_candidates_that_pass_existing_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            ready = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Auth rollout lock ordering",
+                summary="Auth rollout failed when lock ordering changed before token rotation.",
+                signals=["auth", "lock"],
+                scope=MemoryScope(code=["auth"], workflow=["credential rotation"], actor=["agent"]),
+                evidence=["Token rotation passed after restoring lock ordering."],
+                use_this_path="Verify lock ordering before rotating active credentials.",
+                avoid_this="Do not update active credentials before acquiring the lock.",
+                challenge_only_if="The credential path no longer uses shared locks.",
+                liability_score=4,
+                confidence=0.74,
+            )
+            blocked = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Thin memory draft",
+                summary="Something happened.",
+                liability_score=2,
+            )
+            store = MemoryStore(tmp)
+            store.add(ready)
+            store.add(blocked)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-apply", "--candidate-ready", "--apply"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Lifecycle Apply Applied", rendered)
+            self.assertIn("promoted:", rendered)
+            self.assertIn("blocked:", rendered)
+            loaded = {memory.id: memory for memory in MemoryStore(tmp).list()}
+            self.assertEqual(loaded[ready.id].type, MemoryType.SITUATION)
+            self.assertGreaterEqual(loaded[ready.id].confidence, 0.7)
+            self.assertEqual(loaded[blocked.id].type, MemoryType.CANDIDATE)
+            self.assertIn("evidence_or_outcome", rendered)
+
 
 class MemoryGravityTests(unittest.TestCase):
     def test_cli_gravity_reports_promotion_governance_graph_and_use_pressures(self) -> None:
@@ -6976,6 +7134,174 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
             self.assertIn("Challenge State: none", rendered)
             self.assertIn("Allowed Paths: follow within scope, strengthen, challenge, scope-review, split, retire", rendered)
             self.assertIn("challenge, narrow, split, retire, or strengthen", rendered)
+
+    def test_review_queue_surfaces_promotion_and_authority_cards_from_real_store(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Checkout rollback marker lesson",
+                summary="Checkout rollback retries should inspect release markers before retrying.",
+                scope=MemoryScope(code=["checkout"], workflow=["rollback"], actor=["agent"]),
+                evidence=["Rollback succeeded after stale marker cleanup."],
+                use_this_path="Check the release marker before retrying rollback.",
+                avoid_this="Do not blindly retry rollback.",
+                challenge_only_if="The rollback path has no shared marker.",
+                liability_score=4,
+                confidence=0.72,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Billing deploy migration order",
+                summary="Billing deployment requires migration-order checks before rollout.",
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                evidence=["A deploy passed after migration order was corrected."],
+                use_this_path="Check migration order before rollout.",
+                avoid_this="Do not deploy service code before schema compatibility is known.",
+                challenge_only_if="The change has no schema dependency.",
+                liability_score=4,
+                confidence=0.82,
+            )
+            unapproved = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Legacy stable memory needs authority",
+                summary="Stable memory imported from history needs explicit authority metadata.",
+                scope=MemoryScope(code=["cmu"], workflow=["governance"], actor=["agent"]),
+                evidence=["Legacy stable memory predates authority metadata."],
+                use_this_path="Assign accountable authority before treating it as settled.",
+                avoid_this="Do not broaden trust from legacy approval alone.",
+                challenge_only_if="Authority is recorded elsewhere.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            for memory in [candidate, situation, unapproved]:
+                store.add(memory)
+
+            report = review_queue(store.list(), MemoryUseStore(tmp).list())
+            rendered = report.render()
+
+            self.assertIn("CMU Review Queue", rendered)
+            self.assertIn("candidate-promotion", rendered)
+            self.assertIn(f"cmu promote {candidate.id}", rendered)
+            self.assertIn("practice-approval", rendered)
+            self.assertIn(f"cmu promote {situation.id} --to practice --approved-by <owner-or-team>", rendered)
+            self.assertIn("anchor-approval", rendered)
+            self.assertIn(f"cmu promote {situation.id} --to anchor --approved-by <owner-or-team>", rendered)
+            self.assertIn("authority-approval", rendered)
+            self.assertIn(f"cmu authority-set {unapproved.id}", rendered)
+            self.assertTrue(any(card.priority == "P0" for card in report.cards))
+
+    def test_review_queue_surfaces_uncovered_team_scope_from_real_directory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            record = TeamScopeRecord.create(
+                repo="checkout-service",
+                team="Release",
+                owner="Release owner",
+                code=["checkout"],
+                workflow=["rollback"],
+                environment=["prod"],
+                authority_role="owner",
+                consequence="high",
+            )
+            TeamDirectoryStore(tmp).add(record)
+
+            report = review_queue(
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                TeamDirectoryStore(tmp).list(),
+            )
+            rendered = report.render()
+
+            self.assertIn("team-scope-coverage", rendered)
+            self.assertIn(record.id, rendered)
+            self.assertIn("checkout-service/Release", rendered)
+            self.assertIn("Team scope has no active matching memory", rendered)
+            self.assertIn("missing_metadata=none", rendered)
+            self.assertTrue(any(card.category == "team-scope-coverage" and card.priority == "P1" for card in report.cards))
+
+    def test_cli_review_queue_surfaces_challenge_strengthen_and_decay_review_cards(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            strengthened = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Run start before structural CMU work",
+                summary="Structural CMU work should start through the full Work Cycle.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["The Work Cycle coordinates trigger, onboarding, preflight, and receipts."],
+                use_this_path="Run cmu start before structural implementation.",
+                avoid_this="Do not create context dumps.",
+                challenge_only_if="The task is tiny and obvious.",
+                liability_score=4,
+                confidence=0.86,
+                approved_by="CMU owner",
+            )
+            challenged = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use preflight before large changes",
+                summary="Large changes should check memory before implementation.",
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Preflight caught a prior implementation risk."],
+                use_this_path="Run preflight before large changes.",
+                avoid_this="Do not skip memory when risk is high.",
+                challenge_only_if="The change is low-risk.",
+                liability_score=4,
+                confidence=0.85,
+                approved_by="CMU owner",
+            )
+            decaying = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Old deploy workaround no longer fits",
+                summary="A stale workaround should be reviewed before reuse.",
+                scope=MemoryScope(code=["deploy"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Two later uses showed the workaround was noisy."],
+                liability_score=3,
+                confidence=0.4,
+            )
+            for memory in [strengthened, challenged, decaying]:
+                store.add(memory)
+            add_strong_receipts(tmp, strengthened, count=2)
+            add_drag_receipts(tmp, decaying, count=3)
+            challenge = challenge_stable_memory(
+                store.list(),
+                ChallengeRequest(
+                    memory_id=challenged.id,
+                    mismatch="Full start may be safer than raw preflight for large changes.",
+                    benefit="Review can preserve the right entrypoint.",
+                    risk="Future agents may follow the wrong surface.",
+                    rollback="Keep preflight available until resolved.",
+                    challenged_by="agent",
+                ),
+            )
+            assert challenge.challenge_memory is not None
+            store.add(challenge.challenge_memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-queue"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Review Queue", rendered)
+            self.assertIn("Mode: compact human approval/review queue", rendered)
+            self.assertIn("strengthen-approval", rendered)
+            self.assertIn(f"cmu use-review {strengthened.id} --prepare strengthen --apply --approved-by <owner-or-team>", rendered)
+            self.assertIn("challenge-resolution", rendered)
+            self.assertIn(f"cmu resolve-challenge {challenge.challenge_memory.id}", rendered)
+            self.assertIn("decay-review", rendered)
+            self.assertIn(f"cmu decay-apply {decaying.id}", rendered)
+            self.assertIn("Proof Meaning:", rendered)
+
+    def test_cli_review_queue_reads_team_scopes_without_creating_empty_directory_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            team_file = Path(tmp) / ".cmu" / "team_scopes.json"
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-queue"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Review Queue", output.getvalue())
+            self.assertFalse(team_file.exists())
 
 
 class UsefulnessDragAnalyticsTests(unittest.TestCase):
@@ -9098,6 +9424,121 @@ class PythonSdkFacadeTests(unittest.TestCase):
 
 
 class TeamAuthorityModelTests(unittest.TestCase):
+    def test_team_directory_persists_repo_team_scope_and_reports_memory_coverage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            record = TeamScopeRecord.create(
+                repo="checkout-service",
+                team="Release",
+                owner="Release owner",
+                code=["checkout"],
+                workflow=["rollback"],
+                environment=["prod"],
+                authority_role="owner",
+                consequence="high",
+            )
+            TeamDirectoryStore(tmp).add(record)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout rollback marker check",
+                summary="Checkout rollback must inspect release marker state before retrying.",
+                scope=MemoryScope(ownership=["Release owner"], code=["checkout"], workflow=["rollback"], environment=["prod"]),
+                evidence=["Rollback succeeded after marker cleanup."],
+                use_this_path="Inspect release marker before retrying rollback.",
+                avoid_this="Do not retry rollback blindly.",
+                challenge_only_if="The checkout service no longer uses release markers.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="Release owner",
+            )
+            MemoryStore(tmp).add(memory)
+
+            records = TeamDirectoryStore(tmp).list()
+            report = team_directory_report(records, MemoryStore(tmp).list())
+            rendered = report.render()
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].repo, "checkout-service")
+            self.assertIn("CMU Team Scope Directory", rendered)
+            self.assertIn("Records With Matching Memory: 1", rendered)
+            self.assertIn(memory.id, rendered)
+            self.assertIn("missing=none", rendered)
+
+    def test_team_directory_does_not_treat_environment_overlap_as_coverage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            billing = TeamScopeRecord.create(
+                repo="billing-service",
+                team="Billing",
+                owner="Billing owner",
+                code=["billing"],
+                workflow=["deployment"],
+                environment=["prod"],
+                authority_role="owner",
+                consequence="high",
+            )
+            TeamDirectoryStore(tmp).add(billing)
+            checkout_memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout rollback marker check",
+                summary="Checkout rollback must inspect release marker state before retrying.",
+                scope=MemoryScope(ownership=["Release owner"], code=["checkout"], workflow=["rollback"], environment=["prod"]),
+                evidence=["Rollback succeeded after marker cleanup."],
+                use_this_path="Inspect release marker before retrying rollback.",
+                avoid_this="Do not retry rollback blindly.",
+                challenge_only_if="The checkout service no longer uses release markers.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="Release owner",
+            )
+            MemoryStore(tmp).add(checkout_memory)
+
+            report = team_directory_report(TeamDirectoryStore(tmp).list(), MemoryStore(tmp).list())
+            rendered = report.render()
+
+            self.assertIn("Records With Matching Memory: 0", rendered)
+            self.assertIn("Records Missing Memory Coverage: 1", rendered)
+            self.assertIn("matched=none", rendered)
+            self.assertNotIn(checkout_memory.id, rendered)
+
+    def test_cli_team_scope_add_and_report_surfaces_uncovered_boundary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            add_output = StringIO()
+            with redirect_stdout(add_output):
+                add_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "team-scope-add",
+                        "--repo",
+                        "billing-service",
+                        "--team",
+                        "Billing",
+                        "--owner",
+                        "Billing owner",
+                        "--code",
+                        "billing",
+                        "--workflow",
+                        "deployment",
+                        "--authority-role",
+                        "owner",
+                        "--consequence",
+                        "high",
+                    ]
+                )
+
+            self.assertEqual(add_exit, 0)
+            self.assertIn("CMU Team Scope Added", add_output.getvalue())
+
+            report_output = StringIO()
+            with redirect_stdout(report_output):
+                report_exit = main(["--root", tmp, "team-scope"])
+
+            rendered = report_output.getvalue()
+            self.assertEqual(report_exit, 0)
+            self.assertIn("CMU Team Scope Directory", rendered)
+            self.assertIn("billing-service/Billing", rendered)
+            self.assertIn("Records Missing Memory Coverage: 1", rendered)
+            self.assertIn("matched=none", rendered)
+
     def test_authority_assignment_enforces_consequence_permission(self) -> None:
         practice = Memory.create(
             type=MemoryType.PRACTICE,
