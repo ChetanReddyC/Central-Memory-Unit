@@ -683,6 +683,14 @@ This slice keeps governance lightweight without making it automatic. Reminders p
 
 Automated verification covers expired, due-soon, unscheduled, and open Candidate-promotion reminders through real `MemoryStore`, `MemoryUseStore`, and CLI paths, including a read-only persisted-store check. Manual verification under `.manual/review-reminders-proof` created a stable Practice memory with expired authority through `cmu add`, then confirmed `cmu review-reminders --days 30` reported a P0 `authority-review-expired` reminder without mutation.
 
+Current machine-readable reminder delivery slice completed:
+
+The review reminder surface now has a non-CLI delivery contract through `cmu review-reminders --json` and `ReviewRemindersReport.to_delivery_payload()`. The payload includes schema version, read-only mode, delivery readiness, priority counts, urgent count, due metadata, reminder categories, subject ids, and exact follow-up commands, so schedulers, host adapters, or notification bridges can consume reminder handoffs without scraping human text.
+
+`cmu hardening-cycle` now treats review-reminder delivery as a machine-readable proof surface and points its fifth item at `cmu review-reminders --json`. The gate still stays read-only: it validates that every emitted reminder has a subject id and follow-up command, but it does not renew authority, promote memories, resolve challenges, apply decay, create receipts, link commits, or send notifications.
+
+Automated verification covers the JSON payload shape, summary counts, urgent categories from both direct authority reminders and review-queue handoffs, CLI JSON parsing, read-only persisted-store behavior, and the hardening-cycle handoff command through real `MemoryStore`, `MemoryUseStore`, `TeamDirectoryStore`, portable fixtures, and Git-backed temporary roots. Manual verification under `.manual/reminder-delivery-proof` created a real expired stable Practice memory, confirmed `cmu review-reminders --json` emitted a valid P0 delivery payload without mutating `.cmu/memories.json`, and confirmed `cmu hardening-cycle --portable-fixture-dir <fixtures> --strict` passed all five surfaces with the reminder-delivery item pointing at JSON.
+
 Current fixture repository slice completed:
 
 The first generated fixture repository now exists through `cmu.fixture_repos.create_fixture_repo` and `cmu fixture-repo-create --kind checkout-release --output <dir>`. The checkout-release fixture creates real source/test files, initializes Git when available, seeds a scoped Practice memory, and saves a strict scenario-library case tagged for fixture and runner-host-path use.

@@ -209,9 +209,16 @@ def portable_compat_item(report: PortableCompatReport | None) -> HardeningCycleI
 
 def reminder_delivery_item(report: ReviewRemindersReport) -> HardeningCycleItem:
     urgent = sum(1 for reminder in report.reminders if reminder.priority in {"P0", "P1"})
+    if not report.delivery_ready:
+        return HardeningCycleItem(
+            name="review-reminder-delivery",
+            status="review",
+            detail="reminder digest has at least one reminder without a subject id or follow-up command",
+            command="cmu review-reminders --json",
+        )
     return HardeningCycleItem(
         name="review-reminder-delivery",
         status="pass",
-        detail=f"reminder digest generated with {len(report.reminders)} reminder(s), including {urgent} urgent item(s)",
-        command="cmu review-reminders",
+        detail=f"machine-readable reminder digest generated with {len(report.reminders)} reminder(s), including {urgent} urgent item(s)",
+        command="cmu review-reminders --json",
     )

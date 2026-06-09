@@ -3391,6 +3391,7 @@ class ScenarioEvaluationTests(unittest.TestCase):
             self.assertIn("[pass] fixture-host-path-catalog", rendered)
             self.assertIn("[pass] portable-migration-fixtures", rendered)
             self.assertIn("[pass] review-reminder-delivery", rendered)
+            self.assertIn("cmu review-reminders --json", rendered)
             self.assertEqual((root / ".cmu" / "memories.json").read_text(encoding="utf-8"), before_memories)
             self.assertEqual((root / ".cmu" / "team_scopes.json").read_text(encoding="utf-8"), before_team_scopes)
             self.assertEqual((root / ".cmu" / "uses.json").read_text(encoding="utf-8"), before_uses)
@@ -7525,8 +7526,10 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
 
             report = review_reminders(store.list(), MemoryUseStore(tmp).list(), days=7, now=now)
             rendered = report.render()
+            payload = report.to_delivery_payload()
 
             self.assertIn("CMU Review Reminders", rendered)
+            self.assertIn("- Delivery Ready: yes", rendered)
             self.assertIn("authority-review-expired", rendered)
             self.assertIn(expired.id, rendered)
             self.assertIn("authority-review-due-soon", rendered)
@@ -7536,8 +7539,18 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
             self.assertIn("open-candidate-promotion", rendered)
             self.assertIn(f"cmu promote {candidate.id}", rendered)
             self.assertTrue(any(reminder.priority == "P0" for reminder in report.reminders))
+            self.assertTrue(payload["delivery_ready"])
+            self.assertEqual(payload["schema"], "cmu-review-reminders/v1")
+            self.assertEqual(payload["mode"], "read-only-reminder-delivery")
+            self.assertEqual(payload["summary"]["total"], len(payload["reminders"]))
+            self.assertGreaterEqual(payload["summary"]["total"], 4)
+            self.assertGreaterEqual(payload["summary"]["urgent"], 3)
+            self.assertIn(f"cmu promote {candidate.id}", payload["commands"])
+            self.assertIn("authority-review-expired", {item["category"] for item in payload["reminders"]})
+            self.assertIn("open-decay-review", {item["category"] for item in payload["reminders"]})
+            self.assertTrue(all(item["command"] for item in payload["reminders"]))
 
-    def test_cli_review_reminders_is_read_only_and_uses_real_store(self) -> None:
+    def test_cli_review_reminders_json_is_read_only_and_uses_real_store(self) -> None:
         with TemporaryDirectory() as tmp:
             store = MemoryStore(tmp)
             memory = Memory.create(
@@ -7555,13 +7568,18 @@ class PracticeAnchorGovernanceTests(unittest.TestCase):
 
             output = StringIO()
             with redirect_stdout(output):
-                exit_code = main(["--root", tmp, "review-reminders", "--days", "30"])
+                exit_code = main(["--root", tmp, "review-reminders", "--days", "30", "--json"])
 
             self.assertEqual(exit_code, 0)
-            rendered = output.getvalue()
-            self.assertIn("CMU Review Reminders", rendered)
-            self.assertIn("authority-review-expired", rendered)
-            self.assertIn(memory.id, rendered)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["schema"], "cmu-review-reminders/v1")
+            self.assertTrue(payload["delivery_ready"])
+            self.assertEqual(payload["summary"]["total"], len(payload["reminders"]))
+            self.assertGreaterEqual(payload["summary"]["total"], 1)
+            self.assertGreaterEqual(payload["summary"]["p0"], 1)
+            self.assertIn("authority-review-expired", {item["category"] for item in payload["reminders"]})
+            self.assertIn(memory.id, {item["subject_id"] for item in payload["reminders"]})
+            self.assertTrue(any("cmu authority-set" in command for command in payload["commands"]))
             after = (Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8")
             self.assertEqual(after, before)
 

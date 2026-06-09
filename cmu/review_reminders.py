@@ -34,13 +34,54 @@ class ReviewReminder:
             lines.append(f"  Due: {self.due}")
         return "\n".join(lines)
 
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "priority": self.priority,
+            "category": self.category,
+            "subject_id": self.subject_id,
+            "title": self.title,
+            "reason": self.reason,
+            "command": self.command,
+            "due": self.due,
+        }
+
 
 @dataclass
 class ReviewRemindersReport:
     reminders: list[ReviewReminder] = field(default_factory=list)
     days: int = 14
 
+    @property
+    def delivery_ready(self) -> bool:
+        return all(reminder.command.strip() and reminder.subject_id.strip() for reminder in self.reminders)
+
+    def priority_counts(self) -> dict[str, int]:
+        return {
+            "P0": sum(1 for reminder in self.reminders if reminder.priority == "P0"),
+            "P1": sum(1 for reminder in self.reminders if reminder.priority == "P1"),
+            "P2": sum(1 for reminder in self.reminders if reminder.priority == "P2"),
+        }
+
+    def to_delivery_payload(self) -> dict[str, object]:
+        counts = self.priority_counts()
+        return {
+            "schema": REVIEW_REMINDERS_VERSION,
+            "mode": "read-only-reminder-delivery",
+            "due_window_days": self.days,
+            "delivery_ready": self.delivery_ready,
+            "summary": {
+                "total": len(self.reminders),
+                "p0": counts["P0"],
+                "p1": counts["P1"],
+                "p2": counts["P2"],
+                "urgent": counts["P0"] + counts["P1"],
+            },
+            "reminders": [reminder.to_dict() for reminder in self.reminders],
+            "commands": [reminder.command for reminder in self.reminders],
+        }
+
     def render(self) -> str:
+        counts = self.priority_counts()
         lines = [
             "CMU Review Reminders",
             f"Version: {REVIEW_REMINDERS_VERSION}",
@@ -49,9 +90,10 @@ class ReviewRemindersReport:
             "",
             "Summary:",
             f"- Total Reminders: {len(self.reminders)}",
-            f"- P0: {sum(1 for reminder in self.reminders if reminder.priority == 'P0')}",
-            f"- P1: {sum(1 for reminder in self.reminders if reminder.priority == 'P1')}",
-            f"- P2: {sum(1 for reminder in self.reminders if reminder.priority == 'P2')}",
+            f"- P0: {counts['P0']}",
+            f"- P1: {counts['P1']}",
+            f"- P2: {counts['P2']}",
+            f"- Delivery Ready: {'yes' if self.delivery_ready else 'no'}",
             "",
             "Reminders:",
         ]

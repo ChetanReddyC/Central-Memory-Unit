@@ -97,13 +97,21 @@ First lightweight review-reminders slice now implemented:
 - Automated tests verify expired, due-soon, unscheduled, and open Candidate-promotion reminders through real `MemoryStore`, `MemoryUseStore`, and CLI paths, including a read-only persisted-store check.
 - Manual verification under `.manual/review-reminders-proof` created a stable Practice memory with expired authority through `cmu add`, then confirmed `cmu review-reminders --days 30` reported a P0 `authority-review-expired` reminder without mutation.
 
+First machine-readable reminder delivery slice now implemented:
+
+- `cmu review-reminders --json` emits the same reminder digest as a structured delivery payload with schema version, read-only mode, delivery readiness, priority counts, urgent count, due metadata, subject ids, categories, and exact follow-up commands.
+- `cmu hardening-cycle` now points the review-reminder-delivery item at the JSON contract and checks delivery readiness instead of merely proving that human-readable reminder text renders.
+- The payload is still deliberately non-mutating: it does not renew authority, promote memories, resolve challenges, apply decay, link receipts, or send notifications.
+- Automated tests verify payload shape, combined authority/review-queue categories, CLI JSON parsing, read-only persisted-store behavior, and hardening-cycle JSON handoff through real stores, portable fixtures, and Git-backed temporary roots.
+- Manual verification under `.manual/reminder-delivery-proof` created a real expired stable Practice memory, confirmed the JSON digest stayed read-only, and confirmed a strict five-surface hardening-cycle pass using the JSON reminder-delivery contract.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows for approve, narrow, split, retire, strengthen, or challenge outcomes beyond command handoff cards.
 - Clear human review moments in non-CLI surfaces.
 - Better owner/team review flows.
-- Richer scheduling/notification delivery beyond lightweight CLI reminders.
+- Actual scheduling/notification delivery beyond the machine-readable reminder payload.
 
 ### 5. Memory Lifecycle Automation
 
@@ -290,6 +298,11 @@ First hardening-cycle adoption gate now implemented:
 - `cmu hardening-cycle --portable-fixture-dir <dir>` gives adopters one cautious pass/review report over the five current product-hardening tracks: team owner metadata, checkpoint evidence monitoring, fixture catalog coverage, portable compatibility fixtures, and review reminders.
 - The README and install-check now include the command so local adoption docs stay aligned with the live CLI.
 
+First non-CLI reminder delivery contract now implemented:
+
+- `cmu review-reminders --json` gives schedulers, hosts, and notification bridges a deterministic reminder payload instead of forcing them to scrape CLI prose.
+- `cmu hardening-cycle` now validates that reminder delivery contract as one of the five product-hardening checks.
+
 Still needed:
 
 - Published/package workflow beyond local built-distribution validation.
@@ -320,11 +333,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-`cmu hardening-cycle` now runs the five current product-hardening tracks as one read-only strict operator gate, and `cmu fixture-repo-create --kind billing-incident` expands the fixture catalog beyond checkout rollback. This cycle touched owner/team review metadata, evidence monitoring, fixture-host-path coverage, portable compatibility fixtures, and reminder delivery readiness with real tests and manual proof.
+`cmu review-reminders --json` now exposes reminder delivery as a deterministic machine-readable contract, and `cmu hardening-cycle` validates that JSON delivery readiness as its fifth product-hardening surface. This cycle deepened the reminder-delivery check without adding background mutation, notification side effects, or text-scraping shortcuts.
 
 Next best implementation slice:
 
-The next product-hardening slice should deepen one of the hardening-cycle checks into a stronger workflow: add richer owner/team review handoffs, expand evidence monitoring toward session/watch mode, run fixture-backed host-path suites through `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable fixture corpus with historical migration cases, or add a machine-readable reminder delivery surface. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should deepen one of the remaining hardening-cycle checks into a stronger workflow: add richer owner/team review handoffs, expand evidence monitoring toward session/watch mode, run fixture-backed host-path suites through `cmu runner-scenario`, `cmu codex-runner`, and `cmu scenario-compare`, grow the portable fixture corpus with historical migration cases, or connect the machine-readable reminder payload to a real scheduler/notification adapter. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

@@ -614,6 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review_reminders_parser = subparsers.add_parser("review-reminders", help="Show lightweight stable-memory review and approval reminders.")
     review_reminders_parser.add_argument("--days", type=int, default=14, help="Due-soon authority review window in days.")
+    review_reminders_parser.add_argument("--json", action="store_true", help="Render a machine-readable reminder delivery payload.")
     review_reminders_parser.set_defaults(func=cmd_review_reminders)
 
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
@@ -1767,7 +1768,10 @@ def cmd_review_reminders(args: argparse.Namespace, store: MemoryStore) -> int:
         team_scopes=TeamDirectoryStore(args.root).list(),
         days=args.days,
     )
-    print(report.render())
+    if args.json:
+        print(json.dumps(report.to_delivery_payload(), indent=2, sort_keys=True))
+    else:
+        print(report.render())
     return 0
 
 
