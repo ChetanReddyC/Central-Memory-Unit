@@ -15,6 +15,7 @@ from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
+from .evidence_watch import run_evidence_watch
 from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .governance import governance_report
 from .graphview import graph_memory_view_report
@@ -27,6 +28,7 @@ from .lifecycle import lifecycle_report
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
+from .openai_adapter import openai_runner_report
 from .pipeline import hybrid_pipeline_report
 from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle, validate_portable_bundle
 from .portable_compat import portable_compat_report
@@ -63,6 +65,7 @@ from .seed_plan import seed_plan_report
 from .setup import HOST_CHOICES, setup_guide
 from .store import MemoryStore
 from .team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
+from .team_review_action import apply_team_review_action
 from .team_review_handoff import team_review_handoffs
 from .traces import RawTrace, RawTraceStore, TraceDistillationReport, apply_distillation, distill_trace
 from .triggers import decide_trigger
@@ -163,6 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
     codex_runner_parser.add_argument("--json", action="store_true", help="Render the adapter manifest/result as JSON.")
     codex_runner_parser.set_defaults(func=cmd_codex_runner)
 
+    openai_runner_parser = subparsers.add_parser("openai-runner", help="Show or execute the OpenAI Agents host adapter for autonomous-runner events.")
+    openai_runner_parser.add_argument("--input", default="", help="Inline JSON event object.")
+    openai_runner_parser.add_argument("--input-file", default="", help="Read JSON event object from a file, or '-' for stdin.")
+    openai_runner_parser.add_argument("--json", action="store_true", help="Render the adapter manifest/result as JSON.")
+    openai_runner_parser.set_defaults(func=cmd_openai_runner)
+
     runner_scenario_parser = subparsers.add_parser("runner-scenario", help="Run a read-only autonomous-runner lifecycle scenario against an isolated store.")
     runner_scenario_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate through runner hooks.")
     runner_scenario_parser.add_argument("--actor", default="agent")
@@ -256,6 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     portable_seed_parser = subparsers.add_parser("portable-fixture-seed", help="Seed portable compatibility fixtures from the real CMU store.")
     portable_seed_parser.add_argument("--output", required=True, help="Directory to receive valid, invalid, future, and legacy bundle fixtures.")
     portable_seed_parser.add_argument("--overwrite", action="store_true", help="Allow writing into a non-empty fixture directory.")
+    portable_seed_parser.add_argument("--historical", action="store_true", help="Also seed a historical current-schema export fixture derived from the real store.")
     portable_seed_parser.set_defaults(func=cmd_portable_fixture_seed)
 
     hardening_cycle_parser = subparsers.add_parser("hardening-cycle", help="Run the five-surface CMU product-hardening operator gate.")
@@ -665,6 +675,16 @@ def build_parser() -> argparse.ArgumentParser:
     team_handoff_parser = subparsers.add_parser("team-review-handoff", help="Show focused owner/team review handoff cards.")
     team_handoff_parser.set_defaults(func=cmd_team_review_handoff)
 
+    team_action_parser = subparsers.add_parser("team-review-action", help="Apply a controlled owner/team handoff action.")
+    team_action_parser.add_argument("subject_id", help="Memory id or team-scope id from team-review-handoff.")
+    team_action_parser.add_argument("--action", choices=["authority", "team-metadata"], required=True)
+    team_action_parser.add_argument("--owner", default="")
+    team_action_parser.add_argument("--approved-by", default="")
+    team_action_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    team_action_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
+    team_action_parser.add_argument("--review-due", default="")
+    team_action_parser.set_defaults(func=cmd_team_review_action)
+
     quality_parser = subparsers.add_parser("quality", help="Show the read-only Memory Quality and Decay Model.")
     quality_parser.add_argument("--memory", default="", help="Limit quality view to one memory id.")
     quality_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
@@ -831,6 +851,17 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_session_parser.add_argument("--apply", action="store_true", help="Persist high-confidence clean checkpoint links.")
     evidence_session_parser.add_argument("--record", action="store_true", help="Record the session summary under .cmu/evidence_sessions.json.")
     evidence_session_parser.set_defaults(func=cmd_evidence_session)
+
+    evidence_watch_parser = subparsers.add_parser("evidence-watch", help="Run a bounded evidence-session watch loop for schedulers or hosts.")
+    evidence_watch_parser.add_argument("--cycles", type=int, default=1, help="Number of evidence-session cycles to run.")
+    evidence_watch_parser.add_argument("--interval", type=float, default=0.0, help="Seconds to wait between cycles.")
+    evidence_watch_parser.add_argument("--limit", type=int, default=20)
+    evidence_watch_parser.add_argument("--hours", type=int, default=72)
+    evidence_watch_parser.add_argument("--min-score", type=float, default=DEFAULT_MONITOR_MIN_SCORE)
+    evidence_watch_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MONITOR_MIN_CONFIDENCE)
+    evidence_watch_parser.add_argument("--apply", action="store_true", help="Apply clean high-confidence links in each cycle.")
+    evidence_watch_parser.add_argument("--record", action="store_true", help="Record each session summary under .cmu/evidence_sessions.json.")
+    evidence_watch_parser.set_defaults(func=cmd_evidence_watch)
 
     host_path_parser = subparsers.add_parser("host-path-suite", help="Run fixture-backed scenario, runner, Codex adapter, and compare host-path checks.")
     host_path_parser.add_argument("--work-dir", default="", help="Directory for generated fixture repositories. Defaults to a temporary directory.")
@@ -1164,6 +1195,30 @@ def cmd_codex_runner(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0 if report.result is None or report.result.ok else 1
 
 
+def cmd_openai_runner(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.input and args.input_file:
+        raise SystemExit("openai-runner accepts either --input or --input-file, not both")
+    event = None
+    if args.input or args.input_file:
+        raw_input = args.input
+        if args.input_file:
+            if args.input_file == "-":
+                raw_input = sys.stdin.read()
+            else:
+                raw_input = Path(args.input_file).read_text(encoding="utf-8-sig")
+        try:
+            event = json.loads(raw_input)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"openai-runner input must be valid JSON: {error.msg}") from error
+    report = openai_runner_report(args.root, event)
+    if args.json:
+        payload = {"root": report.root, "manifest": report.manifest, "result": report.result.to_dict() if report.result else None}
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
+    else:
+        print(report.render())
+    return 0 if report.result is None or report.result.ok else 1
+
+
 def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -1285,7 +1340,7 @@ def cmd_portable_compat(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_portable_fixture_seed(args: argparse.Namespace, store: MemoryStore) -> int:
     try:
-        report = seed_portable_fixtures(args.root, args.output, overwrite=args.overwrite)
+        report = seed_portable_fixtures(args.root, args.output, overwrite=args.overwrite, include_historical=args.historical)
     except ValueError as error:
         raise SystemExit(f"portable-fixture-seed failed: {error}") from error
     print(report.render())
@@ -1887,6 +1942,21 @@ def cmd_team_review_handoff(args: argparse.Namespace, store: MemoryStore) -> int
     return 0
 
 
+def cmd_team_review_action(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = apply_team_review_action(
+        args.root,
+        args.subject_id,
+        action=args.action,
+        owner=args.owner,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+        consequence=args.consequence,
+        review_due=args.review_due,
+    )
+    print(report.render())
+    return 0 if report.applied else 1
+
+
 def cmd_quality(args: argparse.Namespace, store: MemoryStore) -> int:
     memories = store.list()
     if args.include_retired:
@@ -2167,6 +2237,27 @@ def cmd_evidence_session(args: argparse.Namespace, store: MemoryStore) -> int:
         apply=args.apply,
         record=args.record,
     )
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_evidence_watch(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = run_evidence_watch(
+            args.root,
+            store.list(),
+            MemoryUseStore(args.root).list(),
+            cycles=args.cycles,
+            interval_seconds=args.interval,
+            limit=args.limit,
+            hours=args.hours,
+            min_score=args.min_score,
+            min_confidence=args.min_confidence,
+            apply=args.apply,
+            record=args.record,
+        )
+    except ValueError as error:
+        raise SystemExit(f"evidence-watch failed: {error}") from error
     print(report.render())
     return 0 if report.ok else 1
 

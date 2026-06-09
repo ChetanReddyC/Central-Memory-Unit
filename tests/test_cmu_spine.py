@@ -20,6 +20,7 @@ from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
 from cmu.evidence_session import run_evidence_session
+from cmu.evidence_watch import run_evidence_watch
 from cmu.fixture_repos import create_fixture_repo
 from cmu.hardening_cycle import hardening_cycle_report
 from cmu.host_path_suite import run_host_path_suite
@@ -27,6 +28,7 @@ from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, instal
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
+from cmu.openai_adapter import OPENAI_RUNNER_ADAPTER_VERSION, OpenAIRunnerAdapter, openai_runner_report
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from cmu.portable_compat import portable_compat_report
 from cmu.portable_fixture_seed import seed_portable_fixtures
@@ -54,6 +56,7 @@ from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
 from cmu.team_directory import TeamDirectoryStore, TeamScopeRecord, team_directory_report
+from cmu.team_review_action import apply_team_review_action
 from cmu.team_review_handoff import team_review_handoffs
 from cmu.traces import RawTraceStore
 from cmu.triggers import decide_trigger
@@ -9241,6 +9244,166 @@ class CodexRunnerAdapterTests(unittest.TestCase):
             self.assertEqual(MemoryUseStore(tmp).list(), [])
 
 
+class OpenAIRunnerAdapterTests(unittest.TestCase):
+    def test_openai_runner_manifest_is_read_only_and_maps_events_to_hooks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            before_memories = MemoryStore(tmp).list()
+            before_receipts = MemoryUseStore(tmp).list()
+
+            report = openai_runner_report(tmp)
+            rendered = report.render()
+
+            self.assertEqual(report.manifest["version"], OPENAI_RUNNER_ADAPTER_VERSION)
+            self.assertEqual(report.manifest["host"], "openai")
+            self.assertEqual(
+                [(event["event"], event["hook"], event["mutates"]) for event in report.manifest["events"]],
+                [
+                    ("openai.run.started", "before_task", True),
+                    ("openai.run.completed", "after_task", True),
+                    ("openai.checkpoint.created", "after_checkpoint", True),
+                    ("openai.review.requested", "review", False),
+                ],
+            )
+            self.assertIn("CMU OpenAI Runner Adapter", rendered)
+            self.assertIn("Proof Meaning: OpenAI Agents-style run events", rendered)
+            self.assertIsNone(report.result)
+            self.assertEqual(MemoryStore(tmp).list(), before_memories)
+            self.assertEqual(MemoryUseStore(tmp).list(), before_receipts)
+
+    def test_openai_runner_task_lifecycle_uses_real_store_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="OpenAI runner adapter delegates to CMU hooks",
+                summary="OpenAI Agents-style runner events should enter CMU through the host adapter and existing hooks.",
+                signals=["openai runner", "host adapter"],
+                scope=MemoryScope(code=["cmu/openai_adapter.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["The adapter should translate host events without duplicating memory logic."],
+                use_this_path="Route OpenAI run lifecycle events through the adapter.",
+                avoid_this="Do not create a separate OpenAI memory path outside AutonomousRunnerHooks.",
+                challenge_only_if="The host uses MCP or SDK directly with the same lifecycle semantics.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            adapter = OpenAIRunnerAdapter(tmp)
+
+            started = adapter.handle(
+                {
+                    "event": "run.started",
+                    "payload": {
+                        "input": "wire OpenAI runner host adapter",
+                        "actor": "agent",
+                        "area": "cmu",
+                        "files": ["cmu/openai_adapter.py"],
+                        "workflow": ["agent integration"],
+                        "risk": "high",
+                    },
+                }
+            )
+
+            self.assertTrue(started.ok)
+            self.assertEqual(started.status, "action-note")
+            self.assertEqual(started.hook_result["hook"], "before_task")
+            use_id = started.hook_result["response"]["receipt"]["id"]
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.id, use_id)
+
+            learned = adapter.handle(
+                {
+                    "event": "openai.run.completed",
+                    "payload": {
+                        "reusable_learning": True,
+                        "title": "OpenAI adapter uses the common runner hook contract",
+                        "situation": "Host adapters should translate runtime events while leaving CMU logic in hooks.",
+                        "signals": ["openai runner", "host adapter"],
+                        "outcome": "The adapter can handle start, finish, checkpoint, and review events.",
+                        "worked": "Normalize OpenAI event JSON and call AutonomousRunnerHooks.",
+                        "failed": "Adding OpenAI-only memory logic would bypass existing receipt and Candidate gates.",
+                        "future_use": "Use this adapter pattern for future host-specific runner integrations.",
+                        "evidence": ["The test verifies persisted Candidate Memory through MemoryStore."],
+                        "liability_score": 4,
+                        "scope": {"code": ["cmu/openai_adapter.py"], "workflow": ["agent integration"], "actor": ["agent"]},
+                        "confidence": 0.85,
+                    },
+                }
+            )
+            self.assertTrue(learned.ok)
+            self.assertEqual(learned.status, "candidate-saved")
+            self.assertEqual(len(MemoryStore(tmp).list(type=MemoryType.CANDIDATE)), 1)
+
+            linked = adapter.handle(
+                {
+                    "event": "checkpoint.created",
+                    "payload": {
+                        "use_id": use_id,
+                        "manual_commit": {
+                            "hash": "openai123",
+                            "message": "Add OpenAI runner adapter",
+                            "files": ["cmu/openai_adapter.py", "tests/test_cmu_spine.py"],
+                        },
+                    },
+                }
+            )
+            self.assertTrue(linked.ok)
+            self.assertEqual(linked.status, "checkpoint-linked")
+            self.assertEqual(MemoryUseStore(tmp).get(use_id).commit_hash, "openai123")
+
+            reviewed = adapter.handle({"event": "review.requested", "payload": {"memory_id": practice.id}})
+            self.assertTrue(reviewed.ok)
+            self.assertEqual(reviewed.status, "review-ready")
+            self.assertFalse(reviewed.hook_result["mutates"])
+
+    def test_cli_openai_runner_executes_json_event_and_reports_invalid_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="OpenAI runner CLI can execute host events",
+                summary="The openai-runner command should execute JSON host events through the adapter.",
+                signals=["openai runner", "cli"],
+                scope=MemoryScope(code=["cmu/openai_adapter.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["CLI adapter proof should touch the same receipt store as direct adapter use."],
+                use_this_path="Use cmu openai-runner --input for a local host event proof.",
+                avoid_this="Do not judge host integration from manifest output only.",
+                challenge_only_if="The host uses MCP or SDK directly.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+            event = {
+                "event": "run.started",
+                "payload": {
+                    "input": "execute OpenAI runner CLI event",
+                    "actor": "agent",
+                    "area": "cmu",
+                    "files": ["cmu/openai_adapter.py"],
+                    "workflow": ["agent integration"],
+                    "risk": "high",
+                },
+            }
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "openai-runner", "--input", json.dumps(event), "--json"])
+            payload = json.loads(output.getvalue())
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["manifest"]["version"], OPENAI_RUNNER_ADAPTER_VERSION)
+            self.assertEqual(payload["result"]["event"], "openai.run.started")
+            self.assertEqual(payload["result"]["status"], "action-note")
+            self.assertEqual(len(MemoryUseStore(tmp).list()), 1)
+
+            bad_output = StringIO()
+            with redirect_stdout(bad_output):
+                bad_exit = main(["--root", tmp, "openai-runner", "--input", json.dumps({"event": "openai.unknown"}), "--json"])
+            bad_payload = json.loads(bad_output.getvalue())
+            self.assertEqual(bad_exit, 1)
+            self.assertEqual(bad_payload["result"]["status"], "invalid-event")
+            self.assertIn("Unknown OpenAI runner event", bad_payload["result"]["error"])
+
+
 class RunnerScenarioEvidenceTests(unittest.TestCase):
     def test_runner_scenario_runs_full_lifecycle_in_isolated_store_without_source_mutation(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -10772,6 +10935,54 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0, output.getvalue())
             self.assertIn("CMU Evidence Session", output.getvalue())
 
+    def test_evidence_watch_runs_bounded_cycles_and_records_sessions(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            write_and_commit(tmp, "billing/watch.py", "watch = true\n", "Fix billing watch")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Watch billing evidence after commits",
+                summary="Evidence watch should link clean receipts after matching commits.",
+                signals=["billing", "watch"],
+                scope=MemoryScope(code=["billing"], workflow=["deployment"], actor=["agent"]),
+                liability_score=5,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Fix billing watch", actor="agent", area="billing", files=["billing/watch.py"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.2})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=30)
+            MemoryUseStore(tmp).add(receipt)
+
+            report = run_evidence_watch(
+                tmp,
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                cycles=2,
+                apply=True,
+                record=True,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(len(report.cycles), 2)
+            self.assertEqual(report.cycles[0].linked, 1)
+            self.assertEqual(report.cycles[1].linked, 0)
+            [linked] = MemoryUseStore(tmp).list()
+            self.assertEqual(linked.commit_hash, metadata.commit_hash)
+            session_data = json.loads((Path(tmp) / ".cmu" / "evidence_sessions.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(session_data["sessions"]), 2)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-watch", "--cycles", "1", "--record"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Evidence Watch", output.getvalue())
+
     def test_reminder_delivery_writes_jsonl_outbox_only_with_apply(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
@@ -10803,7 +11014,60 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(event["payload"]["schema"], "cmu-review-reminders/v1")
             self.assertGreaterEqual(event["payload"]["summary"]["total"], 1)
 
-    def test_portable_fixture_seed_creates_current_invalid_future_and_legacy_fixtures(self) -> None:
+    def test_team_review_action_applies_authority_and_team_metadata_handoffs(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Authority handoff should have an apply path",
+                summary="Stable memory authority handoff should be explicit and controlled.",
+                scope=MemoryScope(ownership=["Release team"], code=["deploy"]),
+                liability_score=4,
+                approved_by="legacy release owner",
+            )
+            MemoryStore(tmp).add(memory)
+            team = TeamScopeRecord.create(repo="checkout", team="Release", owner="", code=["checkout"])
+            TeamDirectoryStore(tmp).add(team)
+
+            authority = apply_team_review_action(
+                tmp,
+                memory.id,
+                action="authority",
+                owner="Release team",
+                approved_by="Release owner",
+                approver_role="owner",
+                consequence="high",
+                review_due="2026-12-31T00:00:00+00:00",
+            )
+            self.assertTrue(authority.applied, authority.render())
+            loaded = MemoryStore(tmp).list()[0]
+            self.assertEqual(loaded.authority_owner, "Release team")
+            self.assertEqual(loaded.authority_role, "owner")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "team-review-action",
+                        team.id,
+                        "--action",
+                        "team-metadata",
+                        "--owner",
+                        "Release team",
+                        "--approver-role",
+                        "owner",
+                        "--consequence",
+                        "high",
+                    ]
+                )
+            self.assertEqual(exit_code, 0, output.getvalue())
+            [updated_team] = TeamDirectoryStore(tmp).list()
+            self.assertEqual(updated_team.owner, "Release team")
+            self.assertEqual(updated_team.authority_role, "owner")
+            self.assertIn("CMU Team Review Action Applied", output.getvalue())
+
+    def test_portable_fixture_seed_creates_current_historical_invalid_future_and_legacy_fixtures(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(
                 type=MemoryType.SITUATION,
@@ -10813,25 +11077,34 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             MemoryStore(tmp).add(memory)
             fixture_dir = Path(tmp) / "fixtures"
 
-            report = seed_portable_fixtures(tmp, fixture_dir)
+            report = seed_portable_fixtures(tmp, fixture_dir, include_historical=True)
             compat = portable_compat_report(fixture_dir)
 
             self.assertEqual(
                 sorted(report.files),
                 [
                     "future-v999-export.json",
+                    "historical-2024-current-schema-export.json",
                     "invalid-missing-memories.json",
                     "legacy-v0-export.json",
                     "valid-current-export.json",
                 ],
             )
             self.assertTrue(compat.passed, compat.render())
+            self.assertIn("historical current-schema fixture still validates", compat.render())
             self.assertIn("legacy schema fixture failed validation", compat.render())
 
             output = StringIO()
             with redirect_stdout(output):
                 exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
             self.assertEqual(exit_code, 0, output.getvalue())
+
+            cli_dir = Path(tmp) / "cli-fixtures"
+            seed_output = StringIO()
+            with redirect_stdout(seed_output):
+                seed_exit = main(["--root", tmp, "portable-fixture-seed", "--output", str(cli_dir), "--historical"])
+            self.assertEqual(seed_exit, 0, seed_output.getvalue())
+            self.assertTrue((cli_dir / "historical-2024-current-schema-export.json").exists())
 
     def test_host_path_suite_runs_fixture_scenarios_runner_codex_and_compare(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -10843,7 +11116,9 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertTrue(all(item.scenario_passed for item in report.items))
             self.assertTrue(all(item.runner_passed for item in report.items))
             self.assertTrue(all(item.codex_ok for item in report.items))
+            self.assertTrue(all(item.openai_ok for item in report.items))
             self.assertTrue(all(item.comparison_class == "unchanged-pass" for item in report.items))
+            self.assertIn("openai=pass", rendered)
             self.assertIn("CMU Host Path Suite", rendered)
 
             output = StringIO()

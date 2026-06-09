@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from .codex_adapter import CodexRunnerAdapter
 from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .models import MemoryStatus
+from .openai_adapter import OpenAIRunnerAdapter
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import ScenarioLibraryStore, compare_scenario_library, run_scenario_library
 from .store import MemoryStore
@@ -22,12 +23,19 @@ class HostPathSuiteItem:
     scenario_passed: bool
     runner_passed: bool
     codex_ok: bool
+    openai_ok: bool
     comparison_class: str
     fixture_root: str
 
     @property
     def passed(self) -> bool:
-        return self.scenario_passed and self.runner_passed and self.codex_ok and self.comparison_class == "unchanged-pass"
+        return (
+            self.scenario_passed
+            and self.runner_passed
+            and self.codex_ok
+            and self.openai_ok
+            and self.comparison_class == "unchanged-pass"
+        )
 
     def render(self) -> str:
         return (
@@ -35,6 +43,7 @@ class HostPathSuiteItem:
             f"scenario={'pass' if self.scenario_passed else 'fail'} "
             f"runner={'pass' if self.runner_passed else 'fail'} "
             f"codex={'pass' if self.codex_ok else 'fail'} "
+            f"openai={'pass' if self.openai_ok else 'fail'} "
             f"compare={self.comparison_class}"
         )
 
@@ -52,7 +61,7 @@ class HostPathSuiteReport:
         lines = [
             "CMU Host Path Suite",
             f"Version: {HOST_PATH_SUITE_VERSION}",
-            "Mode: fixture-backed host-path suite using scenario-run, runner-scenario, codex-runner adapter, and scenario-compare behavior.",
+            "Mode: fixture-backed host-path suite using scenario-run, runner-scenario, Codex/OpenAI host adapters, and scenario-compare behavior.",
             f"Work Dir: {self.work_dir}",
             f"Status: {'pass' if self.passed else 'review'}",
             "",
@@ -62,7 +71,7 @@ class HostPathSuiteReport:
         lines.extend(
             [
                 "",
-                "Proof Meaning: generated repo fixtures now exercise the same memory behavior through library scenarios, autonomous runner hooks, Codex-style host events, and before/after comparison.",
+                "Proof Meaning: generated repo fixtures now exercise the same memory behavior through library scenarios, autonomous runner hooks, Codex-style events, OpenAI Agents-style events, and before/after comparison.",
             ]
         )
         return "\n".join(lines)
@@ -123,6 +132,21 @@ def _run_suite(root: Path) -> HostPathSuiteReport:
                 },
             }
         )
+        openai_result = OpenAIRunnerAdapter(fixture_root).handle(
+            {
+                "event": "openai.run.started",
+                "payload": {
+                    "input": scenario.prompt,
+                    "actor": scenario.actor,
+                    "area": scenario.area,
+                    "files": scenario.files,
+                    "workflow": scenario.workflow,
+                    "environment": scenario.environment,
+                    "risk": scenario.risk,
+                    "irreversible": scenario.irreversible,
+                },
+            }
+        )
         comparison = compare_scenario_library(
             scenarios,
             baseline_memories=memories,
@@ -139,6 +163,7 @@ def _run_suite(root: Path) -> HostPathSuiteReport:
                 scenario_passed=bool(scenario_report.items) and not scenario_report.has_review_items(),
                 runner_passed=runner_report.passed,
                 codex_ok=codex_result.ok and codex_result.status == "action-note",
+                openai_ok=openai_result.ok and openai_result.status == "action-note",
                 comparison_class=comparison.items[0].classification if comparison.items else "missing",
                 fixture_root=str(fixture_root),
             )

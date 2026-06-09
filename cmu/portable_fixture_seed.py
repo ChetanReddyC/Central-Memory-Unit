@@ -33,7 +33,13 @@ class PortableFixtureSeedReport:
         return "\n".join(lines)
 
 
-def seed_portable_fixtures(root: Path | str, output: Path | str, *, overwrite: bool = False) -> PortableFixtureSeedReport:
+def seed_portable_fixtures(
+    root: Path | str,
+    output: Path | str,
+    *,
+    overwrite: bool = False,
+    include_historical: bool = False,
+) -> PortableFixtureSeedReport:
     target = Path(output)
     if target.exists() and any(target.iterdir()) and not overwrite:
         raise ValueError("portable fixture output directory already exists and is not empty")
@@ -42,6 +48,11 @@ def seed_portable_fixtures(root: Path | str, output: Path | str, *, overwrite: b
     current = json.loads(bundle.render_json())
     files: list[str] = []
     write_json(target / "valid-current-export.json", current, files)
+    if include_historical:
+        historical = dict(current)
+        historical["exported_at"] = "2024-01-01T00:00:00+00:00"
+        historical["warnings"] = list(historical.get("warnings", [])) + ["historical fixture derived from a real current-schema export"]
+        write_json(target / "historical-2024-current-schema-export.json", historical, files)
     invalid = dict(current)
     invalid.pop("contents", None)
     write_json(target / "invalid-missing-memories.json", invalid, files)

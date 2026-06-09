@@ -93,6 +93,13 @@ class TeamDirectoryStore:
             lambda data: append_record(data, record),
         )
 
+    def update(self, record: TeamScopeRecord) -> TeamScopeRecord:
+        return update_json(
+            self.store_file,
+            {"version": 1, "team_scopes": []},
+            lambda data: replace_record(data, record),
+        )
+
     def list(self) -> list[TeamScopeRecord]:
         return sorted(
             [TeamScopeRecord.from_dict(item) for item in self._read()["team_scopes"]],
@@ -191,6 +198,15 @@ def memory_matches_record(memory: Memory, record: TeamScopeRecord) -> bool:
 def append_record(data: dict, record: TeamScopeRecord) -> TeamScopeRecord:
     data["team_scopes"].append(record.to_dict())
     return record
+
+
+def replace_record(data: dict, record: TeamScopeRecord) -> TeamScopeRecord:
+    records = data["team_scopes"]
+    for index, current in enumerate(records):
+        if current["id"] == record.id:
+            records[index] = record.to_dict()
+            return record
+    raise KeyError(f"Team scope not found: {record.id}")
 
 
 def overlaps(left: list[str], right: list[str]) -> bool:

@@ -47,6 +47,14 @@ First Codex host-adapter slice now implemented:
 - Automated tests verify read-only manifest behavior, action-note receipt creation, Candidate persistence, manual checkpoint linking, read-only review, CLI JSON execution, invalid-event handling, and UTF-8 BOM input-file handling against real stores.
 - Manual verification confirmed the adapter contract, low-risk `silent-skip` event behavior, BOM-tolerant input-file execution, and `install-check` adoption validation.
 
+First OpenAI Agents-style host-adapter slice now implemented:
+
+- `cmu.openai_adapter.OpenAIRunnerAdapter` translates OpenAI Agents-style JSON run events into the existing autonomous runner hooks.
+- `cmu openai-runner` renders the adapter contract read-only with no input and executes `openai.run.started`, `openai.run.completed`, `openai.checkpoint.created`, and `openai.review.requested` events with JSON input.
+- The adapter delegates to `AutonomousRunnerHooks`, so OpenAI-style host wiring still uses the real trigger, retrieval, receipt, Candidate Memory, checkpoint, and review paths.
+- Automated tests verify read-only manifest behavior, action-note receipt creation, Candidate persistence, manual checkpoint linking, read-only review, CLI JSON execution, and invalid-event handling against real stores.
+- Manual verification under `.manual/five-slice-proof/evidence-openai-file` confirmed `openai-runner --input-file` surfaced a real Action Note and created receipt `use_3cbcb25eb439`.
+
 First before/after scenario comparison slice now implemented:
 
 - `cmu scenario-compare` runs saved scenario-library cases against a baseline CMU root and the current CMU root, then classifies each case as regressed, improved, changed, or unchanged.
@@ -59,9 +67,15 @@ First fixture-backed host-path suite slice now implemented:
 - `--strict` exits non-zero unless every generated fixture passes all four host-path checks, giving runner and adapter changes a concrete repo-shaped regression gate instead of only manifest validation.
 - Automated tests verify both checkout-release and billing-incident fixtures through the real suite path. Manual verification under `.manual/host-path-suite-proof` passed both fixtures with scenario, runner, Codex adapter, and unchanged comparison checks.
 
+Host-path suite second-adapter coverage now implemented:
+
+- `cmu host-path-suite` now also executes the OpenAI Agents-style adapter for every generated fixture.
+- `--strict` fails unless saved scenarios, isolated runner hooks, Codex events, OpenAI events, and unchanged before/after comparisons all pass.
+- Automated tests assert `openai=pass` for both generated fixture kinds. Manual verification under `.manual/five-slice-proof/host-path-suite` passed checkout-release and billing-incident with scenario, runner, Codex, OpenAI, and compare checks.
+
 Still needed:
 
-- Additional host-specific runner adapters for common autonomous agent runtimes.
+- Additional host-specific runner adapters beyond Codex-style and OpenAI Agents-style events.
 - Host-specific MCP setup polish.
 - Deeper IDE/coding-agent integration.
 - Integration examples for common agent runtimes.
@@ -84,9 +98,15 @@ First evidence session workflow slice now implemented:
 - The session record stores linked/review/skipped counts and item ids without weakening the existing WIP, delayed, ambiguous, or low-confidence review gates.
 - Automated tests verify clean-link apply plus real session-record persistence through a Git-backed store. Manual verification under `.manual/evidence-session-proof` surfaced a real receipt through `cmu start`, committed matching work, and linked `use_edcad18f6949` to commit `1c1e19c` with `cmu evidence-session --apply --record`.
 
+First bounded evidence watch loop slice now implemented:
+
+- `cmu evidence-watch` runs one or more bounded `evidence-session` cycles for schedulers and long-running hosts.
+- The watch loop applies only the same clean high-confidence checkpoint links as `evidence-session`, can record every cycle, refreshes receipt state between cycles, and rejects invalid cycle/interval inputs.
+- Automated tests verify a two-cycle Git-backed watch where the first cycle links a real receipt and the second cycle observes no remaining unlinked receipt. Manual verification under `.manual/five-slice-proof/evidence-openai-file` linked receipt `use_3cbcb25eb439` to commit `7206c14` and recorded two evidence sessions.
+
 Still needed:
 
-- Background daemon/watch mode beyond on-demand `cmu evidence-monitor`.
+- Unbounded background daemon/service mode beyond bounded `cmu evidence-watch`.
 - Broader automatic receipt-to-checkpoint linking policy across long-running work sessions.
 - Richer documentation-only and multi-commit handling beyond the current clean/risky monitor gate.
 - Longitudinal evidence that tracks whether memory saved time, reduced mistakes, or created drag.
@@ -123,12 +143,18 @@ First owner/team handoff and outbox delivery slices now implemented:
 - `cmu reminder-delivery` writes the existing machine-readable reminder payload to a local JSONL notification outbox only with `--apply`, giving schedulers a durable handoff event without applying governance decisions.
 - Automated tests verify both surfaces through real stores and CLI paths, including read-only handoff behavior and preview-vs-apply outbox delivery. Manual verification on the workspace rendered an empty handoff queue and wrote `.manual/reminder-delivery-proof/outbox.jsonl` with two urgent reminders.
 
+First controlled owner/team handoff apply slice now implemented:
+
+- `cmu team-review-action` applies explicit owner/team handoff outcomes for two currently safe card classes: stable-memory authority metadata and team-scope owner/review metadata.
+- Stable-memory authority uses the existing `set_memory_authority` permission gate; team-scope metadata updates the real local team directory record instead of creating duplicate boundaries.
+- Automated tests verify both action types through real `MemoryStore`, `TeamDirectoryStore`, and CLI paths. Manual verification under `.manual/five-slice-proof/team-action` applied authority to `mem_909041ccdc28` and updated team scope `team_d63d4a08397b`.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
-- Deeper controlled UX flows for approve, narrow, split, retire, strengthen, or challenge outcomes beyond command handoff cards.
+- Deeper controlled UX flows for narrow, split, retire, strengthen, or challenge outcomes beyond the first authority/team-metadata handoff apply path.
 - Clear human review moments in non-CLI surfaces.
-- Better owner/team review flows.
+- Better owner/team review flows beyond local metadata handoff application.
 - Actual scheduling/notification delivery beyond the machine-readable reminder payload.
 
 ### 5. Memory Lifecycle Automation
@@ -317,6 +343,12 @@ First portable fixture corpus seeding slice now implemented:
 - `cmu portable-compat` now recognizes `legacy-*.json` fixtures and requires them to fail safely instead of being silently imported under the current schema.
 - Automated tests verify fixture seeding and compatibility through the real export/validate path. Manual verification under `.manual/portable-fixture-seed-proof` seeded all four fixture classes and confirmed `cmu portable-compat` passed them.
 
+First historical portable fixture slice now implemented:
+
+- `cmu portable-fixture-seed --historical` adds a `historical-*.json` current-schema export derived from the real store.
+- `cmu portable-compat` now recognizes `historical-*.json` fixtures and requires them to validate under the current bundle schema, giving the corpus a saved older-export class without importing it.
+- Automated tests verify historical fixture creation and compatibility through the real export/validate path. Manual verification under `.manual/five-slice-proof/portable-history-fixtures` passed valid, historical, invalid, future, and legacy fixtures.
+
 First hardening-cycle adoption gate now implemented:
 
 - `cmu hardening-cycle --portable-fixture-dir <dir>` gives adopters one cautious pass/review report over the five current product-hardening tracks: team owner metadata, checkpoint evidence monitoring, fixture catalog coverage, portable compatibility fixtures, and review reminders.
@@ -330,7 +362,7 @@ First non-CLI reminder delivery contract now implemented:
 Still needed:
 
 - Published/package workflow beyond local built-distribution validation.
-- Broader portable bundle fixture corpus across future schema migrations and historical real-world bundles.
+- Broader portable bundle fixture corpus across future schema migrations and more historical real-world bundles.
 
 ## Strategic Priority Order
 
@@ -357,11 +389,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU capabilities end to end: `team-review-handoff`, `evidence-session`, `reminder-delivery`, `portable-fixture-seed` plus legacy portable compatibility, and `host-path-suite`. Each slice has real code, CLI wiring, tests, and manual verification against stores, Git, generated fixtures, or outbox files.
+This cycle implemented five concrete unfinished CMU capabilities end to end: `evidence-watch`, `openai-runner`, OpenAI coverage inside `host-path-suite`, `portable-fixture-seed --historical` plus `historical-*` compatibility, and `team-review-action`. Each slice has real code, CLI wiring, tests, and manual verification against stores, Git, generated fixtures, host adapters, or team-scope records.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these new workflow surfaces from local proof to richer operation: add a real watch loop around `evidence-session`, add another host adapter beyond Codex and include it in `host-path-suite`, add historical portable fixtures from real older bundles, or build an interactive review surface that can approve/narrow/split/retire from `team-review-handoff` cards. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, seed more historical portable fixtures from older real bundles, or extend `team-review-action` into controlled narrow/split/retire/strengthen/challenge outcomes. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

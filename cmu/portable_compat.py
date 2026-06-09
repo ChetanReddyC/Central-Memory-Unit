@@ -61,7 +61,7 @@ class PortableCompatReport:
         lines.extend(
             [
                 "",
-                "Proof Meaning: portable bundle compatibility is now checked against saved fixtures, including current valid bundles, intentionally invalid bundles, and future-schema bundles that must fail safely.",
+                "Proof Meaning: portable bundle compatibility is now checked against saved fixtures, including current valid bundles, historical current-schema exports, intentionally invalid bundles, and future-schema bundles that must fail safely.",
             ]
         )
         return "\n".join(lines)
@@ -106,6 +106,10 @@ def evaluate_fixture(path: Path) -> PortableCompatFixture:
         if validation.valid and schema == PORTABLE_BUNDLE_VERSION:
             return PortableCompatFixture(path, expectation, schema, "pass", "current schema validates")
         return PortableCompatFixture(path, expectation, schema, "fail", "; ".join(validation.errors) or "valid fixture did not validate")
+    if expectation == "historical":
+        if validation.valid and schema == PORTABLE_BUNDLE_VERSION:
+            return PortableCompatFixture(path, expectation, schema, "pass", "historical current-schema fixture still validates")
+        return PortableCompatFixture(path, expectation, schema, "fail", "; ".join(validation.errors) or "historical fixture did not validate")
     if expectation == "invalid":
         if not validation.valid:
             return PortableCompatFixture(path, expectation, schema, "pass", "invalid fixture failed validation as expected")
@@ -119,12 +123,12 @@ def evaluate_fixture(path: Path) -> PortableCompatFixture:
         if not validation.valid and schema and schema != PORTABLE_BUNDLE_VERSION:
             return PortableCompatFixture(path, expectation, schema, "pass", "legacy schema fixture failed validation instead of importing silently")
         return PortableCompatFixture(path, expectation, schema, "fail", "legacy fixture did not fail safely")
-    return PortableCompatFixture(path, expectation, schema, "fail", "fixture filename must start with valid-, invalid-, or future-")
+    return PortableCompatFixture(path, expectation, schema, "fail", "fixture filename must start with valid-, historical-, invalid-, legacy-, or future-")
 
 
 def expectation_for_path(path: Path) -> str:
     name = path.name.lower()
-    for expectation in ["valid", "invalid", "future", "legacy"]:
+    for expectation in ["valid", "historical", "invalid", "future", "legacy"]:
         if name.startswith(f"{expectation}-"):
             return expectation
     return "unknown"
