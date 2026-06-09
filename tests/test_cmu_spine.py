@@ -11067,6 +11067,161 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(updated_team.authority_role, "owner")
             self.assertIn("CMU Team Review Action Applied", output.getvalue())
 
+    def test_team_review_action_applies_challenge_strengthen_retire_split_and_narrow_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Controlled handoff outcomes need stable guardrails",
+                summary="Owner/team review actions should mutate stable memory only through explicit controlled outcomes.",
+                signals=["owner handoff", "stable review"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Review queue surfaced a stable-memory owner action."],
+                use_this_path="Apply owner/team outcomes through CMU controlled actions.",
+                avoid_this="Do not hand-edit stable memory JSON for review outcomes.",
+                challenge_only_if="A lower-level explicit command already captures the same approved outcome.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            store.add(memory)
+
+            challenge = apply_team_review_action(
+                tmp,
+                memory.id,
+                action="challenge",
+                mismatch="The stable guidance might be too broad for tiny local edits.",
+                benefit="Review whether tiny edits should bypass this stable guidance.",
+                risk="Too much bypassing would hide consequential review moments.",
+                rollback="Keep the stable guidance for structural CMU work.",
+                challenged_by="release owner",
+                evidence=["Tiny local edits produced repeated review noise."],
+            )
+            self.assertTrue(challenge.applied, challenge.render())
+            self.assertIsNotNone(challenge.challenge_memory)
+            assert challenge.challenge_memory is not None
+            candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].id, challenge.challenge_memory.id)
+
+            strengthened = apply_team_review_action(
+                tmp,
+                challenge.challenge_memory.id,
+                action="strengthen",
+                approved_by="CMU core owner",
+            )
+            self.assertTrue(strengthened.applied, strengthened.render())
+            loaded = next(item for item in MemoryStore(tmp).list() if item.id == memory.id)
+            self.assertIn(f"Challenge reviewed and precedent strengthened: {challenge.challenge_memory.id}", loaded.evidence)
+            self.assertEqual(
+                MemoryStore(tmp).list(type=MemoryType.CANDIDATE, status=MemoryStatus.RETIRED)[0].id,
+                challenge.challenge_memory.id,
+            )
+
+            retire_challenge = apply_team_review_action(
+                tmp,
+                memory.id,
+                action="challenge",
+                mismatch="A retired path is needed for an obsolete workflow.",
+                benefit="Stop surfacing obsolete stable guidance.",
+                risk="Retiring without evidence could remove useful guidance.",
+                rollback="Restore from the retired memory evidence if the workflow returns.",
+                evidence=["The workflow was removed from active development."],
+            )
+            self.assertTrue(retire_challenge.applied, retire_challenge.render())
+            assert retire_challenge.challenge_memory is not None
+            retired = apply_team_review_action(
+                tmp,
+                retire_challenge.challenge_memory.id,
+                action="retire",
+                approved_by="CMU core owner",
+                retirement_reason="The workflow has been removed from active CMU development.",
+                evidence=["Owner review confirmed the workflow is obsolete."],
+            )
+            self.assertTrue(retired.applied, retired.render())
+            retired_memory = next(item for item in MemoryStore(tmp).list(status=MemoryStatus.RETIRED) if item.id == memory.id)
+            self.assertEqual(retired_memory.id, memory.id)
+            self.assertIn("Retirement reason: The workflow has been removed from active CMU development.", retired_memory.evidence)
+
+            split_base = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Review handoff split base",
+                summary="Broad review handoff guidance sometimes needs a split stable memory.",
+                signals=["handoff split"],
+                scope=MemoryScope(code=["cmu"], workflow=["implementation"], actor=["agent"]),
+                evidence=["A split review case appeared in the owner queue."],
+                use_this_path="Keep the general owner handoff path.",
+                avoid_this="Do not use it for adapter-specific review work.",
+                challenge_only_if="The work is adapter-specific and needs narrower handling.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(split_base)
+            split_challenge = apply_team_review_action(
+                tmp,
+                split_base.id,
+                action="challenge",
+                mismatch="Adapter-specific work needs separate review instructions.",
+                benefit="Create a split practice for adapter review.",
+                risk="Keeping only one broad practice could over-apply guidance.",
+                rollback="Use the original practice for non-adapter work.",
+                evidence=["Adapter work has distinct owner boundaries."],
+            )
+            self.assertTrue(split_challenge.applied, split_challenge.render())
+            assert split_challenge.challenge_memory is not None
+
+            split_output = StringIO()
+            with redirect_stdout(split_output):
+                split_exit = main(
+                    [
+                        "--root",
+                        tmp,
+                        "team-review-action",
+                        split_challenge.challenge_memory.id,
+                        "--action",
+                        "split",
+                        "--approved-by",
+                        "CMU core owner",
+                        "--split-title",
+                        "Adapter handoffs need adapter-owner review",
+                        "--split-summary",
+                        "Adapter-specific review should route through the adapter owner before stable guidance changes.",
+                        "--split-use-path",
+                        "Ask the adapter owner to approve adapter-specific stable-memory changes.",
+                        "--split-avoid",
+                        "Do not treat adapter-specific review as general CMU owner review.",
+                        "--split-challenge",
+                        "The work is not adapter-specific.",
+                        "--scope-code",
+                        "cmu/openai_adapter.py",
+                        "--scope-workflow",
+                        "adapter integration",
+                        "--scope-actor",
+                        "agent",
+                        "--evidence",
+                        "Adapter owner review requires a narrow stable practice.",
+                    ]
+                )
+            self.assertEqual(split_exit, 0, split_output.getvalue())
+            self.assertIn("Outcome Memory:", split_output.getvalue())
+            practices = MemoryStore(tmp).list(type=MemoryType.PRACTICE)
+            self.assertTrue(any(item.title == "Adapter handoffs need adapter-owner review" for item in practices))
+
+            narrow_target = next(item for item in MemoryStore(tmp).list(type=MemoryType.PRACTICE) if item.id == split_base.id)
+            narrowed = apply_team_review_action(
+                tmp,
+                narrow_target.id,
+                action="narrow-scope",
+                approved_by="CMU core owner",
+                scope=MemoryScope(code=["cmu/team_review_action.py"], workflow=["implementation"], actor=["agent"]),
+                evidence=["Owner review narrowed this practice to the handoff action module."],
+            )
+            self.assertTrue(narrowed.applied, narrowed.render())
+            narrowed_memory = next(item for item in MemoryStore(tmp).list(type=MemoryType.PRACTICE) if item.id == split_base.id)
+            self.assertEqual(narrowed_memory.scope.code, ["cmu/team_review_action.py"])
+            self.assertIn("Scope narrowed by CMU core owner", narrowed_memory.evidence)
+
     def test_portable_fixture_seed_creates_current_historical_invalid_future_and_legacy_fixtures(self) -> None:
         with TemporaryDirectory() as tmp:
             memory = Memory.create(

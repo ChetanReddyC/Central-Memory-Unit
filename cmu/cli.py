@@ -677,12 +677,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     team_action_parser = subparsers.add_parser("team-review-action", help="Apply a controlled owner/team handoff action.")
     team_action_parser.add_argument("subject_id", help="Memory id or team-scope id from team-review-handoff.")
-    team_action_parser.add_argument("--action", choices=["authority", "team-metadata"], required=True)
+    team_action_parser.add_argument(
+        "--action",
+        choices=["authority", "team-metadata", "challenge", "strengthen", "retire", "split", "narrow-scope"],
+        required=True,
+    )
     team_action_parser.add_argument("--owner", default="")
     team_action_parser.add_argument("--approved-by", default="")
     team_action_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
     team_action_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
     team_action_parser.add_argument("--review-due", default="")
+    team_action_parser.add_argument("--mismatch", default="")
+    team_action_parser.add_argument("--benefit", default="")
+    team_action_parser.add_argument("--risk", default="")
+    team_action_parser.add_argument("--rollback", default="")
+    team_action_parser.add_argument("--challenged-by", default="")
+    team_action_parser.add_argument("--evidence", action="append", default=[])
+    team_action_parser.add_argument("--retirement-reason", default="")
+    team_action_parser.add_argument("--split-title", default="")
+    team_action_parser.add_argument("--split-summary", default="")
+    team_action_parser.add_argument("--split-use-path", default="")
+    team_action_parser.add_argument("--split-avoid", default="")
+    team_action_parser.add_argument("--split-challenge", default="")
+    team_action_parser.add_argument("--scope-owner", action="append", default=[])
+    team_action_parser.add_argument("--scope-code", action="append", default=[])
+    team_action_parser.add_argument("--scope-workflow", action="append", default=[])
+    team_action_parser.add_argument("--scope-env", "--scope-environment", dest="scope_env", action="append", default=[])
+    team_action_parser.add_argument("--scope-actor", action="append", default=[])
+    team_action_parser.add_argument("--scope-time", action="append", default=[])
     team_action_parser.set_defaults(func=cmd_team_review_action)
 
     quality_parser = subparsers.add_parser("quality", help="Show the read-only Memory Quality and Decay Model.")
@@ -1952,6 +1974,26 @@ def cmd_team_review_action(args: argparse.Namespace, store: MemoryStore) -> int:
         approver_role=args.approver_role,
         consequence=args.consequence,
         review_due=args.review_due,
+        mismatch=args.mismatch,
+        benefit=args.benefit,
+        risk=args.risk,
+        rollback=args.rollback,
+        challenged_by=args.challenged_by,
+        evidence=args.evidence,
+        retirement_reason=args.retirement_reason,
+        split_title=args.split_title,
+        split_summary=args.split_summary,
+        split_use_path=args.split_use_path,
+        split_avoid=args.split_avoid,
+        split_challenge=args.split_challenge,
+        scope=MemoryScope(
+            ownership=args.scope_owner,
+            code=args.scope_code,
+            workflow=args.scope_workflow,
+            environment=args.scope_env,
+            actor=args.scope_actor,
+            time=args.scope_time,
+        ),
     )
     print(report.render())
     return 0 if report.applied else 1

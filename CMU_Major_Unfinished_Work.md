@@ -149,10 +149,18 @@ First controlled owner/team handoff apply slice now implemented:
 - Stable-memory authority uses the existing `set_memory_authority` permission gate; team-scope metadata updates the real local team directory record instead of creating duplicate boundaries.
 - Automated tests verify both action types through real `MemoryStore`, `TeamDirectoryStore`, and CLI paths. Manual verification under `.manual/five-slice-proof/team-action` applied authority to `mem_909041ccdc28` and updated team scope `team_d63d4a08397b`.
 
+Second controlled owner/team handoff apply slice now implemented:
+
+- `cmu team-review-action` now applies five additional explicit handoff outcomes: `challenge`, `strengthen`, `retire`, `split`, and `narrow-scope`.
+- `challenge` stores a real stable-memory challenge Candidate from owner/team review input instead of requiring humans to switch to the lower-level challenge command.
+- `strengthen`, `retire`, and `split` delegate to the existing approved challenge-resolution gate, so stable memory still requires explicit approval, evidence, retirement reasons, split scope, and split wording where the lower-level governance path requires them.
+- `narrow-scope` applies only approved safe narrowing for Practice/Anchor memory and rejects broadening or scope shifts that should use challenge/split instead.
+- Automated tests verify all five outcomes through real persisted stores and CLI dispatch. Manual verification under `.manual/team-review-action-five-proof` created real Practice memories, stored challenge Candidates, strengthened one memory, retired one memory, split one new scoped Practice memory, narrowed a stable Practice scope, and inspected the resulting store through real CLI surfaces.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
-- Deeper controlled UX flows for narrow, split, retire, strengthen, or challenge outcomes beyond the first authority/team-metadata handoff apply path.
+- Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
 - Clear human review moments in non-CLI surfaces.
 - Better owner/team review flows beyond local metadata handoff application.
 - Actual scheduling/notification delivery beyond the machine-readable reminder payload.
@@ -389,11 +397,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU capabilities end to end: `evidence-watch`, `openai-runner`, OpenAI coverage inside `host-path-suite`, `portable-fixture-seed --historical` plus `historical-*` compatibility, and `team-review-action`. Each slice has real code, CLI wiring, tests, and manual verification against stores, Git, generated fixtures, host adapters, or team-scope records.
+This cycle implemented five concrete unfinished CMU capabilities end to end inside the owner/team review workflow: controlled `team-review-action --action challenge`, `--action strengthen`, `--action retire`, `--action split`, and `--action narrow-scope`. Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/team-review-action-five-proof`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, seed more historical portable fixtures from older real bundles, or extend `team-review-action` into controlled narrow/split/retire/strengthen/challenge outcomes. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, seed more historical portable fixtures from older real bundles, or add non-CLI owner/team review moments on top of the controlled CLI apply paths. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
