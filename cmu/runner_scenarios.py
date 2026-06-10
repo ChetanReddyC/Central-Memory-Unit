@@ -5,14 +5,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 
 from .models import MemoryStatus
 from .runner_hooks import AutonomousRunnerHooks, RunnerHookResult
+from .scenarios import ScenarioDefinition, ScenarioLibraryStore
 from .store import MemoryStore
 from .usage import MemoryUseReceipt, MemoryUseStore
+from .json_store import read_json, update_json
+from .models import utc_now
 
 
 RUNNER_SCENARIO_VERSION = "cmu-runner-scenario/v1"
+RUNNER_SCENARIO_SUITE_VERSION = "cmu-runner-scenario-suite/v1"
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,90 @@ class RunnerScenarioReport:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class RunnerScenarioSuiteRecord:
+    id: str
+    created_at: str
+    tag: str
+    total: int
+    passed: int
+    review: int
+    action_notes: int
+    candidates: int
+    checkpoints: int
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "created_at": self.created_at,
+            "tag": self.tag,
+            "total": self.total,
+            "passed": self.passed,
+            "review": self.review,
+            "action_notes": self.action_notes,
+            "candidates": self.candidates,
+            "checkpoints": self.checkpoints,
+        }
+
+
+@dataclass(frozen=True)
+class RunnerScenarioSuiteItem:
+    scenario: ScenarioDefinition
+    report: RunnerScenarioReport
+
+    @property
+    def passed(self) -> bool:
+        return self.report.passed
+
+    def render(self) -> str:
+        status = "pass" if self.passed else "review"
+        matched = matched_memory_id(self.report.start) or "none"
+        return f"- {status}: {self.scenario.id} {self.scenario.name} start={self.report.start.status} memory={matched}"
+
+
+@dataclass(frozen=True)
+class RunnerScenarioSuiteReport:
+    root: str
+    record: RunnerScenarioSuiteRecord
+    items: list[RunnerScenarioSuiteItem]
+    recorded: bool
+    history_count: int
+
+    @property
+    def ok(self) -> bool:
+        return self.record.total > 0 and self.record.review == 0
+
+    def render(self) -> str:
+        lines = [
+            "CMU Runner Scenario Suite",
+            f"Version: {RUNNER_SCENARIO_SUITE_VERSION}",
+            "Mode: saved scenario library evaluated through real autonomous-runner hooks in isolated stores.",
+            f"Root: {self.root}",
+            f"Suite Run: {self.record.id}",
+            f"Filter: tag={self.record.tag}" if self.record.tag else "Filter: all scenarios",
+            f"Recorded: {'yes' if self.recorded else 'no'}",
+            f"History Runs: {self.history_count}",
+            (
+                "Summary: "
+                f"total={self.record.total} pass={self.record.passed} review={self.record.review} "
+                f"action_notes={self.record.action_notes} candidates={self.record.candidates} checkpoints={self.record.checkpoints}"
+            ),
+        ]
+        if self.items:
+            lines.extend(["", "Items:"])
+            lines.extend(item.render() for item in self.items)
+        else:
+            lines.extend(["", "No scenarios matched."])
+        lines.extend(
+            [
+                "",
+                f"Verdict: {'pass' if self.ok else 'review'}",
+                "Proof Meaning: saved scenario expectations now exercise the autonomous hook boundary and can be recorded over time.",
+            ]
+        )
+        return "\n".join(lines)
+
+
 def run_runner_scenario(
     root: Path | str,
     request: RunnerScenarioRequest,
@@ -209,6 +298,93 @@ def run_runner_scenario(
             isolated_memory_count=len(isolated_memories),
             isolated_receipt_count=len(isolated_receipts),
         )
+
+
+def run_runner_scenario_suite(
+    root: Path | str,
+    *,
+    tag: str = "",
+    record: bool = False,
+    work_dir: Path | str | None = None,
+) -> RunnerScenarioSuiteReport:
+    root_path = Path(root)
+    scenarios = ScenarioLibraryStore(root_path).list(tag=tag)
+    items = [
+        RunnerScenarioSuiteItem(
+            scenario=scenario,
+            report=run_runner_scenario(root_path, request_from_scenario(scenario), work_dir=work_dir),
+        )
+        for scenario in scenarios
+    ]
+    passed = sum(1 for item in items if item.passed)
+    action_notes = sum(1 for item in items if item.report.start.status == "action-note")
+    candidates = sum(1 for item in items if item.report.after_task is not None and item.report.after_task.status == "candidate-saved")
+    checkpoints = sum(1 for item in items if item.report.checkpoint is not None and item.report.checkpoint.status == "checkpoint-linked")
+    record_item = RunnerScenarioSuiteRecord(
+        id=f"rsr_{uuid4().hex[:12]}",
+        created_at=utc_now(),
+        tag=tag,
+        total=len(items),
+        passed=passed,
+        review=len(items) - passed,
+        action_notes=action_notes,
+        candidates=candidates,
+        checkpoints=checkpoints,
+    )
+    history_count = runner_scenario_history_count(root_path)
+    if record:
+        update_json(
+            root_path / ".cmu" / "runner_scenario_runs.json",
+            {"version": 1, "runs": []},
+            lambda data: append_runner_scenario_run(data, record_item),
+        )
+        history_count += 1
+    return RunnerScenarioSuiteReport(
+        root=str(root_path),
+        record=record_item,
+        items=items,
+        recorded=record,
+        history_count=history_count,
+    )
+
+
+def request_from_scenario(scenario: ScenarioDefinition) -> RunnerScenarioRequest:
+    return RunnerScenarioRequest(
+        prompt=scenario.prompt,
+        actor=scenario.actor,
+        area=scenario.area,
+        files=list(scenario.files),
+        workflow=list(scenario.workflow),
+        environment=list(scenario.environment),
+        risk=scenario.risk,
+        repeated_error=scenario.repeated_error,
+        uncertainty=scenario.uncertainty,
+        shared_contract=scenario.shared_contract,
+        irreversible=scenario.irreversible,
+        unfamiliar=scenario.unfamiliar,
+        run_after_task=bool(scenario.expect_candidate),
+        reusable_learning=scenario.expect_candidate in {"candidate-saved", "candidate-created"},
+        title=scenario.name,
+        situation=scenario.description or scenario.name,
+        signals=list(scenario.learning_signals),
+        worked=scenario.worked,
+        failed=scenario.failed,
+        future_use=scenario.future_use,
+        evidence=list(scenario.evidence),
+        expect_start="action-note" if scenario.expect_action == "action-note" else ("quiet" if scenario.expect_action == "quiet" else ""),
+        expect_memory=scenario.expect_memory,
+        expect_candidate=scenario.expect_candidate,
+    )
+
+
+def append_runner_scenario_run(data: dict, record: RunnerScenarioSuiteRecord) -> RunnerScenarioSuiteRecord:
+    data["runs"].append(record.to_dict())
+    return record
+
+
+def runner_scenario_history_count(root: Path) -> int:
+    data = read_json(root / ".cmu" / "runner_scenario_runs.json", {"version": 1, "runs": []})
+    return len(data.get("runs", []))
 
 
 def seed_isolated_store(isolated_root: Path, memories, receipts: list[MemoryUseReceipt]) -> None:

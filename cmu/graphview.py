@@ -132,13 +132,14 @@ def graph_memory_view_report(
     root_id: str = "",
     max_depth: int = 3,
     include_retired: bool = False,
+    graph_edges: list[GraphEdge] | None = None,
 ) -> GraphMemoryViewReport:
     if max_depth < 1:
         raise ValueError("graph depth must be at least 1")
     memory_by_id = {memory.id: memory for memory in memories}
     if root_id and root_id not in memory_by_id:
         raise KeyError(f"Memory not found: {root_id}")
-    edges = [
+    memory_edges = [
         GraphEdge(
             source_id=memory.id,
             relation_type=relationship.type,
@@ -148,6 +149,7 @@ def graph_memory_view_report(
         for memory in memories
         for relationship in memory.relationships
     ]
+    edges = sorted({edge.key(): edge for edge in [*memory_edges, *(graph_edges or [])]}.values(), key=lambda edge: edge.key())
     dangling_edges = [edge for edge in edges if edge.target_id not in memory_by_id]
     adjacency = build_adjacency(memories, edges)
     isolated_ids = sorted(

@@ -27,11 +27,12 @@ First retrieval metrics and benchmark slice now implemented:
 - `cmu retrieval-benchmark` compares current CMU retrieval against generic vector memory, graphless memory, and no-memory baselines for scenarios with positive memory expectations.
 - Automated tests verify both commands through real `MemoryStore`, `ScenarioLibraryStore`, CLI dispatch, and strict-mode behavior. Manual verification under `.manual/retrieval-metrics-proof` seeded a real Practice memory plus saved positive/rejection scenarios, then confirmed strict metrics and benchmark reports passed.
 
-Still needed:
+External embedding, durable vector, and graph-store slices now implemented:
 
-- External embedding model support beyond local hashing vectors.
-- Dedicated vector database or durable semantic index.
-- Durable graph-backed memory store instead of only local JSON relationships.
+- `--semantic external` supports an operator-configured external embedding command through `CMU_EMBEDDING_COMMAND`, with the command receiving JSON input and returning an embedding vector.
+- `--semantic sqlite` builds and queries a durable SQLite semantic vector index under `.cmu/semantic_vectors.sqlite3`; `cmu semantic-status --semantic sqlite` inspects the dedicated vector store without mutating retrieval.
+- `cmu graph-store --write` materializes memory relationships into a normalized durable graph edge store at `.cmu/graph_edges.json`, and `cmu graph` reads those durable edges alongside embedded memory relationships.
+- Automated tests verify external command embeddings, SQLite vector persistence/status, graph-store sync, and graph CLI reading through real stores and CLI paths. Manual verification under `.manual/five-burndown-20260610` confirmed SQLite and external semantic Action Notes, a three-vector SQLite status report, durable graph sync, and focused graph traversal from the stored edge.
 
 ### 2. Autonomous Agent Integration
 
@@ -218,9 +219,14 @@ First local notification dispatch slice now implemented:
 - Preview mode remains non-mutating, and repeated apply skips already dispatched delivery ids instead of duplicating notifications.
 - Automated tests verify reminder creation from real stores, outbox delivery, preview-vs-apply dispatch behavior, durable dispatch JSONL records, idempotent repeat dispatch, and CLI execution.
 
+First UI-backed review card slice now implemented:
+
+- `cmu review-ui` generates a read-only local HTML review-card surface from the live structured review inbox rather than scraping CLI text.
+- Preview mode summarizes card and urgent counts without writing; `--write` persists `.cmu/review-ui/index.html` with priority, source, category, subject id, title, and exact follow-up command for each card.
+- Automated tests verify the UI artifact through real `MemoryStore`, review-inbox, and CLI paths. Manual verification under `.manual/five-burndown-20260610` wrote a seven-card review UI with two urgent items.
+
 Still needed:
 
-- Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
 - Better owner/team review flows beyond local metadata handoff application.
 
@@ -374,9 +380,11 @@ First retrieval-evaluation case and scenario-metrics slice now implemented:
 - `cmu retrieval-metrics` adds measurable scenario-level usefulness/drag signals through expectation-backed true positives, misses, false positives, clean rejections, and grounding rate.
 - Automated tests verify preview-vs-write fixture behavior, all four case categories, persisted scenario files, and metrics/benchmark CLI paths against real stores. Manual verification under `.manual/retrieval-metrics-proof` wrote four retrieval-evaluation cases and ran the new metric surfaces through the CLI.
 
-Still needed:
+Runner-scenario suite evidence now implemented:
 
-- Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
+- `cmu runner-scenario-suite` runs saved scenario-library cases through the real autonomous hook surface in isolated stores, so saved expectations can exercise trigger, retrieval, receipt, Candidate, checkpoint, and review behavior instead of only the read-only evaluator.
+- `--record` persists longitudinal runner-scenario history under `.cmu/runner_scenario_runs.json`; `--strict` exits non-zero when any saved runner scenario needs review.
+- Automated tests verify library and CLI suite behavior through real `ScenarioLibraryStore`, `MemoryStore`, `MemoryUseStore`, and isolated hook execution. Manual verification under `.manual/five-burndown-20260610` recorded a strict pass for the saved manual runner scenario.
 
 ### 9. Product And UI Surface
 
@@ -503,11 +511,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete lifecycle automation chunks end to end through `cmu lifecycle-policy`: approved duplicate-like merge policy, split Candidate creation from broad-scope drag evidence, decay policy for decay-ready or drag-pressured memories, approved safe scope-refinement application, and one cross-surface lifecycle review UX tying merge/split/decay/scope decisions together. The slice has real code, CLI wiring, automated tests through real `MemoryStore` and `MemoryUseStore` paths, workspace-root read-only verification, and isolated manual proof under `.manual/lifecycle-policy-proof`.
+This cycle implemented five concrete unfinished chunks end to end: external command embedding support through `--semantic external`, durable SQLite vector retrieval through `--semantic sqlite`, normalized durable graph edges through `cmu graph-store`, saved autonomous hook evaluation through `cmu runner-scenario-suite`, and UI-backed review cards through `cmu review-ui`. The slice has real code, CLI wiring, automated tests through real stores and CLI paths, full-suite verification, and isolated manual proof under `.manual/five-burndown-20260610`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: implement external embedding/vector durability, add a durable graph-backed memory store, close the remaining runner-scenario/evaluation maturity gap, or continue hardening cleanup evidence and governance handoff flows. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of the remaining six explicit unfinished items further toward production operation: deeper controlled governance UX flows, better owner/team review flows, authority metadata cleanup, unresolved receipt closure, focused use evidence for the new cleanup memories, or re-running quality/governance/analytics/graph/lifecycle once that evidence exists. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -8,7 +9,15 @@ from typing import Any, Callable
 from .models import MemoryScope, MemoryType
 from .onboarding import build_onboarding_seed
 from .remembering import RememberRequest, remember_candidate
-from .retrieval import PersistentSemanticIndex, PreflightQuery, action_threshold, build_action_note, rank_memories
+from .retrieval import (
+    ExternalCommandEmbeddingProvider,
+    PersistentSemanticIndex,
+    PreflightQuery,
+    SQLiteSemanticIndex,
+    action_threshold,
+    build_action_note,
+    rank_memories,
+)
 from .store import MemoryStore
 from .triggers import decide_trigger
 from .usage import (
@@ -297,14 +306,22 @@ def memory_scope(value: Any) -> MemoryScope:
 
 def semantic_mode_from(arguments: dict[str, Any]) -> str:
     mode = optional_text(arguments, "semantic") or "off"
-    if mode not in {"off", "local"}:
-        raise ValueError("semantic must be one of: off, local")
+    if mode not in {"off", "local", "sqlite", "external"}:
+        raise ValueError("semantic must be one of: off, local, sqlite, external")
     return mode
 
 
 def load_semantic_index(root: Path, memories, semantic_mode: str):
     if semantic_mode == "local":
         return PersistentSemanticIndex.load_or_build(root / ".cmu" / "semantic_index.json", memories)
+    if semantic_mode == "sqlite":
+        return SQLiteSemanticIndex.load_or_build(root / ".cmu" / "semantic_vectors.sqlite3", memories)
+    if semantic_mode == "external":
+        command = os.environ.get("CMU_EMBEDDING_COMMAND", "")
+        if not command:
+            raise ValueError("semantic external requires CMU_EMBEDDING_COMMAND")
+        provider = ExternalCommandEmbeddingProvider(command)
+        return SQLiteSemanticIndex.load_or_build(root / ".cmu" / "external_semantic_vectors.sqlite3", memories, provider=provider)
     return None
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import sqlite3
+import subprocess
 from dataclasses import dataclass, field
 from hashlib import sha256
 from json import JSONDecodeError
@@ -110,6 +112,41 @@ class HashingEmbeddingProvider:
         return normalize_vector(vector)
 
 
+class ExternalCommandEmbeddingProvider:
+    def __init__(self, command: str, *, dimensions: int | None = None, label: str = "external command embeddings") -> None:
+        if not command.strip():
+            raise ValueError("external embedding command is required")
+        self.command = command
+        self.dimensions = dimensions
+        self.label = label
+
+    def embed(self, text: str) -> list[float]:
+        payload = json.dumps({"text": text}, ensure_ascii=True)
+        completed = subprocess.run(
+            self.command,
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or "external embedding command failed")
+        try:
+            data = json.loads(completed.stdout)
+        except JSONDecodeError as error:
+            raise RuntimeError("external embedding command returned invalid JSON") from error
+        vector = data.get("embedding", data if isinstance(data, list) else None)
+        if not isinstance(vector, list):
+            raise RuntimeError("external embedding command must return an embedding list")
+        values = [float(value) for value in vector]
+        if self.dimensions is not None and len(values) != self.dimensions:
+            raise RuntimeError(f"external embedding command returned {len(values)} dimensions; expected {self.dimensions}")
+        if self.dimensions is None:
+            self.dimensions = len(values)
+        return normalize_vector(values)
+
+
 class PersistentSemanticIndex(SemanticIndex):
     def __init__(self, path: Path | str, provider: HashingEmbeddingProvider | None = None) -> None:
         self.path = Path(path)
@@ -194,6 +231,102 @@ class PersistentSemanticIndex(SemanticIndex):
             )
             handle.write("\n")
         temp_file.replace(self.path)
+
+
+class SQLiteSemanticIndex(SemanticIndex):
+    def __init__(self, path: Path | str, provider=None) -> None:
+        self.path = Path(path)
+        self.provider = provider or HashingEmbeddingProvider(label="sqlite local hashing embeddings")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    @classmethod
+    def load_or_build(cls, path: Path | str, memories: list[Memory], provider=None) -> "SQLiteSemanticIndex":
+        index = cls(path, provider=provider)
+        index.refresh(memories)
+        return index
+
+    def refresh(self, memories: list[Memory]) -> None:
+        active_ids = {memory.id for memory in memories}
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS vectors (memory_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, vector_json TEXT NOT NULL)"
+            )
+            cursor = connection.execute("SELECT memory_id FROM vectors")
+            current_ids = {row[0] for row in cursor}
+            cursor.close()
+            for memory_id in sorted(current_ids - active_ids):
+                connection.execute("DELETE FROM vectors WHERE memory_id = ?", (memory_id,))
+            for memory in memories:
+                fingerprint = memory_fingerprint(memory)
+                cursor = connection.execute("SELECT fingerprint FROM vectors WHERE memory_id = ?", (memory.id,))
+                row = cursor.fetchone()
+                cursor.close()
+                if row is not None and row[0] == fingerprint:
+                    continue
+                vector = self.provider.embed(memory_text(memory))
+                connection.execute(
+                    "INSERT OR REPLACE INTO vectors(memory_id, fingerprint, vector_json) VALUES (?, ?, ?)",
+                    (memory.id, fingerprint, json.dumps(vector, ensure_ascii=True)),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def score(self, memory: Memory, query: "PreflightQuery") -> SemanticSignal:
+        connection = sqlite3.connect(self.path)
+        try:
+            cursor = connection.execute("SELECT vector_json FROM vectors WHERE memory_id = ?", (memory.id,))
+            row = cursor.fetchone()
+            cursor.close()
+        finally:
+            connection.close()
+        if row is None:
+            return SemanticSignal(label=f"{self.provider.label} missing vector")
+        vector = [float(value) for value in json.loads(row[0])]
+        query_vector = self.provider.embed(query.text())
+        similarity = cosine_similarity(query_vector, vector)
+        score = max(0.0, similarity) * 1.5
+        return SemanticSignal(label=self.provider.label, score=round(score, 3), available=True)
+
+    def status(self, memories: list[Memory]) -> "SemanticIndexStatus":
+        connection = sqlite3.connect(self.path)
+        try:
+            cursor = connection.execute("SELECT memory_id, fingerprint FROM vectors")
+            rows = list(cursor)
+            cursor.close()
+        finally:
+            connection.close()
+        memory_by_id = {memory.id: memory for memory in memories}
+        memory_ids = set(memory_by_id)
+        vector_ids = {row[0] for row in rows}
+        fingerprints = dict(rows)
+        return SemanticIndexStatus(
+            path=str(self.path),
+            exists=self.path.exists(),
+            provider=self.provider.label,
+            dimensions=getattr(self.provider, "dimensions", 0) or 0,
+            memory_count=len(memories),
+            vector_count=len(vector_ids),
+            missing_vectors=sorted(memory_ids - vector_ids),
+            stale_vectors=sorted(
+                memory.id
+                for memory in memories
+                if memory.id in fingerprints and fingerprints[memory.id] != memory_fingerprint(memory)
+            ),
+            extra_vectors=sorted(vector_ids - memory_ids),
+        )
+
+    def _init_db(self) -> None:
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS vectors (memory_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, vector_json TEXT NOT NULL)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
 
 
 class InMemorySemanticIndex(SemanticIndex):
@@ -442,6 +575,10 @@ def semantic_index_status(path: Path | str, memories: list[Memory]) -> SemanticI
     )
 
 
+def sqlite_semantic_index_status(path: Path | str, memories: list[Memory]) -> SemanticIndexStatus:
+    return SQLiteSemanticIndex(path).status(memories)
+
+
 def expand_graph_matches(memories: list[Memory], matches: list[Match], query: PreflightQuery) -> list[Match]:
     if not matches:
         return matches
@@ -625,6 +762,8 @@ def add_hashed_feature(vector: list[float], feature: str, *, weight: float) -> N
     digest = sha256(feature.encode("utf-8")).digest()
     index = int.from_bytes(digest[:4], "big") % len(vector)
     vector[index] += weight
+
+
 
 
 def token_character_features(token: str) -> list[str]:

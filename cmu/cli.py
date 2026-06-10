@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -23,6 +24,7 @@ from .evidence_watch import run_evidence_watch
 from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .governance import governance_report
 from .graphview import graph_memory_view_report
+from .graph_store import GraphStore
 from .gravity import gravity_report
 from .hardening_cycle import hardening_cycle_report
 from .host_path_suite import run_host_path_suite
@@ -60,23 +62,27 @@ from .quickstart import quickstart_demo
 from .readiness import readiness_report
 from .remembering import RememberRequest, remember_candidate
 from .retrieval import (
+    ExternalCommandEmbeddingProvider,
     PersistentSemanticIndex,
     PreflightQuery,
+    SQLiteSemanticIndex,
     action_threshold,
     build_action_note,
     rank_memories,
     semantic_index_status,
     semantic_proposal_diagnostics,
+    sqlite_semantic_index_status,
 )
 from .review_queue import review_queue
 from .review_export import export_review_payload
 from .review_inbox import review_inbox_from_export, review_inbox_from_reports
 from .review_reminders import review_reminders
+from .review_ui import build_review_ui
 from .reminder_delivery import deliver_reminders_to_outbox
 from .reminder_dispatch import dispatch_reminder_outbox
 from .retrieval_metrics import retrieval_benchmark_report, retrieval_metrics_report, seed_retrieval_evaluation_cases
 from .runner_hooks import runner_hooks_report
-from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
+from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario, run_runner_scenario_suite
 from .scenarios import (
     ScenarioDefinition,
     ScenarioEvaluationRequest,
@@ -195,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_hooks_parser.add_argument("--unfamiliar", action="store_true")
     runner_hooks_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider for the executed before_task hook.",
     )
@@ -233,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_scenario_parser.add_argument("--shared-contract", action="store_true")
     runner_scenario_parser.add_argument("--irreversible", action="store_true")
     runner_scenario_parser.add_argument("--unfamiliar", action="store_true")
-    runner_scenario_parser.add_argument("--semantic", choices=["off", "local"], default="off")
+    runner_scenario_parser.add_argument("--semantic", choices=["off", "local", "sqlite", "external"], default="off")
     runner_scenario_parser.add_argument("--after-task", action="store_true", help="Run the after_task hook after before_task.")
     runner_scenario_parser.add_argument("--reusable-learning", action="store_true", help="Tell after_task to draft Candidate Memory from supplied learning fields.")
     runner_scenario_parser.add_argument("--title", default="")
@@ -267,6 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     runner_scenario_parser.add_argument("--expect-checkpoint", choices=["checkpoint-linked", "checkpoint-not-linked", "not-run"], default="")
     runner_scenario_parser.add_argument("--strict", action="store_true", help="Exit non-zero when supplied expectations fail.")
     runner_scenario_parser.set_defaults(func=cmd_runner_scenario)
+
+    runner_scenario_suite_parser = subparsers.add_parser("runner-scenario-suite", help="Run saved scenarios through autonomous runner hooks.")
+    runner_scenario_suite_parser.add_argument("--tag", default="", help="Only run saved scenarios with this tag.")
+    runner_scenario_suite_parser.add_argument("--record", action="store_true", help="Record runner-scenario suite metrics under .cmu.")
+    runner_scenario_suite_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any runner scenario needs review.")
+    runner_scenario_suite_parser.set_defaults(func=cmd_runner_scenario_suite)
 
     work_loop_run_parser = subparsers.add_parser("work-loop-run", help="Execute CMU runner hooks from a host/runtime event JSON file.")
     work_loop_run_parser.add_argument("--input-file", required=True, help="JSON file containing one event or an events array.")
@@ -377,6 +389,10 @@ def build_parser() -> argparse.ArgumentParser:
     graph_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history in the graph.")
     graph_parser.set_defaults(func=cmd_graph)
 
+    graph_store_parser = subparsers.add_parser("graph-store", help="Sync or inspect the durable graph edge store.")
+    graph_store_parser.add_argument("--write", action="store_true", help="Write normalized graph edges under the CMU root.")
+    graph_store_parser.set_defaults(func=cmd_graph_store)
+
     preflight_parser = subparsers.add_parser("preflight", help="Run a task-start CMU preflight.")
     preflight_parser.add_argument("prompt", nargs="*", help="Task prompt to check against memory.")
     preflight_parser.add_argument("--actor", default="developer")
@@ -387,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     preflight_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -409,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     pipeline_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -425,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     onboard_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -440,6 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
         "semantic-status",
         help="Inspect the local semantic index without refreshing or changing retrieval behavior.",
     )
+    semantic_status_parser.add_argument("--semantic", choices=["local", "sqlite"], default="local")
     semantic_status_parser.set_defaults(func=cmd_semantic_status)
 
     trigger_parser = subparsers.add_parser("trigger", help="Decide whether the task should call CMU memory.")
@@ -472,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--unfamiliar", action="store_true")
     start_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -499,7 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     work_cycle_parser.add_argument("--unfamiliar", action="store_true")
     work_cycle_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -526,7 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--unfamiliar", action="store_true")
     evaluate_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -578,7 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_run_parser.add_argument("--tag", default="", help="Run scenarios with this tag.")
     scenario_run_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -591,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_compare_parser.add_argument("--tag", default="", help="Compare scenarios with this tag.")
     scenario_compare_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider for both stores. Defaults to off.",
     )
@@ -603,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_no_memory_parser.add_argument("--tag", default="", help="Compare scenarios with this tag.")
     scenario_no_memory_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider for the CMU store. Defaults to off.",
     )
@@ -614,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_suite_parser.add_argument("--tag", default="", help="Only run scenarios with this tag.")
     scenario_suite_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider for the suite. Defaults to off.",
     )
@@ -830,6 +847,10 @@ def build_parser() -> argparse.ArgumentParser:
     review_inbox_parser.add_argument("--json", action="store_true", help="Render the inbox as JSON.")
     review_inbox_parser.set_defaults(func=cmd_review_inbox)
 
+    review_ui_parser = subparsers.add_parser("review-ui", help="Generate read-only UI-backed review cards from the live review inbox.")
+    review_ui_parser.add_argument("--write", action="store_true", help="Write .cmu/review-ui/index.html under the CMU root.")
+    review_ui_parser.set_defaults(func=cmd_review_ui)
+
     product_console_parser = subparsers.add_parser("product-console", help="Render the read-only human-facing CMU product console.")
     product_console_parser.add_argument("--memory", default="", help="Focus graph, evidence, cleanup, and navigation on one memory id.")
     product_console_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history in graph and cleanup views.")
@@ -940,7 +961,7 @@ def build_parser() -> argparse.ArgumentParser:
     anti_pattern_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     anti_pattern_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -958,7 +979,7 @@ def build_parser() -> argparse.ArgumentParser:
     question_parser.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
     question_parser.add_argument(
         "--semantic",
-        choices=["off", "local"],
+        choices=["off", "local", "sqlite", "external"],
         default="off",
         help="Enable an explicit semantic retrieval provider. Defaults to off.",
     )
@@ -1381,9 +1402,18 @@ def cmd_graph(args: argparse.Namespace, store: MemoryStore) -> int:
             root_id=args.memory_id,
             max_depth=args.depth,
             include_retired=args.include_retired,
+            graph_edges=GraphStore(args.root).list_edges(),
         )
     except KeyError as error:
         raise SystemExit(error.args[0]) from error
+    print(report.render())
+    return 0
+
+
+def cmd_graph_store(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    graph_store = GraphStore(args.root)
+    report = graph_store.sync_from_memories(memories) if args.write else graph_store.status(memories)
     print(report.render())
     return 0
 
@@ -1564,6 +1594,14 @@ def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_runner_scenario_suite(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = run_runner_scenario_suite(args.root, tag=args.tag, record=args.record)
+    print(report.render())
+    if args.strict and not report.ok:
+        return 1
+    return 0
+
+
 def cmd_work_loop_run(args: argparse.Namespace, store: MemoryStore) -> int:
     try:
         payload = load_work_loop_payload(args.input_file)
@@ -1740,8 +1778,13 @@ def cmd_onboard(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_semantic_status(args: argparse.Namespace, store: MemoryStore) -> int:
     memories = store.list()
-    path = Path(args.root) / ".cmu" / "semantic_index.json"
-    print(semantic_index_status(path, memories).render())
+    mode = getattr(args, "semantic", "local")
+    if mode == "sqlite":
+        path = Path(args.root) / ".cmu" / "semantic_vectors.sqlite3"
+        print(sqlite_semantic_index_status(path, memories).render())
+    else:
+        path = Path(args.root) / ".cmu" / "semantic_index.json"
+        print(semantic_index_status(path, memories).render())
     return 0
 
 
@@ -2417,17 +2460,28 @@ def cmd_review_inbox(args: argparse.Namespace, store: MemoryStore) -> int:
         except (OSError, ValueError, json.JSONDecodeError) as error:
             raise SystemExit(f"review-inbox failed: {error}") from error
     else:
-        memories = store.list()
-        receipts = MemoryUseStore(args.root).list()
-        team_scopes = TeamDirectoryStore(args.root).list()
-        report = review_inbox_from_reports(
-            root=args.root,
-            queue=review_queue(memories, receipts, team_scopes),
-            handoffs=team_review_handoffs(memories, team_scopes),
-            reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
-        )
+        report = live_review_inbox(args.root, store)
     print(report.to_json() if args.json else report.render())
     return 0
+
+
+def cmd_review_ui(args: argparse.Namespace, store: MemoryStore) -> int:
+    inbox = live_review_inbox(args.root, store)
+    report = build_review_ui(args.root, inbox, write=args.write)
+    print(report.render())
+    return 0
+
+
+def live_review_inbox(root: str, store: MemoryStore):
+    memories = store.list()
+    receipts = MemoryUseStore(root).list()
+    team_scopes = TeamDirectoryStore(root).list()
+    return review_inbox_from_reports(
+        root=root,
+        queue=review_queue(memories, receipts, team_scopes),
+        handoffs=team_review_handoffs(memories, team_scopes),
+        reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
+    )
 
 
 def cmd_product_console(args: argparse.Namespace, store: MemoryStore) -> int:
@@ -3044,8 +3098,17 @@ def build_query(args: argparse.Namespace, prompt: str) -> PreflightQuery:
 
 
 def load_semantic_index(args: argparse.Namespace, memories: list[Memory]):
-    if getattr(args, "semantic", "off") == "local":
+    mode = getattr(args, "semantic", "off")
+    if mode == "local":
         return PersistentSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_index.json", memories)
+    if mode == "sqlite":
+        return SQLiteSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "semantic_vectors.sqlite3", memories)
+    if mode == "external":
+        command = os.environ.get("CMU_EMBEDDING_COMMAND", "")
+        if not command:
+            raise SystemExit("semantic external requires CMU_EMBEDDING_COMMAND")
+        provider = ExternalCommandEmbeddingProvider(command)
+        return SQLiteSemanticIndex.load_or_build(Path(args.root) / ".cmu" / "external_semantic_vectors.sqlite3", memories, provider=provider)
     return None
 
 

@@ -54,12 +54,14 @@ from cmu.retrieval_metrics import (
     seed_retrieval_evaluation_cases,
 )
 from cmu.retrieval import (
+    ExternalCommandEmbeddingProvider,
     HashingEmbeddingProvider,
     InMemorySemanticIndex,
     Match,
     PersistentSemanticIndex,
     PreflightQuery,
     SemanticSignal,
+    SQLiteSemanticIndex,
     preflight,
     rank_memories,
 )
@@ -70,7 +72,8 @@ from cmu.review_reminders import review_reminders
 from cmu.reminder_delivery import deliver_reminders_to_outbox
 from cmu.reminder_dispatch import dispatch_reminder_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
-from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
+from cmu.graph_store import GraphStore
+from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario, run_runner_scenario_suite
 from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
 from cmu.scenarios import compare_scenario_library_to_no_memory
 from cmu.sdk import CentralMemoryUnit
@@ -357,6 +360,48 @@ class GraphMemoryViewTests(unittest.TestCase):
             self.assertIn(f"<- exception_to: {exception.id} [exception/active] {exception.title}", rendered)
             self.assertIn(f"<- challenges: {anti_pattern.id} [anti-pattern/active] {anti_pattern.title}", rendered)
             self.assertIn("Proof Meaning:", rendered)
+
+    def test_graph_store_sync_materializes_relationships_and_graph_reads_them(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check release marker before retry",
+                summary="Rollback retries should inspect the release marker.",
+                approved_by="release owner",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Rollback marker mismatch",
+                summary="A rollback failed because the marker was stale.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="The incident teaches the retry practice.",
+                    )
+                ],
+            )
+            store.add(practice)
+            store.add(situation)
+
+            report = GraphStore(tmp).sync_from_memories(store.list())
+
+            self.assertTrue((Path(tmp) / ".cmu" / "graph_edges.json").exists())
+            self.assertEqual(report.edge_count, 1)
+            self.assertEqual(GraphStore(tmp).list_edges()[0].target_id, practice.id)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "graph-store", "--write"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Written: yes", output.getvalue())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "graph", situation.id])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("related_practice", output.getvalue())
+            self.assertIn(practice.title, output.getvalue())
 
     def test_cli_graph_global_summary_reports_components_isolates_and_dangling_links(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -778,6 +823,98 @@ class PreflightTests(unittest.TestCase):
             reloaded = PersistentSemanticIndex(index_path, provider=provider)
             self.assertIn(memory.id, reloaded.vectors)
             self.assertEqual(reloaded.fingerprints[memory.id], index.fingerprints[memory.id])
+
+    def test_sqlite_semantic_index_persists_vectors_and_cli_status(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout rollback release markers",
+                summary="Rollback work should verify release markers before retrying deployment.",
+                signals=["checkout", "rollback"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Release drill proof."],
+                approved_by="release owner",
+            )
+            MemoryStore(tmp).add(memory)
+            path = Path(tmp) / ".cmu" / "semantic_vectors.sqlite3"
+            index = SQLiteSemanticIndex.load_or_build(path, [memory], provider=HashingEmbeddingProvider(dimensions=32))
+
+            signal = index.score(
+                memory,
+                PreflightQuery(
+                    prompt="Fix checkout rollback marker deployment",
+                    actor="agent",
+                    area="checkout",
+                    workflow=["deployment"],
+                    risk="high",
+                ),
+            )
+
+            self.assertTrue(path.exists())
+            self.assertTrue(signal.available)
+            self.assertIn("local hashing embeddings", signal.label)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "semantic-status", "--semantic", "sqlite"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("semantic_vectors.sqlite3", output.getvalue())
+            self.assertIn("Vectors: 1", output.getvalue())
+
+    def test_external_embedding_command_can_drive_grounded_semantic_cli(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout deployment marker retry",
+                summary="Deployment retries should inspect the release marker first.",
+                signals=["marker retry"],
+                scope=MemoryScope(code=["checkout"], workflow=["deployment"], actor=["agent"]),
+                evidence=["Incident replay showed marker inspection fixed retry failures."],
+                use_this_path="Inspect the release marker before retrying deployment.",
+                approved_by="release owner",
+            )
+            MemoryStore(tmp).add(memory)
+            script = Path(tmp) / "embedder.py"
+            script.write_text(
+                "import json, sys\n"
+                "json.loads(sys.stdin.read())\n"
+                "print(json.dumps({'embedding': [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}))\n",
+                encoding="utf-8",
+            )
+            previous = os.environ.get("CMU_EMBEDDING_COMMAND")
+            os.environ["CMU_EMBEDDING_COMMAND"] = f'"{sys.executable}" "{script}"'
+            try:
+                output = StringIO()
+                with redirect_stdout(output):
+                    exit_code = main(
+                        [
+                            "--root",
+                            tmp,
+                            "preflight",
+                            "repair deployment retry",
+                            "--actor",
+                            "agent",
+                            "--area",
+                            "checkout",
+                            "--workflow",
+                            "deployment",
+                            "--risk",
+                            "high",
+                            "--semantic",
+                            "external",
+                            "--show-matches",
+                        ]
+                    )
+            finally:
+                if previous is None:
+                    os.environ.pop("CMU_EMBEDDING_COMMAND", None)
+                else:
+                    os.environ["CMU_EMBEDDING_COMMAND"] = previous
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Action Note", rendered)
+            self.assertIn("external command embeddings", rendered)
+            self.assertTrue((Path(tmp) / ".cmu" / "external_semantic_vectors.sqlite3").exists())
 
     def test_persistent_semantic_index_improves_grounded_ranking_explainably(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -9798,6 +9935,91 @@ class RunnerScenarioEvidenceTests(unittest.TestCase):
             self.assertIn("Verdict: pass", rendered)
             self.assertEqual(MemoryUseStore(root).list(), [])
 
+    def test_runner_scenario_suite_runs_saved_scenarios_and_records_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Runner suites must use autonomous hooks",
+                summary="Saved runner scenarios should execute the same hook path as real hosts.",
+                signals=["runner scenario suite", "agent integration"],
+                scope=MemoryScope(code=["cmu/runner_scenarios.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["The suite should create receipts only in isolated stores."],
+                use_this_path="Run saved scenario cases through AutonomousRunnerHooks.",
+                avoid_this="Do not rely only on read-only scenario evaluation for host behavior.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(root).add(practice)
+            ScenarioLibraryStore(root).add(
+                ScenarioDefinition.create(
+                    name="Runner suite hook path",
+                    prompt="verify runner scenario suite hook path",
+                    actor="agent",
+                    area="cmu",
+                    files=["cmu/runner_scenarios.py"],
+                    workflow=["agent integration"],
+                    risk="high",
+                    expect_action="action-note",
+                    expect_memory=practice.id,
+                    tags=["runner-suite"],
+                )
+            )
+
+            report = run_runner_scenario_suite(root, tag="runner-suite", record=True, work_dir=root / ".manual" / "runner-suite")
+
+            rendered = report.render()
+            self.assertTrue(report.ok, rendered)
+            self.assertEqual(report.record.total, 1)
+            self.assertEqual(report.record.passed, 1)
+            self.assertEqual(report.record.action_notes, 1)
+            self.assertEqual(report.history_count, 1)
+            self.assertTrue((root / ".cmu" / "runner_scenario_runs.json").exists())
+            self.assertEqual(MemoryUseStore(root).list(), [])
+
+    def test_cli_runner_scenario_suite_strict_records_real_hook_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Runner suite CLI proves host path",
+                summary="The CLI suite should run saved scenarios through hooks and record metrics.",
+                signals=["runner suite cli"],
+                scope=MemoryScope(code=["cmu/runner_scenarios.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["CLI proof covers saved scenario library execution."],
+                use_this_path="Use runner-scenario-suite --strict before trusting host-path changes.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(root).add(practice)
+            ScenarioLibraryStore(root).add(
+                ScenarioDefinition.create(
+                    name="Runner suite CLI",
+                    prompt="run runner suite CLI",
+                    actor="agent",
+                    area="cmu",
+                    files=["cmu/runner_scenarios.py"],
+                    workflow=["agent integration"],
+                    risk="high",
+                    expect_action="action-note",
+                    expect_memory=practice.id,
+                    tags=["runner-suite-cli"],
+                )
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(root), "runner-scenario-suite", "--tag", "runner-suite-cli", "--record", "--strict"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Runner Scenario Suite", rendered)
+            self.assertIn("Summary: total=1 pass=1 review=0 action_notes=1", rendered)
+            self.assertIn("Recorded: yes", rendered)
+            runs = json.loads((root / ".cmu" / "runner_scenario_runs.json").read_text(encoding="utf-8"))
+            self.assertEqual(runs["runs"][0]["passed"], 1)
+
     def test_cli_runner_scenario_strict_fails_when_expectation_misses(self) -> None:
         with TemporaryDirectory() as tmp:
             output = StringIO()
@@ -12091,6 +12313,33 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0, output.getvalue())
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["schema"], "cmu-review-inbox/v1")
+
+    def test_review_ui_writes_html_cards_from_live_review_inbox(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="UI authority gap",
+                summary="Review UI should render stable authority gaps as local cards.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu"]),
+                liability_score=4,
+                approved_by="legacy owner",
+            )
+            MemoryStore(tmp).add(memory)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-ui", "--write"])
+
+            html_path = Path(tmp) / ".cmu" / "review-ui" / "index.html"
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Review UI", rendered)
+            self.assertIn("Written: yes", rendered)
+            self.assertTrue(html_path.exists())
+            html_text = html_path.read_text(encoding="utf-8")
+            self.assertIn("CMU Review UI", html_text)
+            self.assertIn("UI authority gap", html_text)
+            self.assertIn("cmu authority-set", html_text)
 
     def test_product_console_combines_graph_review_evidence_cleanup_and_navigation(self) -> None:
         with TemporaryDirectory() as tmp:
