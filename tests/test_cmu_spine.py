@@ -31,6 +31,7 @@ from cmu.host_path_suite import run_host_path_suite
 from cmu.host_setup_manifest import host_setup_manifest
 from cmu.ide_workflow import ide_workflow
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
+from cmu.lifecycle_policy import lifecycle_policy_review
 from cmu.lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.mcp_setup_check import mcp_setup_check
@@ -11766,6 +11767,194 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
             self.assertEqual(len(candidates), 1)
             self.assertIn("Scope refinement target", "\n".join(candidates[0].evidence))
+
+    def test_lifecycle_policy_preview_combines_merge_split_decay_and_scope_cards(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout retry guidance",
+                summary="Checkout retry guidance prevents duplicate charge timeout mistakes during release.",
+                signals=["checkout", "retry", "duplicate", "charge", "timeout", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["release"]),
+                evidence=["checkout retry duplicate charge timeout release evidence"],
+                use_this_path="Use idempotent retry handling for checkout release timeout recovery.",
+                avoid_this="Avoid duplicate charge retry timeout paths.",
+                challenge_only_if="Challenge when checkout retry evidence changes.",
+                confidence=0.8,
+            )
+            source = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout duplicate charge retry note",
+                summary="Checkout retry guidance prevents duplicate charge timeout mistakes during release.",
+                signals=["checkout", "retry", "duplicate", "charge", "timeout", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["release"]),
+                evidence=["duplicate checkout retry timeout release evidence"],
+                use_this_path="Use idempotent retry handling for checkout release timeout recovery.",
+                avoid_this="Avoid duplicate charge retry timeout paths.",
+                challenge_only_if="Challenge when checkout retry evidence changes.",
+                confidence=0.6,
+            )
+            broad = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Broad runtime adapter guidance",
+                summary="Adapter rollout guidance is too broad after drag evidence.",
+                scope=MemoryScope(code=["cmu", "cmu/openai_adapter.py", "cmu/codex_adapter.py"], workflow=["adapter rollout"]),
+                evidence=["Initial broad adapter rollout guidance."],
+                approved_by="Adapter owner",
+                liability_score=4,
+            )
+            decaying = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Weak stale candidate",
+                summary="Weak memory with no useful evidence should decay.",
+                confidence=0.5,
+            )
+            scoped = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Scoped lifecycle guidance",
+                summary="Scope can be narrowed by an approved refinement Candidate.",
+                scope=MemoryScope(code=["cmu", "cmu/cli.py"], workflow=["lifecycle"]),
+                evidence=["Stable scoped guidance."],
+                approved_by="Lifecycle owner",
+                liability_score=4,
+            )
+            scope_candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Scope refinement proposal for Scoped lifecycle guidance",
+                summary="Receipt evidence suggests narrowing scope.",
+                scope=MemoryScope(code=["cmu/cli.py"], workflow=["lifecycle"]),
+                evidence=[
+                    f"Scope refinement target: {scoped.id}",
+                    "Current scope: cmu, cmu/cli.py, lifecycle",
+                    "Suggested scope: cmu/cli.py, lifecycle",
+                ],
+                confidence=0.7,
+            )
+            for memory in [target, source, broad, decaying, scoped, scope_candidate]:
+                MemoryStore(tmp).add(memory)
+            drag = MemoryUseReceipt.create(
+                broad,
+                PreflightQuery(
+                    prompt="Debug OpenAI adapter rollout",
+                    actor="agent",
+                    area="adapters",
+                    files=["cmu/openai_adapter.py"],
+                    workflow=["adapter rollout"],
+                    risk="high",
+                ),
+                match=type("MatchStub", (), {"score": 4.1})(),
+            )
+            drag.outcome_signal = "committed_low_confidence"
+            drag.flags = ["no_file_overlap"]
+            MemoryUseStore(tmp).add(drag)
+
+            report = lifecycle_policy_review(MemoryStore(tmp).list(), MemoryUseStore(tmp).list())
+            actions = {item.action for item in report.items}
+            self.assertIn("merge-policy", actions, report.render())
+            self.assertIn("split-policy", actions, report.render())
+            self.assertIn("decay-policy", actions, report.render())
+            self.assertIn("scope-refinement-apply", actions, report.render())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-policy"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Lifecycle Policy Review", output.getvalue())
+            self.assertIn("merge-policy", output.getvalue())
+
+    def test_lifecycle_policy_apply_uses_real_store_paths_for_policy_outcomes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout retry guidance",
+                summary="Checkout retry guidance prevents duplicate charge timeout mistakes during release.",
+                signals=["checkout", "retry", "duplicate", "charge", "timeout", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["release"]),
+                evidence=["checkout retry duplicate charge timeout release evidence"],
+                use_this_path="Use idempotent retry handling for checkout release timeout recovery.",
+                avoid_this="Avoid duplicate charge retry timeout paths.",
+                challenge_only_if="Challenge when checkout retry evidence changes.",
+                confidence=0.8,
+            )
+            source = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout duplicate charge retry note",
+                summary="Checkout retry guidance prevents duplicate charge timeout mistakes during release.",
+                signals=["checkout", "retry", "duplicate", "charge", "timeout", "release"],
+                scope=MemoryScope(code=["checkout"], workflow=["release"]),
+                evidence=["duplicate checkout retry timeout release evidence"],
+                use_this_path="Use idempotent retry handling for checkout release timeout recovery.",
+                avoid_this="Avoid duplicate charge retry timeout paths.",
+                challenge_only_if="Challenge when checkout retry evidence changes.",
+                confidence=0.6,
+            )
+            broad = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Broad runtime adapter guidance",
+                summary="Adapter rollout guidance is too broad after drag evidence.",
+                scope=MemoryScope(code=["cmu", "cmu/openai_adapter.py", "cmu/codex_adapter.py"], workflow=["adapter rollout"]),
+                evidence=["Initial broad adapter rollout guidance."],
+                approved_by="Adapter owner",
+                authority_role="owner",
+                authority_consequence="high",
+                liability_score=4,
+            )
+            decaying = Memory.create(type=MemoryType.CANDIDATE, title="Weak stale candidate", summary="Weak memory should decay.", confidence=0.5)
+            scoped = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Scoped lifecycle guidance",
+                summary="Scope can be narrowed by an approved refinement Candidate.",
+                scope=MemoryScope(code=["cmu", "cmu/cli.py"], workflow=["lifecycle"]),
+                evidence=["Stable scoped guidance."],
+                approved_by="Lifecycle owner",
+                authority_role="owner",
+                authority_consequence="high",
+                liability_score=4,
+            )
+            scope_candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Scope refinement proposal for Scoped lifecycle guidance",
+                summary="Receipt evidence suggests narrowing scope.",
+                scope=MemoryScope(code=["cmu/cli.py"], workflow=["lifecycle"]),
+                evidence=[f"Scope refinement target: {scoped.id}", "Suggested scope: cmu/cli.py, lifecycle"],
+                confidence=0.7,
+            )
+            for memory in [target, source, broad, decaying, scoped, scope_candidate]:
+                MemoryStore(tmp).add(memory)
+            drag = MemoryUseReceipt.create(
+                broad,
+                PreflightQuery(prompt="Debug OpenAI adapter rollout", actor="agent", area="adapters", files=["cmu/openai_adapter.py"], workflow=["adapter rollout"], risk="high"),
+                match=type("MatchStub", (), {"score": 4.1})(),
+            )
+            drag.outcome_signal = "committed_low_confidence"
+            drag.flags = ["no_file_overlap"]
+            MemoryUseStore(tmp).add(drag)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "lifecycle-policy",
+                        "--approved-by",
+                        "Lifecycle council",
+                        "--approver-role",
+                        "owner",
+                        "--apply",
+                    ]
+                )
+            self.assertEqual(exit_code, 0, output.getvalue())
+            active = MemoryStore(tmp).list()
+            retired = MemoryStore(tmp).list(status=MemoryStatus.RETIRED)
+            loaded_target = next(memory for memory in active if memory.id == target.id)
+            loaded_scoped = next(memory for memory in active if memory.id == scoped.id)
+            self.assertTrue(any("Merged memory" in item for item in loaded_target.evidence))
+            self.assertTrue(any(memory.id == source.id for memory in retired))
+            self.assertEqual(loaded_scoped.scope.code, ["cmu/cli.py"])
+            self.assertTrue(any("Lifecycle scope refinement applied" in item for item in loaded_scoped.evidence))
+            self.assertTrue(any(memory.title.startswith("Split proposal") for memory in MemoryStore(tmp).list(type=MemoryType.CANDIDATE)))
+            self.assertTrue(any(memory.id == decaying.id for memory in retired))
 
     def test_review_export_writes_structured_non_cli_review_payload(self) -> None:
         with TemporaryDirectory() as tmp:

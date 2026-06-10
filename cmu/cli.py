@@ -39,6 +39,7 @@ from .lifecycle_ops import (
     lifecycle_proposals,
     lifecycle_scope_record,
 )
+from .lifecycle_policy import lifecycle_policy_review
 from .lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .mcp_setup_check import mcp_setup_check
@@ -762,6 +763,21 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_scope_suggest_parser.add_argument("--memory", default="", help="Limit scope suggestions to one memory id.")
     lifecycle_scope_suggest_parser.add_argument("--apply", action="store_true", help="Persist Candidate scope-refinement records. Defaults to preview.")
     lifecycle_scope_suggest_parser.set_defaults(func=cmd_lifecycle_scope_suggest)
+
+    lifecycle_policy_parser = subparsers.add_parser(
+        "lifecycle-policy",
+        help="Review and apply controlled lifecycle merge, split, decay, and scope-refinement policy cards.",
+    )
+    lifecycle_policy_parser.add_argument("--memory", default="", help="Limit policy review to one memory id.")
+    lifecycle_policy_parser.add_argument("--approved-by", default="", help="Approval name for controlled merge, decay, or scope narrowing.")
+    lifecycle_policy_parser.add_argument(
+        "--approver-role",
+        choices=["agent", "member", "owner", "team", "org"],
+        default="",
+        help="Authority role for stable-memory decay actions.",
+    )
+    lifecycle_policy_parser.add_argument("--apply", action="store_true", help="Persist safe or explicitly approved policy outcomes. Defaults to preview.")
+    lifecycle_policy_parser.set_defaults(func=cmd_lifecycle_policy)
 
     gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
     gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
@@ -2274,6 +2290,23 @@ def cmd_lifecycle_scope_suggest(args: argparse.Namespace, store: MemoryStore) ->
         memory_id=args.memory,
         apply=args.apply,
     )
+    for memory in report.created_memories:
+        store.add(memory)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_lifecycle_policy(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_policy_review(
+        [*store.list(), *store.list(status=MemoryStatus.RETIRED)],
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+        apply=args.apply,
+    )
+    for memory in report.changed_memories:
+        store.update(memory)
     for memory in report.created_memories:
         store.add(memory)
     print(report.render())

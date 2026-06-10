@@ -252,11 +252,12 @@ First lifecycle settling and scope-refinement automation slices now implemented:
 - Both commands are preview-first and persist only through real `MemoryStore` paths when `--apply` is used.
 - Automated tests verify gravity-backed settling, receipt-pressure scope Candidate creation, and CLI dispatch against persisted stores. Manual verification under `.manual/five-capability-proof-20260610` settled `mem_2804382cc216` and created a scope-refinement Candidate for `mem_81dbb7399787`.
 
-Still needed:
+Lifecycle policy review and controlled apply slice now implemented:
 
-- Additional settling automation and richer merge/split/decay policy beyond the first controlled settling path.
-- Scope refinement automation beyond the first receipt-pressure Candidate suggestion path.
-- Cross-surface lifecycle review UX beyond CLI commands.
+- `cmu lifecycle-policy` now gives one cross-surface review/apply surface over Memory Gravity, quality/decay pressure, duplicate-like merge pressure, split pressure, and scope-refinement Candidates.
+- The policy closes five concrete lifecycle chunks: approved duplicate-like merge policy, split Candidate creation from broad-scope drag evidence, decay policy for decay-ready or drag-pressured memories, approved safe scope-refinement application, and one compact lifecycle review card surface that ties those decisions together.
+- Apply mode reuses existing controlled gates where possible: merges delegate to `lifecycle_merge`, decay delegates to `apply_decay_action`, split pressure records a Candidate rather than rewriting the source memory, and stable scope refinement is limited to approved safe narrowing.
+- Automated tests verify preview and apply behavior through real `MemoryStore`, `MemoryUseStore`, and CLI paths. Manual verification under `.manual/lifecycle-policy-proof` previewed exactly five policy cards, then applied merge, split, decay, Candidate retirement, and approved scope narrowing through `python -m cmu --root .manual/lifecycle-policy-proof lifecycle-policy --approved-by "Lifecycle council" --approver-role owner --apply`.
 
 ### 6. Real Memory Base Cleanup
 
@@ -502,11 +503,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete multi-repo and organization memory chunks end to end through `cmu org-memory-review`: multi-repo memory boundary detection beyond local team-scope records, delegated owner/team review filtering, cross-repo stable authority gating, organization-pattern classification from strong two-repo linked evidence, and explicit evidence-backed expansion rules for when memory can move beyond one repo/module/team. The slice has real code, CLI wiring, JSON and strict modes, automated tests through real `MemoryStore`, `MemoryUseStore`, and `TeamDirectoryStore` paths, workspace-root manual verification, and isolated manual proof under `.manual/org-memory-review-proof`.
+This cycle implemented five concrete lifecycle automation chunks end to end through `cmu lifecycle-policy`: approved duplicate-like merge policy, split Candidate creation from broad-scope drag evidence, decay policy for decay-ready or drag-pressured memories, approved safe scope-refinement application, and one cross-surface lifecycle review UX tying merge/split/decay/scope decisions together. The slice has real code, CLI wiring, automated tests through real `MemoryStore` and `MemoryUseStore` paths, workspace-root read-only verification, and isolated manual proof under `.manual/lifecycle-policy-proof`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, implement external embedding/vector durability, add a durable graph-backed memory store, or close the remaining runner-scenario/evaluation maturity gap. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: implement external embedding/vector durability, add a durable graph-backed memory store, close the remaining runner-scenario/evaluation maturity gap, or continue hardening cleanup evidence and governance handoff flows. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
