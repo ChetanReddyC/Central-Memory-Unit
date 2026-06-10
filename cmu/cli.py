@@ -12,6 +12,7 @@ from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .codex_adapter import codex_runner_report
+from .cleanup_workflows import authority_cleanup, cleanup_audit_bundle, cleanup_evidence, receipt_closure
 from .copilot_adapter import copilot_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
@@ -934,6 +935,30 @@ def build_parser() -> argparse.ArgumentParser:
     readiness_parser = subparsers.add_parser("readiness", help="Show the operator cleanup/readiness workflow for the memory base.")
     readiness_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history.")
     readiness_parser.set_defaults(func=cmd_readiness)
+
+    authority_cleanup_parser = subparsers.add_parser("authority-cleanup", help="Preview or apply missing stable authority metadata cleanup.")
+    authority_cleanup_parser.add_argument("--owner", default="", help="Default accountable owner/team for missing authority metadata.")
+    authority_cleanup_parser.add_argument("--approved-by", default="", help="Approver used when applying authority metadata.")
+    authority_cleanup_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="owner")
+    authority_cleanup_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="high")
+    authority_cleanup_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
+    authority_cleanup_parser.add_argument("--apply", action="store_true", help="Persist authority cleanup decisions.")
+    authority_cleanup_parser.set_defaults(func=cmd_authority_cleanup)
+
+    receipt_closure_parser = subparsers.add_parser("receipt-closure", help="Preview or resolve unlinked receipts without commit evidence.")
+    receipt_closure_parser.add_argument("--outcome", choices=["no-checkpoint", "not-applicable", "superseded"], default="not-applicable")
+    receipt_closure_parser.add_argument("--note", default="Closed by cleanup receipt workflow.")
+    receipt_closure_parser.add_argument("--resolved-by", default="cmu receipt-closure")
+    receipt_closure_parser.add_argument("--apply", action="store_true", help="Persist receipt resolution decisions.")
+    receipt_closure_parser.set_defaults(func=cmd_receipt_closure)
+
+    cleanup_evidence_parser = subparsers.add_parser("cleanup-evidence", help="Create focused cleanup evidence receipts for Situation, Anti-Pattern, and Question memories.")
+    cleanup_evidence_parser.add_argument("--apply", action="store_true", help="Persist focused cleanup evidence receipts.")
+    cleanup_evidence_parser.set_defaults(func=cmd_cleanup_evidence)
+
+    cleanup_audit_parser = subparsers.add_parser("cleanup-audit", help="Render post-evidence quality/governance/analytics/graph/lifecycle outputs.")
+    cleanup_audit_parser.add_argument("--write", action="store_true", help="Write .cmu/cleanup_audit.json.")
+    cleanup_audit_parser.set_defaults(func=cmd_cleanup_audit)
 
     decay_parser = subparsers.add_parser("decay-apply", help="Apply an explicit evidence-backed memory decay action.")
     decay_parser.add_argument("memory_id", help="Memory id to weaken, demote, or retire.")
@@ -2626,6 +2651,52 @@ def cmd_readiness(args: argparse.Namespace, store: MemoryStore) -> int:
             include_retired=args.include_retired,
         ).render()
     )
+    return 0
+
+
+def cmd_authority_cleanup(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.apply and not args.approved_by:
+        raise SystemExit("authority-cleanup --apply requires --approved-by")
+    report = authority_cleanup(
+        args.root,
+        store.list(),
+        owner=args.owner,
+        approved_by=args.approved_by,
+        approver_role=args.approver_role,
+        consequence=args.consequence,
+        review_due=args.review_due,
+        apply=args.apply,
+        store=store,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_receipt_closure(args: argparse.Namespace, store: MemoryStore) -> int:
+    use_store = MemoryUseStore(args.root)
+    report = receipt_closure(
+        args.root,
+        use_store.list(),
+        outcome=args.outcome,
+        note=args.note,
+        resolved_by=args.resolved_by,
+        apply=args.apply,
+        use_store=use_store,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_cleanup_evidence(args: argparse.Namespace, store: MemoryStore) -> int:
+    use_store = MemoryUseStore(args.root)
+    report = cleanup_evidence(args.root, store.list(), apply=args.apply, use_store=use_store)
+    print(report.render())
+    return 0
+
+
+def cmd_cleanup_audit(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = cleanup_audit_bundle(args.root, store.list(), MemoryUseStore(args.root).list(), write=args.write)
+    print(report.render())
     return 0
 
 

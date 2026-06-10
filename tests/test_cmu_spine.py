@@ -12335,11 +12335,96 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0, rendered)
             self.assertIn("CMU Review UI", rendered)
             self.assertIn("Written: yes", rendered)
+            self.assertIn("Action Packets:", rendered)
             self.assertTrue(html_path.exists())
+            actions_path = Path(tmp) / ".cmu" / "review-ui" / "actions.json"
+            self.assertTrue(actions_path.exists())
+            packets = json.loads(actions_path.read_text(encoding="utf-8"))
+            self.assertEqual(packets[0]["schema"], "cmu-review-ui-action/v1")
+            self.assertEqual(packets[0]["action"], "authority")
             html_text = html_path.read_text(encoding="utf-8")
             self.assertIn("CMU Review UI", html_text)
             self.assertIn("UI authority gap", html_text)
             self.assertIn("cmu authority-set", html_text)
+            self.assertIn("Controlled action packet", html_text)
+
+    def test_cleanup_workflows_close_authority_receipts_evidence_and_audit_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Cleanup authority gap",
+                summary="Stable cleanup memory needs explicit authority metadata.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu"], actor=["agent"]),
+                approved_by="legacy approver",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Cleanup Situation evidence",
+                summary="Situation cleanup should collect focused use evidence.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/readiness.py"], workflow=["cleanup"], actor=["agent"]),
+                use_this_path="Use readiness before cleanup changes.",
+                evidence=["Seeded from cleanup pass."],
+            )
+            anti_pattern = Memory.create(
+                type=MemoryType.ANTI_PATTERN,
+                title="Do not treat docs as authority",
+                summary="Strategic docs are evidence, not stable authority.",
+                scope=MemoryScope(ownership=["Platform"], code=["CMU_Major_Unfinished_Work.md"], workflow=["cleanup"], actor=["agent"]),
+                avoid_this="Do not import stale docs as stable memory.",
+                evidence=["Cleanup curation rejected superseded docs."],
+            )
+            question = Memory.create(
+                type=MemoryType.QUESTION,
+                title="Which cleanup item is next",
+                summary="Cleanup priority should come from readiness evidence.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu"], workflow=["cleanup"], actor=["agent"]),
+                evidence=["Open cleanup planning question."],
+            )
+            for memory in [practice, situation, anti_pattern, question]:
+                store.add(memory)
+            receipt = MemoryUseReceipt.create(
+                practice,
+                PreflightQuery(prompt="Cleanup stable authority", actor="agent", area="cmu", files=["cmu/readiness.py"], risk="medium"),
+                match=type("MatchStub", (), {"score": 3.8})(),
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "authority-cleanup", "--owner", "Platform", "--approved-by", "Platform owner", "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            loaded_practice = next(item for item in MemoryStore(tmp).list() if item.id == practice.id)
+            self.assertEqual(loaded_practice.authority_owner, "Platform")
+            self.assertEqual(loaded_practice.authority_role, "owner")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "receipt-closure", "--outcome", "not-applicable", "--note", "No checkpoint was expected.", "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertEqual(MemoryUseStore(tmp).get(receipt.id).outcome_signal, "not_applicable")
+
+            before_evidence = len(MemoryUseStore(tmp).list())
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "cleanup-evidence", "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            evidence_receipts = [item for item in MemoryUseStore(tmp).list() if item.source_command == "cleanup-evidence"]
+            self.assertEqual(len(evidence_receipts), 3)
+            self.assertEqual(len(MemoryUseStore(tmp).list()), before_evidence + 3)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "cleanup-audit", "--write"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            audit_path = Path(tmp) / ".cmu" / "cleanup_audit.json"
+            self.assertTrue(audit_path.exists())
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertIn("CMU Memory Quality", audit["quality"])
+            self.assertIn("CMU Practice/Anchor Governance", audit["governance"])
+            self.assertIn("CMU Usefulness and Drag Analytics", audit["analytics"])
+            self.assertIn("CMU Graph Memory View", audit["graph"])
+            self.assertIn("CMU Core Memory Lifecycle", audit["lifecycle"])
 
     def test_product_console_combines_graph_review_evidence_cleanup_and_navigation(self) -> None:
         with TemporaryDirectory() as tmp:

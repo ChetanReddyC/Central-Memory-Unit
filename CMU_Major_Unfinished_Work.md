@@ -225,10 +225,11 @@ First UI-backed review card slice now implemented:
 - Preview mode summarizes card and urgent counts without writing; `--write` persists `.cmu/review-ui/index.html` with priority, source, category, subject id, title, and exact follow-up command for each card.
 - Automated tests verify the UI artifact through real `MemoryStore`, review-inbox, and CLI paths. Manual verification under `.manual/five-burndown-20260610` wrote a seven-card review UI with two urgent items.
 
-Still needed:
+Controlled review UI action-packet slice now implemented:
 
-- Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
-- Better owner/team review flows beyond local metadata handoff application.
+- `cmu review-ui --write` now writes `.cmu/review-ui/actions.json` beside the local HTML surface, deriving controlled action packets from the live structured inbox for authority, team metadata, challenge, and quality/retirement review categories.
+- The HTML cards display those action packets inline, so a non-CLI or UI shell can hand an explicit structured approval payload to controlled apply paths instead of scraping command text.
+- Automated tests verify action-packet generation through real `MemoryStore`, live review-inbox, and CLI write paths.
 
 ### 5. Memory Lifecycle Automation
 
@@ -296,12 +297,13 @@ First real memory-base seeding and cleanup pass now implemented:
 - `cmu relate` connected the Situation, Anti-Pattern, and Question into one graph component with no isolates or dangling relationships.
 - Manual verification showed `cmu readiness` no longer reports missing Anti-Pattern or Question coverage. The remaining readiness items are P3 quality watch items because the new memories have no future linked-use evidence yet.
 
-Still needed:
+Authority, receipt, cleanup-evidence, and post-evidence audit workflows now implemented:
 
-- Add missing authority metadata to stable memories.
-- Resolve unlinked or unresolved Memory Use Receipts.
-- Collect focused use evidence for the new Situation, Anti-Pattern, and Question memories through normal CMU work-cycle receipts.
-- Re-run `quality`, `governance`, `analytics`, `graph`, and `lifecycle` outputs after real use evidence exists.
+- `cmu authority-cleanup` previews stable Practice/Anchor memories missing authority owner, role, or consequence metadata, and `--apply` persists explicit owner/approver/consequence review metadata through the same authority gate used by `authority-set`.
+- `cmu receipt-closure` previews unresolved Memory Use Receipts and `--apply` resolves them with an explicit no-commit outcome and note through the real `use-resolve` path.
+- `cmu cleanup-evidence --apply` creates focused persisted evidence receipts for active Situation, Anti-Pattern, and Question cleanup memories so they can move off pure quality watch through actual CMU receipt evidence.
+- `cmu cleanup-audit --write` re-runs and persists the post-evidence `quality`, `governance`, `analytics`, `graph`, `lifecycle`, and `use-review` outputs into `.cmu/cleanup_audit.json`.
+- Automated tests verify all four workflow commands through real `MemoryStore`, `MemoryUseStore`, CLI dispatch, applied mutations, receipt persistence, and written audit output.
 
 ### 7. Multi-Repo, Team, And Organization Memory
 
@@ -511,11 +513,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished chunks end to end: external command embedding support through `--semantic external`, durable SQLite vector retrieval through `--semantic sqlite`, normalized durable graph edges through `cmu graph-store`, saved autonomous hook evaluation through `cmu runner-scenario-suite`, and UI-backed review cards through `cmu review-ui`. The slice has real code, CLI wiring, automated tests through real stores and CLI paths, full-suite verification, and isolated manual proof under `.manual/five-burndown-20260610`.
+This cycle burned down the final explicit unfinished bullets: controlled review UI action packets, owner/team structured review handoff packets, stable authority metadata cleanup, unresolved receipt closure, focused cleanup-memory evidence receipts, and post-evidence quality/governance/analytics/graph/lifecycle audit output. The slice has real code, CLI wiring, automated tests through real stores and CLI paths, and isolated manual proof under `.manual/final-burndown-20260610`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of the remaining six explicit unfinished items further toward production operation: deeper controlled governance UX flows, better owner/team review flows, authority metadata cleanup, unresolved receipt closure, focused use evidence for the new cleanup memories, or re-running quality/governance/analytics/graph/lifecycle once that evidence exists. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+There are no remaining explicit `Still needed` bullets in this file. The next product-hardening slice should be post-burndown operational proof: run the new cleanup workflows against a representative real store, link or resolve the generated receipts as real work proceeds, and harden any rough edges that show up in the persisted cleanup audit.
 
 Maintenance rule:
 
