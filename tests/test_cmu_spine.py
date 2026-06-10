@@ -36,6 +36,7 @@ from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.mcp_setup_check import mcp_setup_check
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
+from cmu.org_memory import org_memory_review
 from cmu.openai_adapter import OPENAI_RUNNER_ADAPTER_VERSION, OpenAIRunnerAdapter, openai_runner_report
 from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, import_portable_bundle, validate_portable_bundle
 from cmu.portable_compat import portable_compat_report
@@ -10217,6 +10218,158 @@ class TeamAuthorityModelTests(unittest.TestCase):
             self.assertIn("billing-service/Billing", rendered)
             self.assertIn("Records Missing Memory Coverage: 1", rendered)
             self.assertIn("matched=none", rendered)
+
+    def test_org_memory_review_gates_multi_repo_authority_patterns_and_expansion_rules(self) -> None:
+        with TemporaryDirectory() as tmp:
+            checkout = TeamScopeRecord.create(
+                repo="checkout-service",
+                team="Checkout",
+                owner="Platform council",
+                code=["services/checkout.py"],
+                workflow=["release"],
+                authority_role="owner",
+                consequence="high",
+            )
+            billing = TeamScopeRecord.create(
+                repo="billing-service",
+                team="Billing",
+                owner="Platform council",
+                code=["services/billing.py"],
+                workflow=["release"],
+                authority_role="owner",
+                consequence="high",
+            )
+            TeamDirectoryStore(tmp).add(checkout)
+            TeamDirectoryStore(tmp).add(billing)
+            blocked = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Cross-repo release rollback needs owner approval",
+                summary="Checkout and billing rollback practices should not expand without owner review.",
+                signals=["release", "rollback"],
+                scope=MemoryScope(code=["services/checkout.py", "services/billing.py"], workflow=["release"]),
+                evidence=["Both services share the release rollback workflow."],
+                use_this_path="Route cross-repo rollback memory through owner review.",
+                avoid_this="Do not silently transfer one repo practice to another repo.",
+                challenge_only_if="A repo has different release authority.",
+                liability_score=4,
+                confidence=0.85,
+            )
+            approved = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Shared release markers prevent stale rollback",
+                summary="Release marker checks apply to checkout and billing rollbacks.",
+                signals=["release", "marker"],
+                scope=MemoryScope(code=["services/checkout.py", "services/billing.py"], workflow=["release"]),
+                evidence=["Two repositories produced strong linked uses."],
+                use_this_path="Check release markers before rollback.",
+                avoid_this="Do not roll back without marker inspection.",
+                challenge_only_if="The repo has a service-specific marker system.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="Platform council",
+                authority_owner="Platform council",
+                authority_role="org",
+                authority_consequence="high",
+            )
+            local = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout-only deploy quirk",
+                summary="Checkout has a local deploy quirk.",
+                signals=["checkout", "deploy"],
+                scope=MemoryScope(code=["services/checkout.py"], workflow=["release"]),
+                evidence=["Only checkout has shown this behavior."],
+                use_this_path="Keep this guidance local to checkout.",
+                avoid_this="Do not apply it to billing.",
+                challenge_only_if="Billing shows the same evidence.",
+            )
+            MemoryStore(tmp).add(blocked)
+            MemoryStore(tmp).add(approved)
+            MemoryStore(tmp).add(local)
+            for memory, file_name in [(approved, "services/checkout.py"), (approved, "services/billing.py")]:
+                receipt = MemoryUseReceipt(
+                    id=f"use_{file_name.split('/')[1].split('.')[0]}",
+                    memory_id=memory.id,
+                    memory_title=memory.title,
+                    prompt="release rollback",
+                    actor="agent",
+                    area="release",
+                    files=[file_name],
+                    risk="high",
+                    match_score=3.0,
+                    workflow=["release"],
+                    commit_hash=f"commit-{file_name}",
+                    outcome_signal="committed",
+                    link_confidence=0.92,
+                )
+                MemoryUseStore(tmp).add(receipt)
+
+            report = org_memory_review(
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                TeamDirectoryStore(tmp).list(),
+            )
+            rendered = report.render()
+
+            self.assertFalse(report.passed)
+            self.assertIn("multi-repo-boundary", rendered)
+            self.assertIn("blocked-missing-authority", rendered)
+            self.assertIn("evidence-backed-pattern", rendered)
+            self.assertIn("local-boundary", rendered)
+            self.assertIn("Expansion Rules:", rendered)
+
+            owner_report = org_memory_review(
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                TeamDirectoryStore(tmp).list(),
+                owner="Platform council",
+            )
+            self.assertGreaterEqual(len(owner_report.items), 3)
+            self.assertTrue(all(item.owner == "Platform council" for item in owner_report.items if item.owner))
+
+    def test_cli_org_memory_review_json_and_strict_use_real_stores(self) -> None:
+        with TemporaryDirectory() as tmp:
+            TeamDirectoryStore(tmp).add(
+                TeamScopeRecord.create(
+                    repo="checkout-service",
+                    team="Checkout",
+                    owner="Release owner",
+                    code=["services/checkout.py"],
+                    workflow=["release"],
+                )
+            )
+            TeamDirectoryStore(tmp).add(
+                TeamScopeRecord.create(
+                    repo="billing-service",
+                    team="Billing",
+                    owner="Release owner",
+                    code=["services/billing.py"],
+                    workflow=["release"],
+                )
+            )
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Release rollback crosses repo boundaries",
+                summary="Cross-repo rollback memory needs explicit owner review.",
+                signals=["release", "rollback"],
+                scope=MemoryScope(code=["services/checkout.py", "services/billing.py"], workflow=["release"]),
+                evidence=["Two team scopes overlap this memory."],
+                use_this_path="Send cross-repo memory through org review.",
+                avoid_this="Do not broaden silently.",
+                challenge_only_if="A narrower repo-specific rule exists.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            MemoryStore(tmp).add(practice)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "org-memory-review", "--json", "--strict"])
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(payload["version"], "cmu-org-memory-review/v1")
+            self.assertFalse(payload["passed"])
+            self.assertTrue(any(item["status"] == "blocked-missing-authority" for item in payload["items"]))
 
     def test_authority_assignment_enforces_consequence_permission(self) -> None:
         practice = Memory.create(

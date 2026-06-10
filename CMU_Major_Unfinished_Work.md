@@ -319,13 +319,14 @@ First five-surface hardening-cycle gate now implemented:
 - Automated tests verify strict pass and strict failure behavior through real `TeamDirectoryStore`, `MemoryStore`, `MemoryUseStore`, Git initialization, exported portable fixtures, and CLI rendering while checking source-store files remain unchanged.
 - Manual verification under `.manual/hardening-cycle-proof` created a real Git-backed proof root, a team-scope boundary, a critical Practice memory with org-level approval, valid/invalid/future portable fixtures, and confirmed `cmu hardening-cycle --strict` passed all five checks.
 
-Still needed:
+First multi-repo and organization memory review gate now implemented:
 
-- Multi-repo memory boundaries beyond local team-scope records.
-- Richer delegation and owner/team review workflows.
-- Cross-repo authority and ownership.
-- Organization-level patterns with narrow, evidence-backed scope.
-- Clear rules for when memory can expand beyond one repo/module/team.
+- `cmu org-memory-review` reads real memories, Memory Use Receipts, and `TeamDirectoryStore` records to classify local repo boundaries, multi-repo overlaps, cross-repo authority readiness, and organization-pattern evidence.
+- `--owner` gives delegated owners and councils a focused review path across matching repo/team boundaries, while `--json` gives non-CLI review surfaces a deterministic payload.
+- `--strict` exits non-zero when cross-repo Practice/Anchor memory lacks explicit authority owner, approver role, consequence, or approval, or when org-pattern claims lack strong linked evidence in at least two repo boundaries.
+- The report renders explicit expansion rules: keep memory local until evidence supports expansion, route multi-repo candidates to an owner/team review, require stable authority before cross-repo use, and treat org-level patterns as evidence-backed only after two-repo strong-use proof.
+- Automated tests verify multi-repo boundary detection, delegated owner filtering, cross-repo authority blocking, evidence-backed org-pattern classification, expansion-rule rendering, CLI JSON, and strict failure behavior through real stores and receipts.
+- Manual verification ran `cmu --root . org-memory-review` against the workspace store, then seeded `.manual/org-memory-review-proof` with real team scopes, two Practice memories, and linked receipts. `cmu --root .manual/org-memory-review-proof org-memory-review` showed blocked cross-repo authority plus an evidence-backed org pattern, and `--json --strict` exited non-zero on the missing-authority Practice.
 
 ### 8. Scenario And Evaluation Maturity
 
@@ -501,11 +502,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete retrieval, evaluation, and packaging chunks end to end: expectation-backed retrieval precision/recall/rejection/grounding metrics through `cmu retrieval-metrics`, retrieval benchmarks against generic vector, graphless, and no-memory baselines through `cmu retrieval-benchmark`, scenario-level usefulness/drag metrics from saved expectations, seedable retrieval miss/bad-match/governance-block/challenge-outcome evaluation cases through `cmu scenario-eval-fixtures`, and read-only package publication workflow validation through `cmu publish-check`. The slice has real code, CLI wiring, persisted scenario-case writes, README/install-check adoption updates, manual verification under `.manual/retrieval-metrics-proof`, and the full unittest suite passing.
+This cycle implemented five concrete multi-repo and organization memory chunks end to end through `cmu org-memory-review`: multi-repo memory boundary detection beyond local team-scope records, delegated owner/team review filtering, cross-repo stable authority gating, organization-pattern classification from strong two-repo linked evidence, and explicit evidence-backed expansion rules for when memory can move beyond one repo/module/team. The slice has real code, CLI wiring, JSON and strict modes, automated tests through real `MemoryStore`, `MemoryUseStore`, and `TeamDirectoryStore` paths, workspace-root manual verification, and isolated manual proof under `.manual/org-memory-review-proof`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add cross-repo authority boundaries, implement external embedding/vector durability, or add a durable graph-backed memory store. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, implement external embedding/vector durability, add a durable graph-backed memory store, or close the remaining runner-scenario/evaluation maturity gap. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

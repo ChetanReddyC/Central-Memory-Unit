@@ -44,6 +44,7 @@ from .mcp import StdioMcpServer, CmuMcpAdapter
 from .mcp_setup_check import mcp_setup_check
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
+from .org_memory import org_memory_review
 from .openai_adapter import openai_runner_report
 from .pipeline import hybrid_pipeline_report
 from .portable import export_bundle_from_root, import_portable_bundle, load_portable_bundle, validate_portable_bundle
@@ -849,6 +850,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     team_handoff_parser = subparsers.add_parser("team-review-handoff", help="Show focused owner/team review handoff cards.")
     team_handoff_parser.set_defaults(func=cmd_team_review_handoff)
+
+    org_memory_parser = subparsers.add_parser("org-memory-review", help="Review multi-repo/team/org memory expansion readiness.")
+    org_memory_parser.add_argument("--owner", default="", help="Limit review items to one owner/team string.")
+    org_memory_parser.add_argument("--json", action="store_true", help="Render the review gate as JSON.")
+    org_memory_parser.add_argument("--strict", action="store_true", help="Exit non-zero when cross-repo authority or evidence is blocked.")
+    org_memory_parser.set_defaults(func=cmd_org_memory_review)
 
     team_action_parser = subparsers.add_parser("team-review-action", help="Apply a controlled owner/team handoff action.")
     team_action_parser.add_argument("subject_id", help="Memory id or team-scope id from team-review-handoff.")
@@ -2458,6 +2465,17 @@ def cmd_team_review_handoff(args: argparse.Namespace, store: MemoryStore) -> int
     report = team_review_handoffs(store.list(), TeamDirectoryStore(args.root).list())
     print(report.render())
     return 0
+
+
+def cmd_org_memory_review(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = org_memory_review(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        TeamDirectoryStore(args.root).list(),
+        owner=args.owner,
+    )
+    print(report.to_json() if args.json else report.render())
+    return 1 if args.strict and not report.passed else 0
 
 
 def cmd_team_review_action(args: argparse.Namespace, store: MemoryStore) -> int:
