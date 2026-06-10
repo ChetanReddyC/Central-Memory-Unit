@@ -16,6 +16,8 @@ from .retrieval import Match, PreflightQuery
 
 DEFAULT_USE_FILE = "uses.json"
 WIP_TERMS = {"wip", "tmp", "temp", "checkpoint", "draft"}
+DOCUMENTATION_SUFFIXES = {".md", ".mdx", ".rst", ".txt", ".adoc"}
+DOCUMENTATION_PATH_PARTS = {"docs", "doc", "documentation"}
 DEFAULT_AUTO_LINK_MIN_SCORE = 0.55
 AUTO_LINK_AMBIGUITY_MARGIN = 0.12
 STRONG_COMMIT_CONFIDENCE = 0.75
@@ -2164,13 +2166,16 @@ def link_flags(receipt: MemoryUseReceipt) -> list[str]:
         flags.append("reverted_after_use")
     if message_terms & WIP_TERMS:
         flags.append("wip_commit")
+    documentation_only = is_documentation_only(receipt.commit_files)
+    if documentation_only:
+        flags.append("documentation_only")
     if not receipt.commit_files:
         flags.append("no_commit_file_context")
     else:
         overlap = file_overlap(receipt.files, receipt.commit_files)
         if not overlap:
             flags.append("no_file_overlap")
-        elif len(receipt.commit_files) >= max(4, len(overlap) * 3):
+        elif not documentation_only and len(receipt.commit_files) >= max(4, len(overlap) * 3):
             flags.append("mixed_commit")
     if is_delayed(receipt):
         flags.append("delayed_commit")
@@ -2195,6 +2200,8 @@ def link_confidence(receipt: MemoryUseReceipt) -> float:
             confidence += 0.35
         else:
             confidence -= 0.2
+        if "documentation_only" in receipt.flags and overlap:
+            confidence += 0.05
     else:
         confidence -= 0.1
     if receipt.risk == "high":
@@ -2229,6 +2236,9 @@ def score_auto_link_candidate(
     if overlap:
         score += 0.4
         reasons.append(f"file overlap: {format_list(overlap[:3])}")
+        if is_documentation_only(commit.files):
+            score += 0.05
+            reasons.append("documentation-only checkpoint")
     elif receipt.files and commit.files:
         score -= 0.15
         reasons.append("no file overlap")
@@ -2337,6 +2347,23 @@ def file_overlap(receipt_files: list[str], commit_files: list[str]) -> list[str]
             if receipt_file in commit_file or commit_file in receipt_file:
                 overlap.append(commit_file)
     return sorted(set(overlap))
+
+
+def is_documentation_only(files: list[str]) -> bool:
+    cleaned = clean_list(files)
+    if not cleaned:
+        return False
+    return all(is_documentation_file(item) for item in cleaned)
+
+
+def is_documentation_file(path: str) -> bool:
+    normalized = path.strip().replace("\\", "/").lower()
+    if not normalized:
+        return False
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in DOCUMENTATION_PATH_PARTS for part in parts[:-1]):
+        return True
+    return any(normalized.endswith(suffix) for suffix in DOCUMENTATION_SUFFIXES)
 
 
 def clean_list(values: list[str]) -> list[str]:

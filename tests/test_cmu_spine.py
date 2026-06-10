@@ -12116,6 +12116,217 @@ class FiveChunkBurndownCycleTests(unittest.TestCase):
             self.assertEqual(exit_code, 0, output.getvalue())
             self.assertIn("cmu-added-guidance", output.getvalue())
 
+    def test_cli_work_loop_run_executes_runtime_events_and_auto_evidence_session(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Check release marker before retry",
+                summary="Checkout rollback retries must inspect release marker state first.",
+                signals=["checkout", "rollback", "release marker"],
+                scope=MemoryScope(code=["src/checkout/release.py"], workflow=["rollback"], actor=["agent"]),
+                evidence=["A previous rollback succeeded after release marker inspection."],
+                use_this_path="Inspect the release marker before retrying rollback.",
+                avoid_this="Do not retry the rollback blindly.",
+                challenge_only_if="Rollback no longer uses release markers.",
+                approved_by="release owner",
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(
+                    prompt="Fix checkout rollback release marker retry",
+                    actor="agent",
+                    area="checkout",
+                    files=["src/checkout/release.py"],
+                    workflow=["rollback"],
+                    risk="high",
+                ),
+                match=type("MatchStub", (), {"score": 4.2})(),
+                source_command="work-loop-run",
+            )
+            MemoryUseStore(tmp).add(receipt)
+            write_and_commit(tmp, "src/checkout/release.py", "MARKER = 'checked'\n", "Fix checkout rollback release marker")
+            event_file = Path(tmp) / "events.json"
+            event_file.write_text(json.dumps({"events": [{"event": "evidence.session"}]}), encoding="utf-8")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "work-loop-run",
+                        "--input-file",
+                        str(event_file),
+                        "--auto-evidence",
+                        "--apply-evidence",
+                        "--record",
+                    ]
+                )
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Automatic Work Loop Run", output.getvalue())
+            self.assertIn("evidence.session", output.getvalue())
+            linked = MemoryUseStore(tmp).get(receipt.id)
+            self.assertEqual(linked.metadata_source, "git-monitor")
+            self.assertTrue((Path(tmp) / ".cmu" / "work_loop_runs.json").exists())
+            self.assertTrue((Path(tmp) / ".cmu" / "evidence_sessions.json").exists())
+
+    def test_evidence_monitor_links_documentation_only_checkpoint_without_mixed_drag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Document release notes after rollback",
+                summary="Release rollback work should update the operator notes.",
+                signals=["release notes", "rollback"],
+                scope=MemoryScope(code=["docs/release.md"], workflow=["documentation"], actor=["agent"]),
+                evidence=["Operators relied on the rollback notes."],
+                use_this_path="Update release notes with the rollback decision.",
+                avoid_this="Do not leave operators without the note.",
+            )
+            MemoryStore(tmp).add(memory)
+            write_and_commit(tmp, "docs/release.md", "rollback notes\n", "Update rollback release notes")
+            metadata = inspect_git_commit(tmp, "HEAD")
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(
+                    prompt="Update rollback release notes",
+                    actor="agent",
+                    area="docs",
+                    files=["docs/release.md"],
+                    workflow=["documentation"],
+                    risk="medium",
+                ),
+                match=type("MatchStub", (), {"score": 3.9})(),
+            )
+            receipt.surfaced_at = before_commit(metadata, minutes=5)
+            MemoryUseStore(tmp).add(receipt)
+
+            report = monitor_checkpoints(tmp, MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), apply=True)
+            self.assertEqual(report.linked_count, 1, report.render())
+            linked = MemoryUseStore(tmp).get(receipt.id)
+            self.assertIn("documentation_only", linked.flags)
+            self.assertNotIn("mixed_commit", linked.flags)
+            self.assertEqual(linked.outcome_signal, "committed")
+
+    def test_evidence_monitor_classifies_multi_commit_candidates_for_review(self) -> None:
+        with TemporaryDirectory() as tmp:
+            init_git_repo(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Verify billing replay before settlement",
+                summary="Billing settlement fixes should replay invoices first.",
+                signals=["billing", "settlement", "replay"],
+                scope=MemoryScope(code=["billing/replay.py"], workflow=["incident"], actor=["agent"]),
+                evidence=["Replay caught settlement drift."],
+                use_this_path="Replay invoices before settlement changes.",
+                avoid_this="Do not patch totals without replay.",
+                approved_by="billing owner",
+            )
+            MemoryStore(tmp).add(memory)
+            write_and_commit(tmp, "billing/replay.py", "STEP = 1\n", "Billing replay settlement guard")
+            first = inspect_git_commit(tmp, "HEAD")
+            write_and_commit(tmp, "billing/replay.py", "STEP = 2\n", "Billing replay settlement followup")
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(
+                    prompt="Fix billing settlement replay drift",
+                    actor="agent",
+                    area="billing",
+                    files=["billing/replay.py"],
+                    workflow=["incident"],
+                    risk="high",
+                ),
+                match=type("MatchStub", (), {"score": 4.1})(),
+            )
+            receipt.surfaced_at = before_commit(first, minutes=5)
+            MemoryUseStore(tmp).add(receipt)
+
+            report = monitor_checkpoints(tmp, MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), apply=True)
+            self.assertEqual(report.linked_count, 0, report.render())
+            self.assertEqual(report.review_count, 1, report.render())
+            self.assertIn("multi_commit_candidates", report.items[0].flags)
+            self.assertEqual(MemoryUseStore(tmp).get(receipt.id).commit_hash, "")
+
+    def test_cli_evidence_metrics_reports_longitudinal_sessions_and_drag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use package version guard",
+                summary="Dependency fixes should inspect package versions before retries.",
+                signals=["dependency", "package"],
+                scope=MemoryScope(code=["requirements.txt"], workflow=["debugging"], actor=["agent"]),
+                evidence=["Version mismatch caused repeated test failures."],
+                use_this_path="Inspect package versions before rerunning tests.",
+                avoid_this="Do not rerun tests blindly.",
+                approved_by="platform owner",
+            )
+            MemoryStore(tmp).add(memory)
+            add_strong_receipts(tmp, memory, count=1)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(prompt="Debug package retry", actor="agent", area="deps", files=["requirements.txt"], risk="medium"),
+                match=type("MatchStub", (), {"score": 3.8})(),
+            )
+            receipt.commit_hash = "draggy"
+            receipt.commit_files = ["unrelated.py"]
+            receipt.outcome_signal = "committed_low_confidence"
+            receipt.flags = ["no_file_overlap"]
+            receipt.link_confidence = 0.25
+            MemoryUseStore(tmp).add(receipt)
+            run_evidence_session(tmp, MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), record=True)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-metrics"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            rendered = output.getvalue()
+            self.assertIn("CMU Longitudinal Evidence Metrics", rendered)
+            self.assertIn("Sessions: 1", rendered)
+            self.assertIn("Strong Uses: 1", rendered)
+            self.assertIn("Drag Signals: 1", rendered)
+
+    def test_cli_scenario_suite_records_longitudinal_no_memory_metrics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Replay invoices before settlement",
+                summary="Billing settlement incident fixes should replay invoices before applying totals.",
+                signals=["billing settlement", "invoice replay"],
+                scope=MemoryScope(code=["billing/reconcile.py"], workflow=["incident"], actor=["agent"]),
+                evidence=["Invoice replay caught settlement drift."],
+                use_this_path="Replay invoices before settlement changes.",
+                avoid_this="Do not patch totals without replay evidence.",
+                challenge_only_if="Settlement no longer depends on invoices.",
+                approved_by="billing owner",
+            )
+            MemoryStore(tmp).add(memory)
+            ScenarioLibraryStore(tmp).add(
+                ScenarioDefinition.create(
+                    name="Billing settlement replay",
+                    prompt="Fix billing settlement invoice replay drift",
+                    actor="agent",
+                    area="billing",
+                    files=["billing/reconcile.py"],
+                    workflow=["incident"],
+                    risk="high",
+                    expect_action="action-note",
+                    expect_memory=memory.id,
+                    tags=["longitudinal"],
+                )
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "scenario-suite", "--tag", "longitudinal", "--record", "--strict"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            rendered = output.getvalue()
+            self.assertIn("CMU Longitudinal Scenario Suite", rendered)
+            self.assertIn("cmu_added_guidance=1", rendered)
+            runs = json.loads((Path(tmp) / ".cmu" / "scenario_suite_runs.json").read_text(encoding="utf-8"))
+            self.assertEqual(runs["runs"][0]["total"], 1)
+
 
 def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:
     for index in range(count):

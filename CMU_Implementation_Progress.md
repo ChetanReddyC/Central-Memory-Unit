@@ -795,6 +795,14 @@ This cycle removed five concrete unfinished chunks from `CMU_Major_Unfinished_Wo
 
 Automated verification covers all five surfaces through real stores and CLI dispatch: Copilot adapter receipt persistence, MCP setup validation, IDE workflow file generation, reminder outbox-to-dispatch delivery, and no-memory-vs-CMU scenario comparison. Manual verification under `.manual/five-burndown-20260610` confirmed the new CLI paths render or write the expected real artifacts. Current unfinished bullet count in `CMU_Major_Unfinished_Work.md` dropped from 34 to 29.
 
+Current work-loop/evidence/scenario burndown slice completed:
+
+This cycle closed five concrete unfinished chunks from `CMU_Major_Unfinished_Work.md` and moved the count from 29 to 24. `cmu work-loop-run` now executes structured runtime event JSON through the real autonomous runner hooks, records `.cmu/work_loop_runs.json`, and can run recorded evidence-session passes as part of the work loop with `--auto-evidence --apply-evidence`. This gives hosts a concrete automatic work-loop invocation path instead of treating CMU as an optional manual command.
+
+The evidence monitor now handles two previously blurry checkpoint classes. Documentation-only commits are flagged as `documentation_only` and can link cleanly without false mixed-commit drag when they overlap the receipt files. Multiple plausible commits are now classified as `multi_commit_candidates` review spans instead of being flattened into a generic ambiguous/risky result. `cmu evidence-metrics` adds a longitudinal view across recorded evidence sessions and real Memory Use Receipts: session-linked counts, unresolved receipts, strong uses, drag signals, resolved-without-commit receipts, usefulness ratio, drag ratio, and source counts.
+
+Scenario maturity also moved from one-off comparisons to recorded suites. `cmu scenario-suite` runs saved scenario-library cases and no-memory comparison together, records `.cmu/scenario_suite_runs.json` with total/pass/review/CMU-added-guidance/no-difference metrics, and supports `--strict` for repeated regression/usefulness gating. Automated verification covers all five chunks through real stores, Git commits, recorded session/history files, and CLI dispatch.
+
 Current five-surface hardening cycle slice completed:
 
 The first product-hardening operator gate now exists through `cmu.hardening_cycle.hardening_cycle_report` and `cmu hardening-cycle`. It composes the five current hardening directions into one read-only report: owner/team review metadata from `team-scope`, dry-run checkpoint evidence monitoring from `evidence-monitor`, fixture-host-path catalog coverage from `fixture-repo-create`, portable migration compatibility from `portable-compat`, and review-reminder delivery readiness from `review-reminders`.

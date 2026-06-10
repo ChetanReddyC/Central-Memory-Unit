@@ -118,13 +118,21 @@ def monitor_checkpoints(
     items: list[EvidenceMonitorItem] = []
     for decision in dry_auto.decisions:
         if not decision.matched:
+            flags = []
+            reason = decision.reason
+            commit_hash = decision.commit_hash
+            if decision.ambiguous_commits:
+                flags.append("multi_commit_candidates")
+                reason = "multiple plausible commits found; review as a multi-commit evidence span"
+                commit_hash = decision.ambiguous_commits[0]
             items.append(
                 EvidenceMonitorItem(
                     receipt=decision.receipt,
                     status="needs-review",
-                    reason=decision.reason,
+                    reason=reason,
                     score=decision.score,
-                    commit_hash=decision.commit_hash,
+                    commit_hash=commit_hash,
+                    flags=flags,
                 )
             )
             continue

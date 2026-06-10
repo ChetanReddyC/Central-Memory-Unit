@@ -96,9 +96,12 @@ Copilot/IDE host-integration hardening slices now implemented:
 - `cmu ide-workflow --write` generates runnable VS Code tasks, MCP config, and a Copilot event snippet so IDE users can call `cmu start`, `review-inbox`, `evidence-session`, MCP, and the Copilot adapter from real workspace files.
 - Automated tests verify Copilot event execution through real runner hooks and receipt persistence, MCP setup validation through generated and explicit config files, and IDE workflow file generation through CLI paths.
 
-Still needed:
+First automatic work-loop runtime slice now implemented:
 
-- Runtime behavior where CMU becomes part of the work loop, not an optional manual command.
+- `cmu work-loop-run --input-file <events.json>` executes structured host/runtime events through the real autonomous runner hooks instead of requiring a human to reconstruct separate CLI calls.
+- The event runner supports task start, after-work learning, checkpoint, review, and explicit evidence-session events, and can record durable `.cmu/work_loop_runs.json` state for runtime adoption proof.
+- `--auto-evidence --apply-evidence` runs recorded evidence sessions after checkpoint/evidence events, so long-running hosts can keep receipt evidence moving without leaving CMU as an optional manual command.
+- Automated tests verify JSON-driven CLI execution, real store mutation, auto evidence-session recording, and receipt linking against a Git-backed CMU root.
 
 ### 3. Automatic Evidence Loop
 
@@ -136,11 +139,13 @@ First evidence service-manager wrapper slice now implemented:
 - Preview mode is non-mutating; `--write` persists the wrapper manifest and target-specific service file under the CMU root without registering an OS service.
 - Automated tests verify generated wrapper metadata, command content, Windows and systemd file creation, and CLI dispatch. Manual verification under `.manual/five-burndown-service` wrote a Windows Task Scheduler wrapper and install manifest.
 
-Still needed:
+Long-session evidence policy and metrics slices now implemented:
 
-- Broader automatic receipt-to-checkpoint linking policy across long-running work sessions.
-- Richer documentation-only and multi-commit handling beyond the current clean/risky monitor gate.
-- Longitudinal evidence that tracks whether memory saved time, reduced mistakes, or created drag.
+- `cmu work-loop-run --auto-evidence` gives runtime hosts a broader long-session policy by invoking recorded `evidence-session` passes as part of the work loop rather than relying only on one-off manual monitor calls.
+- The checkpoint monitor now distinguishes documentation-only commits and can link clean documentation evidence without false mixed-commit drag when the receipt files overlap documentation changes.
+- The monitor now classifies multiple plausible commits as `multi_commit_candidates` review spans instead of flattening them into the old generic ambiguous/risky bucket.
+- `cmu evidence-metrics` reads recorded evidence sessions plus real Memory Use Receipts and reports linked sessions, unresolved receipts, strong uses, drag signals, resolved-without-commit receipts, usefulness ratio, drag ratio, and source counts over time.
+- Automated tests verify documentation-only linking, multi-commit review classification, recorded evidence sessions, and longitudinal metrics against real stores and Git commits.
 
 ### 4. Governance And Review UX
 
@@ -348,10 +353,16 @@ First no-memory behavior comparison slice now implemented:
 - `--strict` exits non-zero when a scenario shows no CMU behavior difference, so teams can gate scenario suites on memory actually changing work instead of only passing expectations.
 - Automated tests verify the comparison through real persisted scenarios, real Practice memory, current-store retrieval, the empty-memory baseline, and CLI dispatch.
 
+First longitudinal scenario suite slice now implemented:
+
+- `cmu scenario-suite` runs saved scenario-library cases and the no-memory comparison together as one suite, with `--record` persisting `.cmu/scenario_suite_runs.json` history.
+- Suite records track total cases, pass/review counts, CMU-added-guidance counts, and no-difference counts, giving scenario evaluation a longitudinal usefulness/drag-oriented signal instead of only one-off pass/fail output.
+- `--strict` fails when saved scenarios need review or when CMU makes no behavior difference, so repeated scenario runs can act as a regression and usefulness gate.
+- Automated tests verify recorded suite metrics and strict no-memory usefulness behavior through real persisted scenarios, memories, receipts, and CLI dispatch.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Longitudinal scenario suites.
 - Measurable usefulness and drag metrics.
 - Evaluation cases for retrieval misses, bad matches, governance blocks, and challenge outcomes.
 
@@ -477,11 +488,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented the five concrete Product/UI unfinished chunks end to end through `cmu product-console`: human-facing memory graph/tree views, review cards for promotion/authority/challenge/decay decisions, trust and evidence inspection, cleanup/readiness surfaces, and navigation through situation -> cause -> fix -> practice -> exception paths. The console has real code, CLI wiring, JSON output for UI adapters, focused memory filtering, automated tests against real stores and receipts, and manual verification against a persisted `.manual/product-console-proof-20260610` CMU store.
+This cycle implemented five concrete work-loop, evidence, and scenario-maturity chunks end to end: automatic JSON-driven runtime invocation through `cmu work-loop-run`, long-session evidence-session execution inside that work loop, richer documentation-only and multi-commit evidence policy in the checkpoint monitor, longitudinal evidence metrics through `cmu evidence-metrics`, and recorded longitudinal scenario suites through `cmu scenario-suite`. The slice has real code, CLI wiring, persisted run/session history, Git-backed evidence behavior, and automated tests against real stores and CLI paths.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen long-session receipt linking policy, build runtime behavior where CMU is invoked automatically in the work loop, deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add longitudinal usefulness/drag metrics, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add retrieval miss/bad-match/governance-block evaluation cases, add cross-repo authority boundaries, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

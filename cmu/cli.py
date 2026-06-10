@@ -15,6 +15,7 @@ from .copilot_adapter import copilot_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
+from .evidence_metrics import evidence_metrics_report
 from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
 from .evidence_service_install import evidence_service_install
 from .evidence_service import run_evidence_service
@@ -79,6 +80,7 @@ from .scenarios import (
     compare_scenario_library,
     compare_scenario_library_to_no_memory,
     evaluate_scenario,
+    run_longitudinal_scenario_suite,
     run_scenario_library,
 )
 from .seed_plan import seed_plan_report
@@ -107,6 +109,7 @@ from .usage import (
     use_threshold_report,
 )
 from .evidence_session import run_evidence_session
+from .work_loop_run import load_work_loop_payload, run_work_loop_events
 from .workcycle import WorkCycleRequest, work_cycle_report
 
 
@@ -257,6 +260,13 @@ def build_parser() -> argparse.ArgumentParser:
     runner_scenario_parser.add_argument("--expect-checkpoint", choices=["checkpoint-linked", "checkpoint-not-linked", "not-run"], default="")
     runner_scenario_parser.add_argument("--strict", action="store_true", help="Exit non-zero when supplied expectations fail.")
     runner_scenario_parser.set_defaults(func=cmd_runner_scenario)
+
+    work_loop_run_parser = subparsers.add_parser("work-loop-run", help="Execute CMU runner hooks from a host/runtime event JSON file.")
+    work_loop_run_parser.add_argument("--input-file", required=True, help="JSON file containing one event or an events array.")
+    work_loop_run_parser.add_argument("--auto-evidence", action="store_true", help="Run recorded evidence sessions after checkpoint/evidence events.")
+    work_loop_run_parser.add_argument("--apply-evidence", action="store_true", help="Apply clean evidence links during auto-evidence sessions.")
+    work_loop_run_parser.add_argument("--record", action="store_true", help="Record the work-loop run under .cmu/work_loop_runs.json.")
+    work_loop_run_parser.set_defaults(func=cmd_work_loop_run)
 
     fixture_repo_parser = subparsers.add_parser("fixture-repo-create", help="Create a local repository fixture with CMU memory and scenario data.")
     fixture_repo_parser.add_argument("--kind", choices=sorted(FIXTURE_KINDS), default="checkout-release")
@@ -593,6 +603,18 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_no_memory_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any scenario shows no CMU behavior difference.")
     scenario_no_memory_parser.set_defaults(func=cmd_scenario_no_memory_compare)
 
+    scenario_suite_parser = subparsers.add_parser("scenario-suite", help="Run and optionally record a longitudinal scenario suite.")
+    scenario_suite_parser.add_argument("--tag", default="", help="Only run scenarios with this tag.")
+    scenario_suite_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider for the suite. Defaults to off.",
+    )
+    scenario_suite_parser.add_argument("--record", action="store_true", help="Record suite metrics under .cmu/scenario_suite_runs.json.")
+    scenario_suite_parser.add_argument("--strict", action="store_true", help="Exit non-zero when scenarios need review or CMU makes no behavior difference.")
+    scenario_suite_parser.set_defaults(func=cmd_scenario_suite)
+
     trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
     trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
     trace_add_parser.add_argument("--actor", default="developer")
@@ -861,6 +883,9 @@ def build_parser() -> argparse.ArgumentParser:
     analytics_parser = subparsers.add_parser("analytics", help="Show the read-only Usefulness and Drag Analytics view.")
     analytics_parser.add_argument("--memory", default="", help="Limit analytics view to one memory id.")
     analytics_parser.set_defaults(func=cmd_analytics)
+
+    evidence_metrics_parser = subparsers.add_parser("evidence-metrics", help="Show longitudinal evidence session and usefulness/drag metrics.")
+    evidence_metrics_parser.set_defaults(func=cmd_evidence_metrics)
 
     anti_pattern_parser = subparsers.add_parser("anti-pattern", help="Show the read-only Anti-Pattern workflow view.")
     anti_pattern_parser.add_argument("prompt", nargs="*", help="Optional task prompt to test against anti-pattern warnings.")
@@ -1491,6 +1516,24 @@ def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_work_loop_run(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        payload = load_work_loop_payload(args.input_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"work-loop-run input failed: {error}") from error
+    report = run_work_loop_events(
+        args.root,
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        payload,
+        auto_evidence=args.auto_evidence,
+        apply_evidence=args.apply_evidence,
+        record=args.record,
+    )
+    print(report.render())
+    return 0 if report.ok else 1
+
+
 def cmd_fixture_repo_create(args: argparse.Namespace, store: MemoryStore) -> int:
     try:
         report = create_fixture_repo(args.kind, args.output)
@@ -1904,6 +1947,23 @@ def cmd_scenario_no_memory_compare(args: argparse.Namespace, store: MemoryStore)
     )
     print(report.render())
     if args.strict and report.has_no_difference():
+        return 1
+    return 0
+
+
+def cmd_scenario_suite(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    semantic_index = load_semantic_index(args, memories)
+    report = run_longitudinal_scenario_suite(
+        args.root,
+        memories,
+        MemoryUseStore(args.root).list(),
+        tag=args.tag,
+        semantic_index=semantic_index,
+        record=args.record,
+    )
+    print(report.render())
+    if args.strict and not report.ok:
         return 1
     return 0
 
@@ -2440,6 +2500,11 @@ def cmd_analytics(args: argparse.Namespace, store: MemoryStore) -> int:
         memory_id=args.memory,
     )
     print(report.render())
+    return 0
+
+
+def cmd_evidence_metrics(args: argparse.Namespace, store: MemoryStore) -> int:
+    print(evidence_metrics_report(args.root, MemoryUseStore(args.root).list()).render())
     return 0
 
 

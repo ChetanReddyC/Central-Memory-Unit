@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from uuid import uuid4
 
 from .json_store import read_json, update_json
-from .models import Memory
+from .models import Memory, utc_now
 from .onboarding import OnboardingSeed, build_onboarding_seed
 from .retrieval import PreflightQuery, SemanticIndex, action_threshold, build_action_note, rank_memories
 from .triggers import TriggerDecision, decide_trigger
@@ -508,6 +509,147 @@ class ScenarioNoMemoryComparisonReport:
 
     def has_no_difference(self) -> bool:
         return any(item.classification == "no-difference" for item in self.items)
+
+
+SCENARIO_SUITE_VERSION = "cmu-scenario-suite/v1"
+
+
+@dataclass(frozen=True)
+class ScenarioSuiteRecord:
+    id: str
+    created_at: str
+    tag: str
+    total: int
+    passed: int
+    review: int
+    cmu_added_guidance: int
+    no_difference: int
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "created_at": self.created_at,
+            "tag": self.tag,
+            "total": self.total,
+            "passed": self.passed,
+            "review": self.review,
+            "cmu_added_guidance": self.cmu_added_guidance,
+            "no_difference": self.no_difference,
+        }
+
+
+@dataclass(frozen=True)
+class ScenarioSuiteReport:
+    root: str
+    record: ScenarioSuiteRecord
+    run: ScenarioLibraryRunReport
+    no_memory: ScenarioNoMemoryComparisonReport
+    recorded: bool
+    history_count: int
+
+    @property
+    def ok(self) -> bool:
+        return self.record.review == 0 and self.record.no_difference == 0
+
+    def render(self) -> str:
+        lines = [
+            "CMU Longitudinal Scenario Suite",
+            f"Version: {SCENARIO_SUITE_VERSION}",
+            "Mode: read-only scenario run plus no-memory comparison, with optional run-history recording.",
+            f"Root: {self.root}",
+            f"Suite Run: {self.record.id}",
+            f"Filter: tag={self.record.tag}" if self.record.tag else "Filter: all scenarios",
+            f"Recorded: {'yes' if self.recorded else 'no'}",
+            f"History Runs: {self.history_count}",
+            (
+                "Summary: "
+                f"total={self.record.total} pass={self.record.passed} review={self.record.review} "
+                f"cmu_added_guidance={self.record.cmu_added_guidance} no_difference={self.record.no_difference}"
+            ),
+            "",
+            "Scenario Run:",
+            self.run.render(),
+            "",
+            "No-Memory Comparison:",
+            self.no_memory.render(),
+            "",
+            f"Trend Judgment: {scenario_suite_judgment(self.record)}",
+            "Proof Meaning: scenario evaluation can now be run as a longitudinal suite with persisted history and usefulness/drag-oriented no-memory comparison metrics.",
+        ]
+        return "\n".join(lines)
+
+
+def run_longitudinal_scenario_suite(
+    root: Path | str,
+    memories: list[Memory],
+    receipts: list[MemoryUseReceipt],
+    *,
+    tag: str = "",
+    semantic_index: SemanticIndex | None = None,
+    record: bool = False,
+) -> ScenarioSuiteReport:
+    root_path = Path(root)
+    scenarios = ScenarioLibraryStore(root_path).list(tag=tag or None)
+    run_report = run_scenario_library(scenarios, memories, receipts, tag=tag, semantic_index=semantic_index)
+    no_memory = compare_scenario_library_to_no_memory(
+        scenarios,
+        current_memories=memories,
+        current_receipts=receipts,
+        root=str(root_path),
+        tag=tag,
+        current_semantic_index=semantic_index,
+    )
+    passed = sum(1 for item in run_report.items if item.passed)
+    cmu_added = sum(1 for item in no_memory.items if item.classification == "cmu-added-guidance")
+    no_difference = sum(1 for item in no_memory.items if item.classification == "no-difference")
+    record_item = ScenarioSuiteRecord(
+        id=f"ssr_{uuid4().hex[:12]}",
+        created_at=utc_now(),
+        tag=tag,
+        total=len(run_report.items),
+        passed=passed,
+        review=len(run_report.items) - passed,
+        cmu_added_guidance=cmu_added,
+        no_difference=no_difference,
+    )
+    history_count = existing_scenario_history_count(root_path)
+    if record:
+        update_json(
+            root_path / ".cmu" / "scenario_suite_runs.json",
+            {"version": 1, "runs": []},
+            lambda data: append_scenario_suite_run(data, record_item),
+        )
+        history_count += 1
+    return ScenarioSuiteReport(
+        root=str(root_path),
+        record=record_item,
+        run=run_report,
+        no_memory=no_memory,
+        recorded=record,
+        history_count=history_count,
+    )
+
+
+def append_scenario_suite_run(data: dict, record: ScenarioSuiteRecord) -> ScenarioSuiteRecord:
+    data["runs"].append(record.to_dict())
+    return record
+
+
+def existing_scenario_history_count(root: Path) -> int:
+    data = read_json(root / ".cmu" / "scenario_suite_runs.json", {"version": 1, "runs": []})
+    return len(data.get("runs", []))
+
+
+def scenario_suite_judgment(record: ScenarioSuiteRecord) -> str:
+    if record.total == 0:
+        return "no scenarios matched; add saved cases before judging memory behavior"
+    if record.review:
+        return "some scenarios need review; inspect failures before broadening retrieval or trust"
+    if record.no_difference:
+        return "CMU did not change behavior for every passing case; strengthen expectations or memory coverage"
+    if record.cmu_added_guidance:
+        return "CMU added guidance across the passing suite; keep recording runs to catch regressions over time"
+    return "suite passed but usefulness signal is neutral; add cases that compare CMU against no-memory behavior"
 
 
 def evaluate_scenario(
