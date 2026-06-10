@@ -19,12 +19,15 @@ from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, 
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
+from cmu.evidence_service import run_evidence_service
 from cmu.evidence_session import run_evidence_session
 from cmu.evidence_watch import run_evidence_watch
 from cmu.fixture_repos import create_fixture_repo
 from cmu.hardening_cycle import hardening_cycle_report
 from cmu.host_path_suite import run_host_path_suite
+from cmu.host_setup_manifest import host_setup_manifest
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
+from cmu.lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
@@ -47,6 +50,7 @@ from cmu.retrieval import (
     rank_memories,
 )
 from cmu.review_queue import review_queue
+from cmu.review_export import export_review_payload
 from cmu.review_reminders import review_reminders
 from cmu.reminder_delivery import deliver_reminders_to_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
@@ -11493,6 +11497,158 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
                 exit_code = main(["host-path-suite", "--work-dir", str(Path(tmp) / "cli-suite"), "--strict"])
             self.assertEqual(exit_code, 0, output.getvalue())
             self.assertIn("Status: pass", output.getvalue())
+
+    def test_evidence_service_records_background_service_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Evidence service should reuse session monitor",
+                summary="Background evidence service cycles should record durable state.",
+                scope=MemoryScope(code=["cmu/evidence_service.py"]),
+                evidence=["Service proof uses the real evidence session path."],
+            )
+            MemoryStore(tmp).add(memory)
+
+            report = run_evidence_service(
+                tmp,
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                interval_seconds=0,
+                max_cycles=1,
+                record_sessions=True,
+                record_service=True,
+            )
+            self.assertEqual(len(report.cycles), 1, report.render())
+            state = json.loads((Path(tmp) / ".cmu" / "evidence_service_runs.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["service_runs"][0]["schema"], "cmu-evidence-service/v1")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-service", "--interval", "0", "--max-cycles", "1"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Evidence Service", output.getvalue())
+
+    def test_lifecycle_settle_applies_gravity_backed_settling_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Settled release checklist memory",
+                summary="Release checklist guidance has enough scope, evidence, and use to settle.",
+                signals=["release", "checklist", "settling"],
+                scope=MemoryScope(ownership=["Release"], code=["release"], workflow=["deploy"], actor=["agent"]),
+                evidence=["Used in deploy dry run.", "Used in rollback rehearsal.", "Reviewed by release owner.", "Kept scoped."],
+                liability_score=4,
+                confidence=0.7,
+            )
+            MemoryStore(tmp).add(memory)
+            add_strong_receipts(tmp, memory, count=2)
+
+            preview = lifecycle_settle(MemoryStore(tmp).list(), MemoryUseStore(tmp).list())
+            self.assertTrue(preview.items, preview.render())
+            applied = lifecycle_settle(MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), apply=True)
+            for changed in applied.changed_memories:
+                MemoryStore(tmp).update(changed)
+            loaded = MemoryStore(tmp).list()[0]
+            self.assertTrue(any(item.startswith("Lifecycle settled in current scope") for item in loaded.evidence))
+            self.assertGreater(loaded.confidence, 0.7)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-settle", "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("CMU Lifecycle Settling", output.getvalue())
+
+    def test_lifecycle_scope_suggest_creates_candidate_from_receipt_pressure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Broad adapter rollout guidance",
+                summary="Adapter rollout guidance may need narrower retrieval scope after drag evidence.",
+                scope=MemoryScope(code=["cmu"], workflow=["adapter rollout"], actor=["agent"]),
+                evidence=["Initial stable guidance was broad."],
+                approved_by="Adapter owner",
+                liability_score=4,
+            )
+            MemoryStore(tmp).add(memory)
+            receipt = MemoryUseReceipt.create(
+                memory,
+                PreflightQuery(
+                    prompt="Change OpenAI adapter behavior",
+                    actor="agent",
+                    area="adapters",
+                    files=["cmu/openai_adapter.py"],
+                    workflow=["openai adapter"],
+                    risk="high",
+                ),
+                match=type("MatchStub", (), {"score": 4.1})(),
+            )
+            receipt.outcome_signal = "low_confidence"
+            receipt.flags = ["no_file_overlap"]
+            MemoryUseStore(tmp).add(receipt)
+
+            preview = lifecycle_scope_suggestions(MemoryStore(tmp).list(), MemoryUseStore(tmp).list())
+            self.assertEqual(preview.items[0].action, "scope-refinement")
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "lifecycle-scope-suggest", "--apply"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            candidates = MemoryStore(tmp).list(type=MemoryType.CANDIDATE)
+            self.assertEqual(len(candidates), 1)
+            self.assertIn("Scope refinement target", "\n".join(candidates[0].evidence))
+
+    def test_review_export_writes_structured_non_cli_review_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Review export authority gap",
+                summary="Stable memory should appear in structured review export.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu"]),
+                liability_score=4,
+                approved_by="legacy owner",
+            )
+            MemoryStore(tmp).add(memory)
+            output_path = Path(tmp) / ".cmu" / "review_payload.json"
+            memories = MemoryStore(tmp).list()
+            receipts = MemoryUseStore(tmp).list()
+            team_scopes = TeamDirectoryStore(tmp).list()
+            preview = export_review_payload(
+                root=tmp,
+                output=output_path,
+                queue=review_queue(memories, receipts, team_scopes),
+                handoffs=team_review_handoffs(memories, team_scopes),
+                reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
+                write=False,
+            )
+            self.assertFalse(output_path.exists())
+            self.assertGreaterEqual(preview.queue_cards + preview.handoff_cards, 1)
+
+            cli_output = StringIO()
+            with redirect_stdout(cli_output):
+                exit_code = main(["--root", tmp, "review-export", "--output", str(output_path), "--write"])
+            self.assertEqual(exit_code, 0, cli_output.getvalue())
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema"], "cmu-review-export/v1")
+            self.assertTrue(payload["read_only"])
+            self.assertGreaterEqual(payload["summary"]["queue_cards"] + payload["summary"]["handoff_cards"], 1)
+
+    def test_host_setup_manifest_writes_adapter_and_mcp_contract(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = host_setup_manifest(tmp, host="all", output=".cmu/host_manifest.json", write=True)
+            self.assertTrue(report.wrote, report.render())
+            manifest_path = Path(tmp) / ".cmu" / "host_manifest.json"
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema"], "cmu-host-setup-manifest/v1")
+            self.assertEqual(payload["mcp"]["server_name"], MCP_SERVER_NAME)
+            self.assertIn("codex", payload["adapters"])
+            self.assertIn("openai", payload["adapters"])
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "host-setup-manifest", "--host", "openai", "--output", ".cmu/openai_manifest.json", "--write"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            openai_payload = json.loads((Path(tmp) / ".cmu" / "openai_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(sorted(openai_payload["adapters"]), ["openai"])
+            self.assertIn("CMU Host Setup Manifest", output.getvalue())
 
 
 def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:

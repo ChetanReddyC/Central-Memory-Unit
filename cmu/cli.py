@@ -15,6 +15,7 @@ from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
+from .evidence_service import run_evidence_service
 from .evidence_watch import run_evidence_watch
 from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
 from .governance import governance_report
@@ -22,6 +23,7 @@ from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .hardening_cycle import hardening_cycle_report
 from .host_path_suite import run_host_path_suite
+from .host_setup_manifest import host_setup_manifest
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
@@ -32,6 +34,7 @@ from .lifecycle_ops import (
     lifecycle_proposals,
     lifecycle_scope_record,
 )
+from .lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from .mcp import StdioMcpServer, CmuMcpAdapter
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
@@ -56,6 +59,7 @@ from .retrieval import (
     semantic_proposal_diagnostics,
 )
 from .review_queue import review_queue
+from .review_export import export_review_payload
 from .review_reminders import review_reminders
 from .reminder_delivery import deliver_reminders_to_outbox
 from .runner_hooks import runner_hooks_report
@@ -123,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser = subparsers.add_parser("setup-guide", help="Show read-only CLI, SDK, and MCP host setup guidance.")
     setup_parser.add_argument("--host", choices=HOST_CHOICES, default="all", help="Limit guidance to one host surface.")
     setup_parser.set_defaults(func=cmd_setup_guide)
+
+    host_manifest_parser = subparsers.add_parser("host-setup-manifest", help="Write a machine-readable IDE/coding-agent setup manifest.")
+    host_manifest_parser.add_argument("--host", choices=["all", "codex", "openai", "mcp"], default="all")
+    host_manifest_parser.add_argument("--output", default=".cmu/host_setup_manifest.json")
+    host_manifest_parser.add_argument("--write", action="store_true", help="Write the manifest JSON. Defaults to preview.")
+    host_manifest_parser.set_defaults(func=cmd_host_setup_manifest)
 
     install_check_parser = subparsers.add_parser("install-check", help="Validate README, package, SDK, CLI, and MCP adoption surfaces.")
     install_check_parser.set_defaults(func=cmd_install_check)
@@ -667,6 +677,17 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_scope_record_parser.add_argument("--apply", action="store_true", help="Persist the Candidate scope-change record. Defaults to preview.")
     lifecycle_scope_record_parser.set_defaults(func=cmd_lifecycle_scope_record)
 
+    lifecycle_settle_parser = subparsers.add_parser("lifecycle-settle", help="Settle memories in current scope from Memory Gravity and linked-use evidence.")
+    lifecycle_settle_parser.add_argument("--memory", default="", help="Limit settling to one memory id.")
+    lifecycle_settle_parser.add_argument("--min-gravity", type=float, default=3.2)
+    lifecycle_settle_parser.add_argument("--apply", action="store_true", help="Persist settling evidence. Defaults to preview.")
+    lifecycle_settle_parser.set_defaults(func=cmd_lifecycle_settle)
+
+    lifecycle_scope_suggest_parser = subparsers.add_parser("lifecycle-scope-suggest", help="Create Candidate scope-refinement proposals from receipt pressure.")
+    lifecycle_scope_suggest_parser.add_argument("--memory", default="", help="Limit scope suggestions to one memory id.")
+    lifecycle_scope_suggest_parser.add_argument("--apply", action="store_true", help="Persist Candidate scope-refinement records. Defaults to preview.")
+    lifecycle_scope_suggest_parser.set_defaults(func=cmd_lifecycle_scope_suggest)
+
     gravity_parser = subparsers.add_parser("gravity", help="Show the read-only Memory Gravity placement/settling view.")
     gravity_parser.add_argument("--memory", default="", help="Limit gravity view to one memory id.")
     gravity_parser.set_defaults(func=cmd_gravity)
@@ -689,6 +710,12 @@ def build_parser() -> argparse.ArgumentParser:
     reminder_delivery_parser.add_argument("--outbox", default="", help="Outbox JSONL path. Defaults to .cmu/reminder_outbox.jsonl.")
     reminder_delivery_parser.add_argument("--apply", action="store_true", help="Append a delivery event to the outbox. Defaults to preview.")
     reminder_delivery_parser.set_defaults(func=cmd_reminder_delivery)
+
+    review_export_parser = subparsers.add_parser("review-export", help="Export review queue, owner handoffs, and reminders as structured JSON.")
+    review_export_parser.add_argument("--days", type=int, default=14)
+    review_export_parser.add_argument("--output", default=".cmu/review_export.json")
+    review_export_parser.add_argument("--write", action="store_true", help="Write the JSON review payload. Defaults to preview.")
+    review_export_parser.set_defaults(func=cmd_review_export)
 
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
@@ -931,6 +958,19 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_watch_parser.add_argument("--record", action="store_true", help="Record each session summary under .cmu/evidence_sessions.json.")
     evidence_watch_parser.set_defaults(func=cmd_evidence_watch)
 
+    evidence_service_parser = subparsers.add_parser("evidence-service", help="Run a background evidence-session service loop until stopped.")
+    evidence_service_parser.add_argument("--interval", type=float, default=60.0, help="Seconds to wait between service cycles.")
+    evidence_service_parser.add_argument("--max-cycles", type=int, default=0, help="Optional cycle cap for supervised runs or tests. Default is unbounded.")
+    evidence_service_parser.add_argument("--limit", type=int, default=20)
+    evidence_service_parser.add_argument("--hours", type=int, default=72)
+    evidence_service_parser.add_argument("--min-score", type=float, default=DEFAULT_MONITOR_MIN_SCORE)
+    evidence_service_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MONITOR_MIN_CONFIDENCE)
+    evidence_service_parser.add_argument("--apply", action="store_true", help="Apply clean high-confidence links in each service cycle.")
+    evidence_service_parser.add_argument("--no-session-record", action="store_true", help="Do not record individual evidence-session summaries.")
+    evidence_service_parser.add_argument("--no-service-record", action="store_true", help="Do not record .cmu/evidence_service_runs.json.")
+    evidence_service_parser.add_argument("--stop-file", default=".cmu/evidence_service.stop")
+    evidence_service_parser.set_defaults(func=cmd_evidence_service)
+
     host_path_parser = subparsers.add_parser("host-path-suite", help="Run fixture-backed scenario, runner, Codex adapter, and compare host-path checks.")
     host_path_parser.add_argument("--work-dir", default="", help="Directory for generated fixture repositories. Defaults to a temporary directory.")
     host_path_parser.add_argument("--strict", action="store_true", help="Exit non-zero unless every host-path fixture passes.")
@@ -1033,6 +1073,12 @@ def cmd_demo_walkthrough(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:
     report = setup_guide(args.root, host=args.host)
+    print(report.render())
+    return 0
+
+
+def cmd_host_setup_manifest(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = host_setup_manifest(args.root, host=args.host, output=args.output, write=args.write)
     print(report.render())
     return 0
 
@@ -1966,6 +2012,33 @@ def cmd_lifecycle_scope_record(args: argparse.Namespace, store: MemoryStore) -> 
     return 0 if report.ok else 1
 
 
+def cmd_lifecycle_settle(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_settle(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+        min_gravity=args.min_gravity,
+        apply=args.apply,
+    )
+    for memory in report.changed_memories:
+        store.update(memory)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_lifecycle_scope_suggest(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = lifecycle_scope_suggestions(
+        store.list(),
+        MemoryUseStore(args.root).list(),
+        memory_id=args.memory,
+        apply=args.apply,
+    )
+    for memory in report.created_memories:
+        store.add(memory)
+    print(report.render())
+    return 0 if report.ok else 1
+
+
 def cmd_gravity(args: argparse.Namespace, store: MemoryStore) -> int:
     report = gravity_report(
         store.list(),
@@ -2019,6 +2092,22 @@ def cmd_reminder_delivery(args: argparse.Namespace, store: MemoryStore) -> int:
         channel=args.channel,
         outbox=args.outbox or None,
         apply=args.apply,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_review_export(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    receipts = MemoryUseStore(args.root).list()
+    team_scopes = TeamDirectoryStore(args.root).list()
+    report = export_review_payload(
+        root=args.root,
+        output=args.output,
+        queue=review_queue(memories, receipts, team_scopes),
+        handoffs=team_review_handoffs(memories, team_scopes),
+        reminders=review_reminders(memories, receipts, team_scopes=team_scopes, days=args.days),
+        write=args.write,
     )
     print(report.render())
     return 0
@@ -2413,6 +2502,29 @@ def cmd_evidence_watch(args: argparse.Namespace, store: MemoryStore) -> int:
         raise SystemExit(f"evidence-watch failed: {error}") from error
     print(report.render())
     return 0 if report.ok else 1
+
+
+def cmd_evidence_service(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = run_evidence_service(
+            args.root,
+            store.list(),
+            MemoryUseStore(args.root).list(),
+            interval_seconds=args.interval,
+            max_cycles=args.max_cycles,
+            limit=args.limit,
+            hours=args.hours,
+            min_score=args.min_score,
+            min_confidence=args.min_confidence,
+            apply=args.apply,
+            record_sessions=not args.no_session_record,
+            record_service=not args.no_service_record,
+            stop_file=args.stop_file,
+        )
+    except ValueError as error:
+        raise SystemExit(f"evidence-service failed: {error}") from error
+    print(report.render())
+    return 0
 
 
 def cmd_host_path_suite(args: argparse.Namespace, store: MemoryStore) -> int:

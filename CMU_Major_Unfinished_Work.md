@@ -1,6 +1,6 @@
 # CMU Major Unfinished Work
 
-Last updated: 2026-06-09.
+Last updated: 2026-06-10.
 
 ## Why This Exists
 
@@ -73,11 +73,18 @@ Host-path suite second-adapter coverage now implemented:
 - `--strict` fails unless saved scenarios, isolated runner hooks, Codex events, OpenAI events, and unchanged before/after comparisons all pass.
 - Automated tests assert `openai=pass` for both generated fixture kinds. Manual verification under `.manual/five-slice-proof/host-path-suite` passed checkout-release and billing-incident with scenario, runner, Codex, OpenAI, and compare checks.
 
+First machine-readable host/IDE setup manifest slice now implemented:
+
+- `cmu host-setup-manifest` emits a structured IDE/coding-agent setup contract for MCP tools plus Codex/OpenAI host adapters.
+- `--write` persists the manifest under the CMU root, while preview mode remains read-only.
+- The manifest is generated from live `AgentIntegration`, MCP tool schemas, and adapter manifests instead of duplicated setup prose.
+- Automated tests verify MCP server/tool contracts, Codex/OpenAI adapter inclusion, CLI write behavior, and root-relative output paths. Manual verification under `.manual/five-capability-proof-20260610` wrote `.cmu/host_setup_manifest.json` with MCP, Codex, and OpenAI setup data.
+
 Still needed:
 
 - Additional host-specific runner adapters beyond Codex-style and OpenAI Agents-style events.
-- Host-specific MCP setup polish.
-- Deeper IDE/coding-agent integration.
+- Host-specific MCP setup polish beyond the first machine-readable manifest.
+- Deeper IDE/coding-agent integration beyond manifest handoff.
 - Integration examples for common agent runtimes.
 - Runtime behavior where CMU becomes part of the work loop, not an optional manual command.
 
@@ -104,9 +111,15 @@ First bounded evidence watch loop slice now implemented:
 - The watch loop applies only the same clean high-confidence checkpoint links as `evidence-session`, can record every cycle, refreshes receipt state between cycles, and rejects invalid cycle/interval inputs.
 - Automated tests verify a two-cycle Git-backed watch where the first cycle links a real receipt and the second cycle observes no remaining unlinked receipt. Manual verification under `.manual/five-slice-proof/evidence-openai-file` linked receipt `use_3cbcb25eb439` to commit `7206c14` and recorded two evidence sessions.
 
+First background evidence service slice now implemented:
+
+- `cmu evidence-service` runs the real `evidence-session` monitor in a long-running service loop until a stop file appears, with `--max-cycles` available for supervised runs and tests.
+- The service can apply only the same conservative clean high-confidence links as `evidence-session`, can record every session, and records durable service-run state under `.cmu/evidence_service_runs.json`.
+- Automated tests verify service state persistence and CLI execution through real stores. Manual verification under `.manual/five-capability-proof-20260610` ran `evidence-service --interval 0 --max-cycles 1`, recorded one service cycle, and wrote `.cmu/evidence_service_runs.json`.
+
 Still needed:
 
-- Unbounded background daemon/service mode beyond bounded `cmu evidence-watch`.
+- OS/service-manager installation wrappers around `cmu evidence-service`.
 - Broader automatic receipt-to-checkpoint linking policy across long-running work sessions.
 - Richer documentation-only and multi-commit handling beyond the current clean/risky monitor gate.
 - Longitudinal evidence that tracks whether memory saved time, reduced mistakes, or created drag.
@@ -157,11 +170,17 @@ Second controlled owner/team handoff apply slice now implemented:
 - `narrow-scope` applies only approved safe narrowing for Practice/Anchor memory and rejects broadening or scope shifts that should use challenge/split instead.
 - Automated tests verify all five outcomes through real persisted stores and CLI dispatch. Manual verification under `.manual/team-review-action-five-proof` created real Practice memories, stored challenge Candidates, strengthened one memory, retired one memory, split one new scoped Practice memory, narrowed a stable Practice scope, and inspected the resulting store through real CLI surfaces.
 
+First structured non-CLI review export slice now implemented:
+
+- `cmu review-export` combines the real review queue, owner/team handoffs, and review reminders into one structured JSON payload for UI, inbox, or workflow adapters.
+- Preview mode is read-only; `--write` writes the payload under the CMU root without promoting, approving, retiring, resolving, or mutating any memory.
+- Automated tests verify preview/write behavior, payload schema, authority/handoff card inclusion, and root-relative output paths. Manual verification under `.manual/five-capability-proof-20260610` wrote `.cmu/review_export.json` with review queue cards, handoff cards, and reminders.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
-- Clear human review moments in non-CLI surfaces.
+- Clear human review moments in non-CLI surfaces beyond the first structured export payload.
 - Better owner/team review flows beyond local metadata handoff application.
 - Actual scheduling/notification delivery beyond the machine-readable reminder payload.
 
@@ -186,10 +205,17 @@ First lifecycle operations slice now implemented:
 - `cmu lifecycle-scope-record` stores broad or ambiguous scope-change requests as Candidate Memories with current/proposed scope evidence, preventing silent stable-memory broadening.
 - Automated tests verify all five commands through real CLI dispatch and persisted memory/archive stores. Manual verification under `.manual/lifecycle-ops-proof-20260609` exercised proposal, merge, scope-record, demotion, archive, list, and archive inspection paths against a real `.cmu` store.
 
+First lifecycle settling and scope-refinement automation slices now implemented:
+
+- `cmu lifecycle-settle` turns Memory Gravity settle pressure into an explicit controlled settling action. With `--apply`, it records settling evidence on the real memory and slightly increases confidence within the current scope.
+- `cmu lifecycle-scope-suggest` turns drag, reverted, checkpoint, low-confidence, or no-file-overlap receipt pressure into Candidate scope-refinement records instead of silently changing stable memory scope.
+- Both commands are preview-first and persist only through real `MemoryStore` paths when `--apply` is used.
+- Automated tests verify gravity-backed settling, receipt-pressure scope Candidate creation, and CLI dispatch against persisted stores. Manual verification under `.manual/five-capability-proof-20260610` settled `mem_2804382cc216` and created a scope-refinement Candidate for `mem_81dbb7399787`.
+
 Still needed:
 
-- Additional settling automation and richer merge/split/decay policy beyond the first controlled lifecycle operation paths.
-- Scope refinement automation based on evidence and Memory Gravity.
+- Additional settling automation and richer merge/split/decay policy beyond the first controlled settling path.
+- Scope refinement automation beyond the first receipt-pressure Candidate suggestion path.
 - Cross-surface lifecycle review UX beyond CLI commands.
 
 ### 6. Real Memory Base Cleanup
@@ -405,11 +431,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU lifecycle capabilities end to end: assisted stable proposal generation (`cmu lifecycle-proposals`), controlled memory merge (`cmu lifecycle-merge`), controlled demotion (`cmu lifecycle-demote`), retired-memory archival (`cmu lifecycle-archive`), and explicit broad/ambiguous scope-change records (`cmu lifecycle-scope-record`). Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/lifecycle-ops-proof-20260609`.
+This cycle implemented five concrete unfinished CMU capabilities end to end: background evidence service operation (`cmu evidence-service`), machine-readable host/IDE setup manifest (`cmu host-setup-manifest`), structured non-CLI review export (`cmu review-export`), gravity-backed lifecycle settling (`cmu lifecycle-settle`), and receipt-pressure lifecycle scope suggestions (`cmu lifecycle-scope-suggest`). Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/five-capability-proof-20260610`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these workflow surfaces further toward production operation: turn bounded `evidence-watch` into a true background service, add IDE/coding-agent setup polish for the Codex/OpenAI adapters, add non-CLI owner/team or lifecycle review moments on top of the controlled CLI apply paths, or deepen lifecycle settling/scope-refinement automation from Memory Gravity and linked-use evidence. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these workflow surfaces further toward production operation: add OS/service-manager wrappers around `cmu evidence-service`, add richer IDE/coding-agent examples that consume `host-setup-manifest`, build an actual UI/inbox surface on top of `review-export`, or deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
