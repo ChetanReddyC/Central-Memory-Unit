@@ -20,13 +20,18 @@ CMU has working local CLI, SDK, MCP, memory lifecycle, retrieval, receipts, auth
 
 Motive: CMU must surface memory only when it changes the next action, prevents harm, or improves judgment. Weak retrieval would either miss costly lessons or create context drag.
 
+First retrieval metrics and benchmark slice now implemented:
+
+- `cmu retrieval-metrics` evaluates saved scenario-library expectations against real persisted memories and receipts, reporting precision, recall, rejection rate, grounding rate, true positives, false negatives, false positives, and true rejections.
+- `--strict` exits non-zero when explicit saved expectations produce misses or false positives, giving retrieval changes a concrete gate beyond prose inspection.
+- `cmu retrieval-benchmark` compares current CMU retrieval against generic vector memory, graphless memory, and no-memory baselines for scenarios with positive memory expectations.
+- Automated tests verify both commands through real `MemoryStore`, `ScenarioLibraryStore`, CLI dispatch, and strict-mode behavior. Manual verification under `.manual/retrieval-metrics-proof` seeded a real Practice memory plus saved positive/rejection scenarios, then confirmed strict metrics and benchmark reports passed.
+
 Still needed:
 
 - External embedding model support beyond local hashing vectors.
 - Dedicated vector database or durable semantic index.
 - Durable graph-backed memory store instead of only local JSON relationships.
-- Stronger precision, recall, rejection, and grounding metrics.
-- Retrieval benchmarks against generic vector memory, graph memory, and no-memory baselines.
 
 ### 2. Autonomous Agent Integration
 
@@ -360,11 +365,16 @@ First longitudinal scenario suite slice now implemented:
 - `--strict` fails when saved scenarios need review or when CMU makes no behavior difference, so repeated scenario runs can act as a regression and usefulness gate.
 - Automated tests verify recorded suite metrics and strict no-memory usefulness behavior through real persisted scenarios, memories, receipts, and CLI dispatch.
 
+First retrieval-evaluation case and scenario-metrics slice now implemented:
+
+- `cmu scenario-eval-fixtures --write` seeds concrete saved scenario cases for retrieval misses, bad matches, governance blocks, and challenge outcomes from the real current memory base.
+- The generated cases are tagged for focused evaluation and carry explicit action/memory expectations, so they can feed `scenario-run`, `scenario-suite`, `retrieval-metrics`, and `retrieval-benchmark` instead of living as informal checklist items.
+- `cmu retrieval-metrics` adds measurable scenario-level usefulness/drag signals through expectation-backed true positives, misses, false positives, clean rejections, and grounding rate.
+- Automated tests verify preview-vs-write fixture behavior, all four case categories, persisted scenario files, and metrics/benchmark CLI paths against real stores. Manual verification under `.manual/retrieval-metrics-proof` wrote four retrieval-evaluation cases and ran the new metric surfaces through the CLI.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Measurable usefulness and drag metrics.
-- Evaluation cases for retrieval misses, bad matches, governance blocks, and challenge outcomes.
 
 ### 9. Product And UI Surface
 
@@ -459,9 +469,12 @@ First non-CLI reminder delivery contract now implemented:
 - `cmu review-reminders --json` gives schedulers, hosts, and notification bridges a deterministic reminder payload instead of forcing them to scrape CLI prose.
 - `cmu hardening-cycle` now validates that reminder delivery contract as one of the five product-hardening checks.
 
-Still needed:
+First package publish-workflow validation slice now implemented:
 
-- Published/package workflow beyond local built-distribution validation.
+- `cmu publish-check` validates package publication readiness without uploading, building, mutating stores, or writing Git checkpoints.
+- The check verifies project identity, static semver, console script declarations, README publish guidance, pre-publish local gates, and linkage to the existing `install-check` and `dist-check` validation surfaces.
+- README and `install-check` now include `publish-check`, `retrieval-metrics`, `retrieval-benchmark`, and `scenario-eval-fixtures` so adoption docs stay aligned with the live CLI.
+- Automated tests verify the read-only publish report and CLI dispatch. Manual verification confirmed `cmu --root . publish-check` and `cmu --root . install-check` both report pass.
 
 ## Strategic Priority Order
 
@@ -488,11 +501,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete work-loop, evidence, and scenario-maturity chunks end to end: automatic JSON-driven runtime invocation through `cmu work-loop-run`, long-session evidence-session execution inside that work loop, richer documentation-only and multi-commit evidence policy in the checkpoint monitor, longitudinal evidence metrics through `cmu evidence-metrics`, and recorded longitudinal scenario suites through `cmu scenario-suite`. The slice has real code, CLI wiring, persisted run/session history, Git-backed evidence behavior, and automated tests against real stores and CLI paths.
+This cycle implemented five concrete retrieval, evaluation, and packaging chunks end to end: expectation-backed retrieval precision/recall/rejection/grounding metrics through `cmu retrieval-metrics`, retrieval benchmarks against generic vector, graphless, and no-memory baselines through `cmu retrieval-benchmark`, scenario-level usefulness/drag metrics from saved expectations, seedable retrieval miss/bad-match/governance-block/challenge-outcome evaluation cases through `cmu scenario-eval-fixtures`, and read-only package publication workflow validation through `cmu publish-check`. The slice has real code, CLI wiring, persisted scenario-case writes, README/install-check adoption updates, manual verification under `.manual/retrieval-metrics-proof`, and the full unittest suite passing.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add retrieval miss/bad-match/governance-block evaluation cases, add cross-repo authority boundaries, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add cross-repo authority boundaries, implement external embedding/vector durability, or add a durable graph-backed memory store. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

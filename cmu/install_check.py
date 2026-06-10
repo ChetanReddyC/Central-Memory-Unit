@@ -34,6 +34,10 @@ REQUIRED_README_COMMANDS = [
     "cmu hardening-cycle",
     "cmu install-check",
     "cmu dist-check",
+    "cmu publish-check",
+    "cmu retrieval-metrics",
+    "cmu retrieval-benchmark",
+    "cmu scenario-eval-fixtures",
 ]
 
 

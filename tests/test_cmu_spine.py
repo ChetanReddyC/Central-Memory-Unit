@@ -42,9 +42,15 @@ from cmu.portable_compat import portable_compat_report
 from cmu.portable_fixture_seed import seed_portable_fixtures
 from cmu.promotion import promote_memory, review_promotion
 from cmu.product_console import product_console_report
+from cmu.publish_check import publish_check
 from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.readiness import readiness_report
 from cmu.remembering import RememberRequest, remember_candidate
+from cmu.retrieval_metrics import (
+    retrieval_benchmark_report,
+    retrieval_metrics_report,
+    seed_retrieval_evaluation_cases,
+)
 from cmu.retrieval import (
     HashingEmbeddingProvider,
     InMemorySemanticIndex,
@@ -12350,6 +12356,133 @@ def before_commit(metadata, *, minutes: int) -> str:
 
 def short_test_hash(value: str) -> str:
     return value[:12]
+
+
+class RetrievalMetricsAndPublishCheckTests(unittest.TestCase):
+    def test_retrieval_metrics_and_benchmark_use_saved_scenario_expectations(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout rollback order",
+                summary="Checkout rollback work must revert the feature flag before replaying orders.",
+                signals=["checkout rollback", "feature flag", "orders"],
+                scope=MemoryScope(code=["checkout"], workflow=["rollback"], actor=["agent"]),
+                evidence=["Release drill showed this avoids duplicate order replay."],
+                use_this_path="Revert the feature flag, verify order replay is disabled, then continue rollback.",
+                avoid_this="Do not replay orders before the flag is reverted.",
+                challenge_only_if="The incident is outside checkout rollback.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="Release Owner",
+            )
+            store.add(memory)
+            library = ScenarioLibraryStore(tmp)
+            library.add(
+                ScenarioDefinition.create(
+                    name="Checkout rollback memory should surface",
+                    prompt="Recover checkout rollback after order replay risk appears.",
+                    actor="agent",
+                    area="checkout",
+                    workflow=["rollback"],
+                    risk="high",
+                    expect_action="action-note",
+                    expect_memory=memory.id,
+                    tags=["metrics"],
+                )
+            )
+            library.add(
+                ScenarioDefinition.create(
+                    name="Unrelated cosmetic work should stay quiet",
+                    prompt="Change a footer icon label.",
+                    actor="agent",
+                    area="unrelated-ui",
+                    workflow=["cosmetic-ui"],
+                    risk="low",
+                    expect_trigger="silent-skip",
+                    expect_action="quiet",
+                    expect_memory="none",
+                    tags=["metrics"],
+                )
+            )
+
+            metrics = retrieval_metrics_report(tmp, store.list(), [], tag="metrics")
+            self.assertTrue(metrics.passed)
+            self.assertEqual(metrics.true_positive_count, 1)
+            self.assertEqual(metrics.true_rejection_count, 1)
+            self.assertEqual(metrics.false_positive_count, 0)
+            self.assertEqual(metrics.false_negative_count, 0)
+            self.assertIn("precision=1.00", metrics.render())
+
+            benchmark = retrieval_benchmark_report(tmp, store.list(), tag="metrics")
+            self.assertTrue(benchmark.passed)
+            self.assertEqual(benchmark.current_hits, 1)
+            self.assertEqual(benchmark.no_memory_hits, 0)
+            self.assertIn("generic_vector_hits", benchmark.render())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "retrieval-metrics", "--tag", "metrics", "--strict"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Retrieval Metrics", output.getvalue())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "retrieval-benchmark", "--tag", "metrics", "--strict"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("CMU Retrieval Benchmark", output.getvalue())
+
+    def test_scenario_eval_fixtures_seed_four_concrete_case_shapes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Checkout release guard",
+                summary="Checkout release changes need rollback verification.",
+                signals=["checkout release", "rollback verification"],
+                scope=MemoryScope(code=["checkout"], workflow=["release"], actor=["agent"]),
+                evidence=["Fixture proof"],
+                use_this_path="Verify rollback before release.",
+                liability_score=4,
+                approved_by="Release Owner",
+            )
+            exception = Memory.create(
+                type=MemoryType.EXCEPTION,
+                title="Checkout hotfix exception",
+                summary="A hotfix exception can bypass the normal release queue with owner approval.",
+                signals=["checkout hotfix", "exception"],
+                scope=MemoryScope(code=["checkout"], workflow=["challenge-review"], actor=["agent"]),
+                relationships=[MemoryRelationship(type=MemoryRelationType.CHALLENGES, target_id=practice.id)],
+            )
+            store.add(practice)
+            store.add(exception)
+
+            preview = seed_retrieval_evaluation_cases(tmp, store.list(), write=False)
+            self.assertFalse((Path(tmp) / ".cmu" / "scenarios.json").exists())
+            self.assertEqual(len(preview.scenarios), 4)
+            self.assertIn("retrieval-miss", {tag for scenario in preview.scenarios for tag in scenario.tags})
+            self.assertIn("bad-match", {tag for scenario in preview.scenarios for tag in scenario.tags})
+            self.assertIn("governance-block", {tag for scenario in preview.scenarios for tag in scenario.tags})
+            self.assertIn("challenge-outcome", {tag for scenario in preview.scenarios for tag in scenario.tags})
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "scenario-eval-fixtures", "--write"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Written: yes", output.getvalue())
+            saved = ScenarioLibraryStore(tmp).list(tag="retrieval-evaluation")
+            self.assertEqual(len(saved), 4)
+
+    def test_publish_check_validates_read_only_publication_workflow(self) -> None:
+        report = publish_check(Path.cwd())
+        self.assertTrue(report.passed, report.render())
+        self.assertIn("CMU Publish Check", report.render())
+
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["--root", ".", "publish-check"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Status: pass", output.getvalue())
 
 
 def write_and_commit(root: str, path: str, content: str, message: str) -> None:

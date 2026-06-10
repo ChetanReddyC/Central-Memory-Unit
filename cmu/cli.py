@@ -51,6 +51,7 @@ from .portable_compat import portable_compat_report
 from .portable_fixture_seed import seed_portable_fixtures
 from .promotion import promote_memory, review_promotion
 from .product_console import product_console_report
+from .publish_check import publish_check
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
 from .quickstart import quickstart_demo
@@ -71,6 +72,7 @@ from .review_inbox import review_inbox_from_export, review_inbox_from_reports
 from .review_reminders import review_reminders
 from .reminder_delivery import deliver_reminders_to_outbox
 from .reminder_dispatch import dispatch_reminder_outbox
+from .retrieval_metrics import retrieval_benchmark_report, retrieval_metrics_report, seed_retrieval_evaluation_cases
 from .runner_hooks import runner_hooks_report
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
@@ -160,6 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
     dist_check_parser.add_argument("--work-dir", default="", help="Directory for temporary validation files. Defaults to .manual under the project root.")
     dist_check_parser.add_argument("--keep-work-dir", action="store_true", help="Keep temporary validation files for inspection.")
     dist_check_parser.set_defaults(func=cmd_dist_check)
+
+    publish_check_parser = subparsers.add_parser("publish-check", help="Validate package publication workflow readiness without uploading.")
+    publish_check_parser.set_defaults(func=cmd_publish_check)
 
     mcp_parser = subparsers.add_parser("mcp", help="Run the CMU MCP stdio server.")
     mcp_parser.set_defaults(func=cmd_mcp)
@@ -614,6 +619,20 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_suite_parser.add_argument("--record", action="store_true", help="Record suite metrics under .cmu/scenario_suite_runs.json.")
     scenario_suite_parser.add_argument("--strict", action="store_true", help="Exit non-zero when scenarios need review or CMU makes no behavior difference.")
     scenario_suite_parser.set_defaults(func=cmd_scenario_suite)
+
+    retrieval_metrics_parser = subparsers.add_parser("retrieval-metrics", help="Measure retrieval precision, recall, rejection, and grounding against saved scenarios.")
+    retrieval_metrics_parser.add_argument("--tag", default="", help="Only evaluate scenarios with this tag.")
+    retrieval_metrics_parser.add_argument("--strict", action="store_true", help="Exit non-zero when misses or false positives are detected.")
+    retrieval_metrics_parser.set_defaults(func=cmd_retrieval_metrics)
+
+    retrieval_benchmark_parser = subparsers.add_parser("retrieval-benchmark", help="Compare CMU retrieval with vector, graphless, and no-memory baselines.")
+    retrieval_benchmark_parser.add_argument("--tag", default="", help="Only benchmark scenarios with this tag.")
+    retrieval_benchmark_parser.add_argument("--strict", action="store_true", help="Exit non-zero when CMU does not match or beat weaker baselines.")
+    retrieval_benchmark_parser.set_defaults(func=cmd_retrieval_benchmark)
+
+    scenario_eval_fixtures_parser = subparsers.add_parser("scenario-eval-fixtures", help="Preview or seed retrieval evaluation scenario cases.")
+    scenario_eval_fixtures_parser.add_argument("--write", action="store_true", help="Persist the generated evaluation cases under .cmu/scenarios.json.")
+    scenario_eval_fixtures_parser.set_defaults(func=cmd_scenario_eval_fixtures)
 
     trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
     trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
@@ -1200,6 +1219,12 @@ def cmd_dist_check(args: argparse.Namespace, store: MemoryStore) -> int:
         work_dir=args.work_dir or None,
         keep_work_dir=args.keep_work_dir,
     )
+    print(report.render())
+    return 0 if report.passed else 1
+
+
+def cmd_publish_check(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = publish_check(args.root)
     print(report.render())
     return 0 if report.passed else 1
 
@@ -1965,6 +1990,28 @@ def cmd_scenario_suite(args: argparse.Namespace, store: MemoryStore) -> int:
     print(report.render())
     if args.strict and not report.ok:
         return 1
+    return 0
+
+
+def cmd_retrieval_metrics(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = retrieval_metrics_report(args.root, store.list(), MemoryUseStore(args.root).list(), tag=args.tag)
+    print(report.render())
+    if args.strict and not report.passed:
+        return 1
+    return 0
+
+
+def cmd_retrieval_benchmark(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = retrieval_benchmark_report(args.root, store.list(), tag=args.tag)
+    print(report.render())
+    if args.strict and not report.passed:
+        return 1
+    return 0
+
+
+def cmd_scenario_eval_fixtures(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = seed_retrieval_evaluation_cases(args.root, store.list(), write=args.write)
+    print(report.render())
     return 0
 
 
