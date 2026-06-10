@@ -38,6 +38,7 @@ from cmu.portable import PORTABLE_BUNDLE_VERSION, export_bundle_from_root, impor
 from cmu.portable_compat import portable_compat_report
 from cmu.portable_fixture_seed import seed_portable_fixtures
 from cmu.promotion import promote_memory, review_promotion
+from cmu.product_console import product_console_report
 from cmu.quality import apply_decay_action, quality_card, quality_report
 from cmu.readiness import readiness_report
 from cmu.remembering import RememberRequest, remember_candidate
@@ -11737,6 +11738,150 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0, output.getvalue())
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["schema"], "cmu-review-inbox/v1")
+
+    def test_product_console_combines_graph_review_evidence_cleanup_and_navigation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use approved rollback checklist",
+                summary="Release rollback should follow the owner-approved checklist.",
+                scope=MemoryScope(ownership=["Release"], code=["checkout"], workflow=["deploy"]),
+                evidence=["Two checkout releases reused the checklist."],
+                use_this_path="Run the rollback checklist before touching production deploy state.",
+                liability_score=4,
+                confidence=0.9,
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Checkout release rollback",
+                summary="Checkout release failures came from skipping the rollback checklist.",
+                scope=MemoryScope(ownership=["Release"], code=["checkout"], workflow=["deploy"]),
+                evidence=["Incident review linked the rollback miss to deploy recovery time."],
+                use_this_path="Stop deployment and run rollback checklist before retrying.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.RELATED_PRACTICE,
+                        target_id=practice.id,
+                        reason="The incident should navigate to the stable rollback practice.",
+                    )
+                ],
+                liability_score=4,
+                confidence=0.85,
+            )
+            exception = Memory.create(
+                type=MemoryType.EXCEPTION,
+                title="Read-only checkout docs exception",
+                summary="Docs-only checkout edits do not need rollback execution.",
+                relationships=[
+                    MemoryRelationship(
+                        type=MemoryRelationType.EXCEPTION_TO,
+                        target_id=situation.id,
+                        reason="Docs-only changes should not trigger the deploy rollback path.",
+                    )
+                ],
+            )
+            for memory in [practice, situation, exception]:
+                store.add(memory)
+
+            receipt = MemoryUseReceipt.create(
+                situation,
+                PreflightQuery(
+                    actor="agent",
+                    area="checkout",
+                    files=["src/checkout/release.py"],
+                    prompt="Fix checkout deploy rollback handling",
+                    risk="high",
+                    workflow=["deploy"],
+                ),
+                Match(memory=situation, score=2.4, matched_terms=["checkout", "rollback"]),
+                source_command="start",
+            )
+            link_commit(
+                receipt,
+                CommitLinkRequest(
+                    use_id=receipt.id,
+                    commit_hash="abc123456789",
+                    message="Apply checkout rollback checklist",
+                    files=["src/checkout/release.py"],
+                    metadata_source="manual-test",
+                    note="Product console evidence fixture.",
+                ),
+            )
+            MemoryUseStore(tmp).add(receipt)
+
+            report = product_console_report(
+                MemoryStore(tmp).list(),
+                MemoryUseStore(tmp).list(),
+                TeamDirectoryStore(tmp).list(),
+                root=tmp,
+            )
+            self.assertGreaterEqual(len(report.graph_nodes), 3, report.render())
+            self.assertTrue(any(card.category == "authority-approval" for card in report.review_cards), report.render())
+            self.assertTrue(any(card.memory_id == situation.id for card in report.trust_cards), report.render())
+            self.assertTrue(any(item.category == "authority" for item in report.cleanup_items), report.render())
+            nav = next(path for path in report.navigation_paths if path.situation_id == situation.id)
+            self.assertIn(practice.id, " ".join(nav.practices))
+            self.assertIn(exception.id, " ".join(nav.exceptions))
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "product-console", "--json"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["schema"], "cmu-product-console/v1")
+            self.assertTrue(payload["read_only"])
+            self.assertGreaterEqual(payload["summary"]["review_cards"], 1)
+            self.assertGreaterEqual(payload["summary"]["navigation_paths"], 1)
+
+    def test_product_console_memory_filter_focuses_existing_store_without_mutation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Filtered evidence practice",
+                summary="Filtered console should keep evidence scoped to this memory.",
+                scope=MemoryScope(code=["cmu/product"]),
+                approved_by="legacy owner",
+                liability_score=4,
+            )
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Unrelated candidate",
+                summary="This unrelated card should not appear in a focused product console.",
+                scope=MemoryScope(code=["other"]),
+                evidence=["candidate evidence"],
+                use_this_path="Promote only when related.",
+                liability_score=2,
+            )
+            store.add(practice)
+            store.add(candidate)
+            receipt = MemoryUseReceipt(
+                id="use_product_filter",
+                memory_id=practice.id,
+                memory_title=practice.title,
+                prompt="Inspect product console trust evidence",
+                actor="agent",
+                area="product",
+                files=["cmu/product_console.py"],
+                risk="medium",
+                match_score=2.1,
+            )
+            MemoryUseStore(tmp).add(receipt)
+            memories_before = (Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8")
+            receipts_before = (Path(tmp) / ".cmu" / "uses.json").read_text(encoding="utf-8")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "product-console", "--memory", practice.id])
+
+            self.assertEqual(exit_code, 0, output.getvalue())
+            rendered = output.getvalue()
+            self.assertIn("CMU Product Console", rendered)
+            self.assertIn(practice.id, rendered)
+            self.assertNotIn(candidate.id, rendered)
+            self.assertEqual(memories_before, (Path(tmp) / ".cmu" / "memories.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipts_before, (Path(tmp) / ".cmu" / "uses.json").read_text(encoding="utf-8"))
 
     def test_fixture_repo_catalog_includes_inventory_migration_fixture(self) -> None:
         with TemporaryDirectory() as tmp:

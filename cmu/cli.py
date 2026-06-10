@@ -46,6 +46,7 @@ from .portable import export_bundle_from_root, import_portable_bundle, load_port
 from .portable_compat import portable_compat_report
 from .portable_fixture_seed import seed_portable_fixtures
 from .promotion import promote_memory, review_promotion
+from .product_console import product_console_report
 from .questions import ResolveQuestionRequest, question_report, resolve_question
 from .quality import apply_decay_action, quality_report
 from .quickstart import quickstart_demo
@@ -730,6 +731,12 @@ def build_parser() -> argparse.ArgumentParser:
     review_inbox_parser.add_argument("--input", default="", help="Optional cmu-review-export/v1 JSON payload. Defaults to live stores.")
     review_inbox_parser.add_argument("--json", action="store_true", help="Render the inbox as JSON.")
     review_inbox_parser.set_defaults(func=cmd_review_inbox)
+
+    product_console_parser = subparsers.add_parser("product-console", help="Render the read-only human-facing CMU product console.")
+    product_console_parser.add_argument("--memory", default="", help="Focus graph, evidence, cleanup, and navigation on one memory id.")
+    product_console_parser.add_argument("--include-retired", action="store_true", help="Include retired memory history in graph and cleanup views.")
+    product_console_parser.add_argument("--json", action="store_true", help="Render the console payload as JSON.")
+    product_console_parser.set_defaults(func=cmd_product_console)
 
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
@@ -2161,6 +2168,25 @@ def cmd_review_inbox(args: argparse.Namespace, store: MemoryStore) -> int:
             handoffs=team_review_handoffs(memories, team_scopes),
             reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
         )
+    print(report.to_json() if args.json else report.render())
+    return 0
+
+
+def cmd_product_console(args: argparse.Namespace, store: MemoryStore) -> int:
+    memories = store.list()
+    if args.include_retired:
+        memories.extend(store.list(status=MemoryStatus.RETIRED))
+    try:
+        report = product_console_report(
+            memories,
+            MemoryUseStore(args.root).list(),
+            TeamDirectoryStore(args.root).list(),
+            root=args.root,
+            memory_id=args.memory,
+            include_retired=args.include_retired,
+        )
+    except KeyError as error:
+        raise SystemExit(f"product-console failed: {error}") from error
     print(report.to_json() if args.json else report.render())
     return 0
 

@@ -341,13 +341,13 @@ Still needed:
 
 Motive: CMU should feel like a quiet senior teammate, but humans still need inspectable trust, evidence, and review paths.
 
-Still needed:
+First human-facing product console slice now implemented:
 
-- Human-facing memory graph/tree views.
-- Review cards for promotion, authority, challenge, and decay decisions.
-- Trust and evidence inspection.
-- Product surfaces for memory cleanup.
-- Navigation through situation -> cause -> fix -> practice -> exception paths.
+- `cmu product-console` renders one read-only human/product surface over the real graph, review, evidence, cleanup, and navigation stores.
+- The console includes a memory graph/tree summary, compact review cards for promotion, authority, challenge, quality, and decay moments, trust/evidence cards from real Memory Use Receipts, cleanup items from readiness, and situation-path navigation through cause, fix, related practices, exceptions, and warnings.
+- `--json` emits the same surface as a structured `cmu-product-console/v1` payload for UI or workflow adapters, while the default render remains readable for operators.
+- `--memory <id>` focuses the graph, evidence, cleanup, and navigation view on one stored memory without mutating memories, receipts, team scopes, reviews, or graph links.
+- Automated tests verify the console against real `MemoryStore`, `MemoryUseStore`, graph relationships, review cards, readiness cleanup items, CLI JSON output, focus filtering, and read-only store behavior. Manual verification under `.manual/product-console-proof-20260610` seeded a real `.cmu` store, linked a real receipt, and confirmed `cmu product-console` and `cmu product-console --json` rendered graph/tree, review, trust/evidence, cleanup, and situation-path sections.
 
 ### 10. Packaging, Install, And Documentation
 
@@ -459,11 +459,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU capabilities end to end: service-manager wrapper generation for the evidence service (`cmu evidence-service-install`), manifest-derived host/runtime examples (`cmu host-examples`), a read-only review inbox over live/exported review payloads (`cmu review-inbox`), a third generated fixture repository domain (`cmu fixture-repo-create --kind inventory-migration`), and a migration-oriented portable fixture corpus (`portable-fixture-seed` plus `portable-compat` migration fixture checks). Each slice has real code, CLI wiring, tests, and manual verification against persisted `.cmu` stores under `.manual/five-burndown-*`.
+This cycle implemented the five concrete Product/UI unfinished chunks end to end through `cmu product-console`: human-facing memory graph/tree views, review cards for promotion/authority/challenge/decay decisions, trust and evidence inspection, cleanup/readiness surfaces, and navigation through situation -> cause -> fix -> practice -> exception paths. The console has real code, CLI wiring, JSON output for UI adapters, focused memory filtering, automated tests against real stores and receipts, and manual verification against a persisted `.manual/product-console-proof-20260610` CMU store.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these workflow surfaces further toward production operation: deepen long-session receipt linking policy, build richer IDE/coding-agent integration beyond generated examples, add actual scheduling/notification delivery beyond local JSONL outbox payloads, or deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen long-session receipt linking policy, build richer IDE/coding-agent integration beyond generated examples, add actual scheduling/notification delivery beyond local JSONL outbox payloads, deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
