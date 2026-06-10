@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .agent_api import AgentIntegration
 from .codex_adapter import codex_runner_report
+from .copilot_adapter import copilot_runner_report
 from .mcp import MCP_SERVER_NAME, mcp_tool_definitions
 from .models import utc_now
 from .openai_adapter import openai_runner_report
@@ -13,7 +14,7 @@ from .setup import setup_guide
 
 
 HOST_SETUP_MANIFEST_VERSION = "cmu-host-setup-manifest/v1"
-HOSTS = {"codex", "openai", "mcp", "all"}
+HOSTS = {"codex", "openai", "copilot", "mcp", "all"}
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,8 @@ def host_setup_manifest(
     if normalized not in HOSTS:
         raise ValueError(f"unknown host setup manifest host: {host}")
     root_path = Path(root)
-    setup = setup_guide(root_path, host="all" if normalized in {"all", "openai"} else normalized)
+    setup_host = "all" if normalized in {"all", "openai", "copilot"} else normalized
+    setup = setup_guide(root_path, host=setup_host)
     payload = {
         "schema": HOST_SETUP_MANIFEST_VERSION,
         "created_at": utc_now(),
@@ -86,6 +88,8 @@ def host_setup_manifest(
         commands.append("cmu codex-runner --input-file <event.json>")
     if normalized in {"all", "openai"}:
         commands.append("cmu openai-runner --input-file <event.json>")
+    if normalized in {"all", "copilot"}:
+        commands.append("cmu copilot-runner --input-file <event.json>")
     return HostSetupManifestReport(
         root=str(root_path),
         host=normalized,
@@ -102,4 +106,6 @@ def adapter_payloads(root: Path, host: str) -> dict:
         adapters["codex"] = codex_runner_report(root).manifest
     if host in {"all", "openai"}:
         adapters["openai"] = openai_runner_report(root).manifest
+    if host in {"all", "copilot"}:
+        adapters["copilot"] = copilot_runner_report(root).manifest
     return adapters

@@ -87,11 +87,17 @@ First manifest-derived host examples slice now implemented:
 - Preview mode is read-only; `--write` persists files under the CMU root for host/IDE adoption.
 - Automated tests verify generated Codex, OpenAI, and MCP example files plus CLI host filtering. Manual verification under `.manual/five-burndown-host` wrote `.cmu/host-examples` and confirmed the live manifest still reports MCP, Codex, and OpenAI commands.
 
+Copilot/IDE host-integration hardening slices now implemented:
+
+- `cmu.copilot_adapter.CopilotRunnerAdapter` translates VS Code/GitHub Copilot-style chat events into the existing autonomous runner hooks.
+- `cmu copilot-runner` renders the adapter contract read-only with no input and executes `copilot.chat.started`, `copilot.chat.finished`, `copilot.checkpoint.created`, and `copilot.review.requested` events with JSON input.
+- `cmu host-setup-manifest` and `cmu host-examples` now include the Copilot adapter contract and generated Copilot event example.
+- `cmu mcp-setup-check` validates Codex, VS Code, or generic MCP host configuration against the live CMU MCP server name, command, root args, and tool definitions.
+- `cmu ide-workflow --write` generates runnable VS Code tasks, MCP config, and a Copilot event snippet so IDE users can call `cmu start`, `review-inbox`, `evidence-session`, MCP, and the Copilot adapter from real workspace files.
+- Automated tests verify Copilot event execution through real runner hooks and receipt persistence, MCP setup validation through generated and explicit config files, and IDE workflow file generation through CLI paths.
+
 Still needed:
 
-- Additional host-specific runner adapters beyond Codex-style and OpenAI Agents-style events.
-- Host-specific MCP setup polish beyond the first machine-readable manifest.
-- Deeper IDE/coding-agent integration beyond manifest handoff.
 - Runtime behavior where CMU becomes part of the work loop, not an optional manual command.
 
 ### 3. Automatic Evidence Loop
@@ -195,12 +201,18 @@ First review inbox slice now implemented:
 - `--json` emits a read-only payload for UI or workflow adapters without approving, promoting, retiring, resolving, notifying, or mutating memory.
 - Automated tests verify live-store inbox generation, exported-payload ingestion, JSON rendering, and CLI dispatch. Manual verification under `.manual/five-burndown-review` exported real review cards and rendered a three-item JSON inbox with one urgent handoff.
 
+First local notification dispatch slice now implemented:
+
+- `cmu reminder-dispatch` reads durable reminder outbox events and writes an idempotent local dispatch log only with `--apply`.
+- The dispatch step records delivered delivery ids, reminder counts, urgent counts, channel, and dispatch time, so schedulers have a concrete delivery handoff beyond merely writing a payload.
+- Preview mode remains non-mutating, and repeated apply skips already dispatched delivery ids instead of duplicating notifications.
+- Automated tests verify reminder creation from real stores, outbox delivery, preview-vs-apply dispatch behavior, durable dispatch JSONL records, idempotent repeat dispatch, and CLI execution.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
 - Better owner/team review flows beyond local metadata handoff application.
-- Actual scheduling/notification delivery beyond the machine-readable reminder payload.
 
 ### 5. Memory Lifecycle Automation
 
@@ -329,10 +341,16 @@ Second fixture catalog expansion slice now implemented:
 - The inventory fixture is tagged for fixture, runner-host-path, and migration coverage, so the host-path suite now exercises checkout, billing, and inventory domains.
 - Automated tests verify generated files, persisted memory/scenario linkage, strict scenario pass behavior, and host-path suite coverage across all three fixture kinds. Manual verification under `.manual/five-burndown-fixture/inventory-migration` confirmed the generated fixture's strict scenario passed.
 
+First no-memory behavior comparison slice now implemented:
+
+- `cmu scenario-no-memory-compare` runs saved scenario-library cases against an explicit empty-memory baseline and the current CMU store.
+- The comparison classifies each case as `cmu-added-guidance`, `cmu-suppressed-guidance`, `changed`, or `no-difference`, giving scenario evaluation a direct agent-behavior view with and without CMU.
+- `--strict` exits non-zero when a scenario shows no CMU behavior difference, so teams can gate scenario suites on memory actually changing work instead of only passing expectations.
+- Automated tests verify the comparison through real persisted scenarios, real Practice memory, current-store retrieval, the empty-memory baseline, and CLI dispatch.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Before/after comparisons of agent behavior with and without CMU.
 - Longitudinal scenario suites.
 - Measurable usefulness and drag metrics.
 - Evaluation cases for retrieval misses, bad matches, governance blocks, and challenge outcomes.
@@ -463,7 +481,7 @@ This cycle implemented the five concrete Product/UI unfinished chunks end to end
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen long-session receipt linking policy, build richer IDE/coding-agent integration beyond generated examples, add actual scheduling/notification delivery beyond local JSONL outbox payloads, deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these still-open workflow surfaces further toward production operation: deepen long-session receipt linking policy, build runtime behavior where CMU is invoked automatically in the work loop, deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies, add longitudinal usefulness/drag metrics, or add production retrieval durability. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 

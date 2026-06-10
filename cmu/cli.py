@@ -11,6 +11,7 @@ from .analytics import usefulness_analytics_report
 from .authority import authority_report, set_memory_authority
 from .challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from .codex_adapter import codex_runner_report
+from .copilot_adapter import copilot_runner_report
 from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
@@ -26,6 +27,7 @@ from .hardening_cycle import hardening_cycle_report
 from .host_path_suite import run_host_path_suite
 from .host_examples import host_examples
 from .host_setup_manifest import host_setup_manifest
+from .ide_workflow import ide_workflow
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
 from .lifecycle import lifecycle_report
@@ -38,6 +40,7 @@ from .lifecycle_ops import (
 )
 from .lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from .mcp import StdioMcpServer, CmuMcpAdapter
+from .mcp_setup_check import mcp_setup_check
 from .models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from .onboarding import build_onboarding_seed
 from .openai_adapter import openai_runner_report
@@ -66,6 +69,7 @@ from .review_export import export_review_payload
 from .review_inbox import review_inbox_from_export, review_inbox_from_reports
 from .review_reminders import review_reminders
 from .reminder_delivery import deliver_reminders_to_outbox
+from .reminder_dispatch import dispatch_reminder_outbox
 from .runner_hooks import runner_hooks_report
 from .runner_scenarios import RunnerScenarioRequest, run_runner_scenario
 from .scenarios import (
@@ -73,6 +77,7 @@ from .scenarios import (
     ScenarioEvaluationRequest,
     ScenarioLibraryStore,
     compare_scenario_library,
+    compare_scenario_library_to_no_memory,
     evaluate_scenario,
     run_scenario_library,
 )
@@ -133,13 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.set_defaults(func=cmd_setup_guide)
 
     host_manifest_parser = subparsers.add_parser("host-setup-manifest", help="Write a machine-readable IDE/coding-agent setup manifest.")
-    host_manifest_parser.add_argument("--host", choices=["all", "codex", "openai", "mcp"], default="all")
+    host_manifest_parser.add_argument("--host", choices=["all", "codex", "openai", "copilot", "mcp"], default="all")
     host_manifest_parser.add_argument("--output", default=".cmu/host_setup_manifest.json")
     host_manifest_parser.add_argument("--write", action="store_true", help="Write the manifest JSON. Defaults to preview.")
     host_manifest_parser.set_defaults(func=cmd_host_setup_manifest)
 
     host_examples_parser = subparsers.add_parser("host-examples", help="Generate manifest-derived integration examples for common agent runtimes.")
-    host_examples_parser.add_argument("--host", choices=["all", "codex", "openai", "mcp"], default="all")
+    host_examples_parser.add_argument("--host", choices=["all", "codex", "openai", "copilot", "mcp"], default="all")
     host_examples_parser.add_argument("--output", default=".cmu/host-examples")
     host_examples_parser.add_argument("--write", action="store_true", help="Write example files. Defaults to preview.")
     host_examples_parser.set_defaults(func=cmd_host_examples)
@@ -198,6 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
     openai_runner_parser.add_argument("--input-file", default="", help="Read JSON event object from a file, or '-' for stdin.")
     openai_runner_parser.add_argument("--json", action="store_true", help="Render the adapter manifest/result as JSON.")
     openai_runner_parser.set_defaults(func=cmd_openai_runner)
+
+    copilot_runner_parser = subparsers.add_parser("copilot-runner", help="Show or execute the VS Code/GitHub Copilot host adapter for runner events.")
+    copilot_runner_parser.add_argument("--input", default="", help="Inline JSON event object.")
+    copilot_runner_parser.add_argument("--input-file", default="", help="Read JSON event object from a file, or '-' for stdin.")
+    copilot_runner_parser.add_argument("--json", action="store_true", help="Render the adapter manifest/result as JSON.")
+    copilot_runner_parser.set_defaults(func=cmd_copilot_runner)
 
     runner_scenario_parser = subparsers.add_parser("runner-scenario", help="Run a read-only autonomous-runner lifecycle scenario against an isolated store.")
     runner_scenario_parser.add_argument("prompt", nargs="*", help="Task prompt to evaluate through runner hooks.")
@@ -570,6 +581,18 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_compare_parser.add_argument("--strict", action="store_true", help="Exit non-zero when a passing baseline regresses.")
     scenario_compare_parser.set_defaults(func=cmd_scenario_compare)
 
+    scenario_no_memory_parser = subparsers.add_parser("scenario-no-memory-compare", help="Compare saved scenarios against an explicit no-memory baseline.")
+    scenario_no_memory_parser.add_argument("scenario", nargs="?", default="", help="Scenario id or exact name. Omit to compare the library.")
+    scenario_no_memory_parser.add_argument("--tag", default="", help="Compare scenarios with this tag.")
+    scenario_no_memory_parser.add_argument(
+        "--semantic",
+        choices=["off", "local"],
+        default="off",
+        help="Enable an explicit semantic retrieval provider for the CMU store. Defaults to off.",
+    )
+    scenario_no_memory_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any scenario shows no CMU behavior difference.")
+    scenario_no_memory_parser.set_defaults(func=cmd_scenario_no_memory_compare)
+
     trace_add_parser = subparsers.add_parser("trace-add", help="Capture raw task activity for later Candidate Memory distillation.")
     trace_add_parser.add_argument("prompt", nargs="*", help="Raw task/activity prompt to capture.")
     trace_add_parser.add_argument("--actor", default="developer")
@@ -720,6 +743,23 @@ def build_parser() -> argparse.ArgumentParser:
     reminder_delivery_parser.add_argument("--outbox", default="", help="Outbox JSONL path. Defaults to .cmu/reminder_outbox.jsonl.")
     reminder_delivery_parser.add_argument("--apply", action="store_true", help="Append a delivery event to the outbox. Defaults to preview.")
     reminder_delivery_parser.set_defaults(func=cmd_reminder_delivery)
+
+    reminder_dispatch_parser = subparsers.add_parser("reminder-dispatch", help="Dispatch reminder outbox events to a durable local notification log.")
+    reminder_dispatch_parser.add_argument("--outbox", default="", help="Outbox JSONL path. Defaults to .cmu/reminder_outbox.jsonl.")
+    reminder_dispatch_parser.add_argument("--dispatch-log", default="", help="Dispatch JSONL path. Defaults to .cmu/reminder_dispatch.jsonl.")
+    reminder_dispatch_parser.add_argument("--apply", action="store_true", help="Append undispatched notifications to the dispatch log. Defaults to preview.")
+    reminder_dispatch_parser.set_defaults(func=cmd_reminder_dispatch)
+
+    mcp_check_parser = subparsers.add_parser("mcp-setup-check", help="Validate host MCP configuration against live CMU MCP tools.")
+    mcp_check_parser.add_argument("--host", choices=["codex", "vscode", "generic"], default="codex")
+    mcp_check_parser.add_argument("--config", default="", help="Optional host config JSON to validate.")
+    mcp_check_parser.set_defaults(func=cmd_mcp_setup_check)
+
+    ide_workflow_parser = subparsers.add_parser("ide-workflow", help="Generate runnable IDE workflow files for CMU work-loop integration.")
+    ide_workflow_parser.add_argument("--ide", choices=["vscode"], default="vscode")
+    ide_workflow_parser.add_argument("--output", default=".vscode")
+    ide_workflow_parser.add_argument("--write", action="store_true", help="Write IDE workflow files. Defaults to preview.")
+    ide_workflow_parser.set_defaults(func=cmd_ide_workflow)
 
     review_export_parser = subparsers.add_parser("review-export", help="Export review queue, owner handoffs, and reminders as structured JSON.")
     review_export_parser.add_argument("--days", type=int, default=14)
@@ -1372,6 +1412,30 @@ def cmd_openai_runner(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0 if report.result is None or report.result.ok else 1
 
 
+def cmd_copilot_runner(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.input and args.input_file:
+        raise SystemExit("copilot-runner accepts either --input or --input-file, not both")
+    event = None
+    if args.input or args.input_file:
+        raw_input = args.input
+        if args.input_file:
+            if args.input_file == "-":
+                raw_input = sys.stdin.read()
+            else:
+                raw_input = Path(args.input_file).read_text(encoding="utf-8-sig")
+        try:
+            event = json.loads(raw_input)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"copilot-runner input must be valid JSON: {error.msg}") from error
+    report = copilot_runner_report(args.root, event)
+    if args.json:
+        payload = {"root": report.root, "manifest": report.manifest, "result": report.result.to_dict() if report.result else None}
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
+    else:
+        print(report.render())
+    return 0 if report.result is None or report.result.ok else 1
+
+
 def cmd_runner_scenario(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -1820,6 +1884,30 @@ def cmd_scenario_compare(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_scenario_no_memory_compare(args: argparse.Namespace, store: MemoryStore) -> int:
+    library = ScenarioLibraryStore(args.root)
+    if args.scenario:
+        scenarios = [library.get(args.scenario)]
+        tag = ""
+    else:
+        scenarios = library.list(tag=args.tag)
+        tag = args.tag
+    current_memories = store.list()
+    current_semantic_index = load_semantic_index(args, current_memories)
+    report = compare_scenario_library_to_no_memory(
+        scenarios,
+        current_memories=current_memories,
+        current_receipts=MemoryUseStore(args.root).list(),
+        root=str(args.root),
+        current_semantic_index=current_semantic_index,
+        tag=tag,
+    )
+    print(report.render())
+    if args.strict and report.has_no_difference():
+        return 1
+    return 0
+
+
 def cmd_trace_add(args: argparse.Namespace, store: MemoryStore) -> int:
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -2132,6 +2220,29 @@ def cmd_reminder_delivery(args: argparse.Namespace, store: MemoryStore) -> int:
         outbox=args.outbox or None,
         apply=args.apply,
     )
+    print(report.render())
+    return 0
+
+
+def cmd_reminder_dispatch(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = dispatch_reminder_outbox(
+        args.root,
+        outbox=args.outbox or None,
+        dispatch_log=args.dispatch_log or None,
+        apply=args.apply,
+    )
+    print(report.render())
+    return 0
+
+
+def cmd_mcp_setup_check(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = mcp_setup_check(args.root, host=args.host, config=args.config or None)
+    print(report.render())
+    return 0 if report.passed else 1
+
+
+def cmd_ide_workflow(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = ide_workflow(args.root, ide=args.ide, output=args.output, write=args.write)
     print(report.render())
     return 0
 

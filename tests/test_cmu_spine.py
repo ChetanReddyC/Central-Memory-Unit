@@ -16,6 +16,7 @@ from cmu.authority import authority_card, authority_report, set_memory_authority
 from cmu.challenges import ChallengeRequest, ResolveChallengeRequest, challenge_stable_memory, resolve_challenge
 from cmu.cli import main
 from cmu.codex_adapter import CODEX_RUNNER_ADAPTER_VERSION, CodexRunnerAdapter, codex_runner_report
+from cmu.copilot_adapter import COPILOT_RUNNER_ADAPTER_VERSION, CopilotRunnerAdapter, copilot_runner_report
 from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
@@ -28,9 +29,11 @@ from cmu.hardening_cycle import hardening_cycle_report
 from cmu.host_examples import host_examples
 from cmu.host_path_suite import run_host_path_suite
 from cmu.host_setup_manifest import host_setup_manifest
+from cmu.ide_workflow import ide_workflow
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
 from cmu.lifecycle_settling import lifecycle_scope_suggestions, lifecycle_settle
 from cmu.mcp import MCP_SERVER_NAME, CmuMcpAdapter, mcp_tool_definitions
+from cmu.mcp_setup_check import mcp_setup_check
 from cmu.models import Memory, MemoryRelationType, MemoryRelationship, MemoryScope, MemoryStatus, MemoryType
 from cmu.onboarding import NORMAL_SEED_WORD_LIMIT, build_onboarding_seed, word_count
 from cmu.openai_adapter import OPENAI_RUNNER_ADAPTER_VERSION, OpenAIRunnerAdapter, openai_runner_report
@@ -57,9 +60,11 @@ from cmu.review_export import export_review_payload
 from cmu.review_inbox import review_inbox_from_export, review_inbox_from_reports
 from cmu.review_reminders import review_reminders
 from cmu.reminder_delivery import deliver_reminders_to_outbox
+from cmu.reminder_dispatch import dispatch_reminder_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
 from cmu.runner_scenarios import RUNNER_SCENARIO_VERSION, RunnerScenarioRequest, run_runner_scenario
 from cmu.scenarios import ScenarioDefinition, ScenarioLibraryStore, compare_scenario_library
+from cmu.scenarios import compare_scenario_library_to_no_memory
 from cmu.sdk import CentralMemoryUnit
 from cmu.setup import setup_guide
 from cmu.store import MemoryStore
@@ -11928,6 +11933,188 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
                 exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
             self.assertEqual(exit_code, 0, output.getvalue())
             self.assertIn("migration-v0-to-current-plan.json", output.getvalue())
+
+
+class FiveChunkBurndownCycleTests(unittest.TestCase):
+    def test_copilot_runner_adapter_uses_real_hooks_and_cli(self) -> None:
+        with TemporaryDirectory() as tmp:
+            practice = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use Copilot runner adapter for IDE work",
+                summary="Copilot chat events should call CMU runner hooks before meaningful IDE edits.",
+                signals=["copilot runner", "ide adapter"],
+                scope=MemoryScope(code=["cmu/copilot_adapter.py"], workflow=["agent integration"], actor=["agent"]),
+                evidence=["The adapter should translate host events without duplicating memory logic."],
+                use_this_path="Route Copilot chat starts through the runner adapter.",
+                avoid_this="Do not parse CLI prose from Copilot host integrations.",
+                challenge_only_if="The host can call AgentIntegration directly with identical semantics.",
+                liability_score=4,
+                confidence=0.9,
+                approved_by="CMU core owner",
+            )
+            MemoryStore(tmp).add(practice)
+
+            report = copilot_runner_report(tmp)
+            self.assertEqual(report.manifest["version"], COPILOT_RUNNER_ADAPTER_VERSION)
+            self.assertEqual(report.manifest["host"], "copilot")
+
+            adapter = CopilotRunnerAdapter(tmp)
+            started = adapter.handle(
+                {
+                    "event": "copilot.chat.started",
+                    "payload": {
+                        "message": "wire Copilot runner IDE adapter",
+                        "actor": "agent",
+                        "area": "cmu",
+                        "files": ["cmu/copilot_adapter.py"],
+                        "workflow": ["agent integration"],
+                        "risk": "high",
+                    },
+                }
+            )
+
+            self.assertTrue(started.ok)
+            self.assertEqual(started.status, "action-note")
+            self.assertEqual(started.hook_result["response"]["matched_memory"]["id"], practice.id)
+            [receipt] = MemoryUseStore(tmp).list()
+            self.assertEqual(receipt.memory_id, practice.id)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "copilot-runner",
+                        "--input",
+                        json.dumps({"event": "copilot.chat.finished", "payload": {"reusable_learning": False}}),
+                    ]
+                )
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("copilot.chat.finished", output.getvalue())
+
+    def test_mcp_setup_check_validates_generated_and_configured_hosts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            generated = mcp_setup_check(tmp, host="vscode")
+            self.assertTrue(generated.passed, generated.render())
+
+            config = Path(tmp) / "mcp.json"
+            config.write_text(
+                json.dumps({"mcp": {"servers": {MCP_SERVER_NAME: {"command": "cmu-mcp", "args": ["--root", tmp]}}}}),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "mcp-setup-check", "--host", "vscode", "--config", str(config)])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("Status: pass", output.getvalue())
+
+            workspace_tmp_parent = Path.cwd() / ".manual" / "test-mcp-setup-check"
+            workspace_tmp_parent.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(dir=workspace_tmp_parent) as workspace_tmp:
+                workspace_config = Path(workspace_tmp) / "mcp.json"
+                workspace_config.write_text(config.read_text(encoding="utf-8"), encoding="utf-8")
+                relative_config = workspace_config.relative_to(Path.cwd())
+                workspace_report = mcp_setup_check(tmp, host="vscode", config=relative_config)
+                self.assertTrue(workspace_report.passed, workspace_report.render())
+
+    def test_ide_workflow_writes_vscode_tasks_mcp_and_snippet_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            preview = ide_workflow(tmp, write=False)
+            self.assertEqual(len(preview.files), 3)
+            self.assertFalse((Path(tmp) / ".vscode" / "tasks.json").exists())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "ide-workflow", "--write"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            tasks = json.loads((Path(tmp) / ".vscode" / "tasks.json").read_text(encoding="utf-8"))
+            self.assertEqual(tasks["tasks"][0]["label"], "CMU: start work")
+            mcp = json.loads((Path(tmp) / ".vscode" / "mcp.json").read_text(encoding="utf-8"))
+            self.assertIn(MCP_SERVER_NAME, mcp["servers"])
+            self.assertTrue((Path(tmp) / ".vscode" / "cmu.code-snippets").exists())
+
+    def test_reminder_dispatch_is_idempotent_after_outbox_delivery(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Dispatch expired authority reminder",
+                summary="Expired authority reminders should reach a dispatch log.",
+                approved_by="Checkout owner",
+                authority_owner="Checkout team",
+                authority_role="owner",
+                authority_consequence="high",
+                authority_review_due_at="2026-01-01T00:00:00+00:00",
+            )
+            MemoryStore(tmp).add(memory)
+            reminders = review_reminders(MemoryStore(tmp).list(), MemoryUseStore(tmp).list(), days=30)
+            outbox = Path(tmp) / ".cmu" / "outbox.jsonl"
+            deliver_reminders_to_outbox(reminders, root=tmp, outbox=outbox, apply=True)
+            dispatch_log = Path(tmp) / ".cmu" / "dispatch.jsonl"
+
+            preview = dispatch_reminder_outbox(tmp, outbox=outbox, dispatch_log=dispatch_log, apply=False)
+            self.assertEqual(len(preview.dispatched), 1)
+            self.assertFalse(dispatch_log.exists())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    ["--root", tmp, "reminder-dispatch", "--outbox", str(outbox), "--dispatch-log", str(dispatch_log), "--apply"]
+                )
+            self.assertEqual(exit_code, 0, output.getvalue())
+            [line] = dispatch_log.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(json.loads(line)["schema"], "cmu-reminder-dispatch/v1")
+
+            second = dispatch_reminder_outbox(tmp, outbox=outbox, dispatch_log=dispatch_log, apply=True)
+            self.assertEqual(len(second.dispatched), 0)
+            self.assertEqual(second.skipped, 1)
+
+    def test_scenario_no_memory_comparison_shows_cmu_added_guidance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Use billing reconciliation guard",
+                summary="Billing reconciliation fixes must replay invoices before settlement.",
+                signals=["billing reconciliation", "settlement"],
+                scope=MemoryScope(code=["billing/reconcile.py"], workflow=["incident"], actor=["agent"]),
+                evidence=["Previous incident replay found settlement drift."],
+                use_this_path="Replay invoices before settlement changes.",
+                avoid_this="Do not patch settlement totals without replay evidence.",
+                challenge_only_if="A newer incident runbook supersedes this flow.",
+                liability_score=5,
+                confidence=0.9,
+                approved_by="Billing owner",
+            )
+            MemoryStore(tmp).add(memory)
+            scenario = ScenarioDefinition.create(
+                name="Billing replay incident",
+                prompt="Fix billing reconciliation settlement drift",
+                actor="agent",
+                area="billing",
+                files=["billing/reconcile.py"],
+                workflow=["incident"],
+                risk="high",
+                expect_action="action-note",
+                expect_memory=memory.id,
+                tags=["ab"],
+            )
+            ScenarioLibraryStore(tmp).add(scenario)
+            scenarios = ScenarioLibraryStore(tmp).list(tag="ab")
+
+            report = compare_scenario_library_to_no_memory(
+                scenarios,
+                current_memories=MemoryStore(tmp).list(),
+                current_receipts=MemoryUseStore(tmp).list(),
+                root=tmp,
+                tag="ab",
+            )
+            self.assertEqual(report.items[0].classification, "cmu-added-guidance")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "scenario-no-memory-compare", "--tag", "ab"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("cmu-added-guidance", output.getvalue())
 
 
 def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:

@@ -8,7 +8,7 @@ from .host_setup_manifest import host_setup_manifest
 
 
 HOST_EXAMPLES_VERSION = "cmu-host-examples/v1"
-EXAMPLE_KINDS = {"codex", "openai", "mcp", "all"}
+EXAMPLE_KINDS = {"codex", "openai", "copilot", "mcp", "all"}
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,31 @@ def build_example_files(root: Path, output: Path, host: str) -> list[HostExample
                             "risk": "medium",
                         },
                         "run": f"cmu --root {root} openai-runner --input-file openai-runner-event.json",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+        )
+    if host in {"all", "copilot"}:
+        files.append(
+            HostExampleFile(
+                output / "copilot-runner-event.json",
+                json.dumps(
+                    {
+                        "schema": HOST_EXAMPLES_VERSION,
+                        "event": "copilot.chat.started",
+                        "payload": {
+                            "message": "replace with the Copilot chat or edit task",
+                            "actor": "agent",
+                            "area": "repository area",
+                            "files": ["path/to/file.py"],
+                            "workflow": ["implementation"],
+                            "environment": ["local"],
+                            "risk": "medium",
+                        },
+                        "run": f"cmu --root {root} copilot-runner --input-file copilot-runner-event.json",
                     },
                     indent=2,
                     sort_keys=True,

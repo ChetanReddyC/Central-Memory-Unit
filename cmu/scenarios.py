@@ -445,6 +445,71 @@ class ScenarioComparisonReport:
         return any(item.classification == "regressed" for item in self.items)
 
 
+@dataclass
+class ScenarioNoMemoryComparisonItem:
+    scenario: ScenarioDefinition
+    no_memory: ScenarioEvaluationReport
+    with_cmu: ScenarioEvaluationReport
+
+    @property
+    def classification(self) -> str:
+        if self.no_memory.action == "quiet" and self.with_cmu.action == "action-note":
+            return "cmu-added-guidance"
+        if self.no_memory.action == self.with_cmu.action and self.no_memory.matched_memory_id == self.with_cmu.matched_memory_id:
+            return "no-difference"
+        if self.no_memory.action == "action-note" and self.with_cmu.action == "quiet":
+            return "cmu-suppressed-guidance"
+        return "changed"
+
+    def render(self) -> str:
+        return (
+            f"- {self.classification}: {self.scenario.id} {self.scenario.name} "
+            f"without={self.no_memory.verdict}/{self.no_memory.action}/{self.no_memory.matched_memory_id or 'none'} "
+            f"with={self.with_cmu.verdict}/{self.with_cmu.action}/{self.with_cmu.matched_memory_id or 'none'}"
+        )
+
+
+@dataclass
+class ScenarioNoMemoryComparisonReport:
+    items: list[ScenarioNoMemoryComparisonItem]
+    root: str
+    tag: str = ""
+
+    def render(self) -> str:
+        counts = {name: 0 for name in ["cmu-added-guidance", "cmu-suppressed-guidance", "changed", "no-difference"]}
+        for item in self.items:
+            counts[item.classification] += 1
+        lines = [
+            "CMU Scenario No-Memory Comparison",
+            "Mode: read-only agent-behavior comparison; no-memory baseline vs current CMU store.",
+            f"Root: {self.root}",
+            f"Filter: tag={self.tag}" if self.tag else "Filter: all scenarios",
+            (
+                "Summary: "
+                f"total={len(self.items)} "
+                f"cmu_added_guidance={counts['cmu-added-guidance']} "
+                f"cmu_suppressed_guidance={counts['cmu-suppressed-guidance']} "
+                f"changed={counts['changed']} "
+                f"no_difference={counts['no-difference']}"
+            ),
+        ]
+        if self.items:
+            lines.append("")
+            lines.extend(item.render() for item in self.items)
+        else:
+            lines.extend(["", "No scenarios matched."])
+        lines.extend(
+            [
+                "",
+                "Proof Meaning: saved scenarios can now compare agent behavior with the current CMU store against an explicit no-memory baseline.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def has_no_difference(self) -> bool:
+        return any(item.classification == "no-difference" for item in self.items)
+
+
 def evaluate_scenario(
     memories: list[Memory],
     receipts: list[MemoryUseReceipt],
@@ -559,6 +624,31 @@ def compare_scenario_library(
         for scenario in scenarios
     ]
     return ScenarioComparisonReport(items=items, baseline_root=baseline_root, current_root=current_root, tag=tag)
+
+
+def compare_scenario_library_to_no_memory(
+    scenarios: list[ScenarioDefinition],
+    *,
+    current_memories: list[Memory],
+    current_receipts: list[MemoryUseReceipt],
+    root: str,
+    current_semantic_index: SemanticIndex | None = None,
+    tag: str = "",
+) -> ScenarioNoMemoryComparisonReport:
+    items = [
+        ScenarioNoMemoryComparisonItem(
+            scenario=scenario,
+            no_memory=evaluate_scenario([], [], scenario.request(), semantic_index=None),
+            with_cmu=evaluate_scenario(
+                current_memories,
+                current_receipts,
+                scenario.request(),
+                semantic_index=current_semantic_index,
+            ),
+        )
+        for scenario in scenarios
+    ]
+    return ScenarioNoMemoryComparisonReport(items=items, root=root, tag=tag)
 
 
 def evaluate_candidate_signal(request: ScenarioEvaluationRequest) -> ScenarioCandidateSignal:
