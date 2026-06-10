@@ -15,6 +15,7 @@ from .demo_walkthrough import demo_walkthrough
 from .dist_check import dist_check
 from .doc_curation import DocumentCurationReport, apply_selected_curation_decisions, curate_documents
 from .evidence_monitor import DEFAULT_MONITOR_MIN_CONFIDENCE, DEFAULT_MONITOR_MIN_SCORE, monitor_checkpoints
+from .evidence_service_install import evidence_service_install
 from .evidence_service import run_evidence_service
 from .evidence_watch import run_evidence_watch
 from .fixture_repos import FIXTURE_KINDS, create_fixture_repo
@@ -23,6 +24,7 @@ from .graphview import graph_memory_view_report
 from .gravity import gravity_report
 from .hardening_cycle import hardening_cycle_report
 from .host_path_suite import run_host_path_suite
+from .host_examples import host_examples
 from .host_setup_manifest import host_setup_manifest
 from .install_check import install_check
 from .lifecycle_apply import apply_lifecycle_candidates
@@ -60,6 +62,7 @@ from .retrieval import (
 )
 from .review_queue import review_queue
 from .review_export import export_review_payload
+from .review_inbox import review_inbox_from_export, review_inbox_from_reports
 from .review_reminders import review_reminders
 from .reminder_delivery import deliver_reminders_to_outbox
 from .runner_hooks import runner_hooks_report
@@ -133,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     host_manifest_parser.add_argument("--output", default=".cmu/host_setup_manifest.json")
     host_manifest_parser.add_argument("--write", action="store_true", help="Write the manifest JSON. Defaults to preview.")
     host_manifest_parser.set_defaults(func=cmd_host_setup_manifest)
+
+    host_examples_parser = subparsers.add_parser("host-examples", help="Generate manifest-derived integration examples for common agent runtimes.")
+    host_examples_parser.add_argument("--host", choices=["all", "codex", "openai", "mcp"], default="all")
+    host_examples_parser.add_argument("--output", default=".cmu/host-examples")
+    host_examples_parser.add_argument("--write", action="store_true", help="Write example files. Defaults to preview.")
+    host_examples_parser.set_defaults(func=cmd_host_examples)
 
     install_check_parser = subparsers.add_parser("install-check", help="Validate README, package, SDK, CLI, and MCP adoption surfaces.")
     install_check_parser.set_defaults(func=cmd_install_check)
@@ -717,6 +726,11 @@ def build_parser() -> argparse.ArgumentParser:
     review_export_parser.add_argument("--write", action="store_true", help="Write the JSON review payload. Defaults to preview.")
     review_export_parser.set_defaults(func=cmd_review_export)
 
+    review_inbox_parser = subparsers.add_parser("review-inbox", help="Render a read-only non-CLI review inbox from live stores or review-export JSON.")
+    review_inbox_parser.add_argument("--input", default="", help="Optional cmu-review-export/v1 JSON payload. Defaults to live stores.")
+    review_inbox_parser.add_argument("--json", action="store_true", help="Render the inbox as JSON.")
+    review_inbox_parser.set_defaults(func=cmd_review_inbox)
+
     authority_parser = subparsers.add_parser("authority", help="Show the read-only Team and Authority Model.")
     authority_parser.add_argument("--memory", default="", help="Limit authority view to one memory id.")
     authority_parser.add_argument("--all", action="store_true", help="Include non-stable memories in the authority view.")
@@ -971,6 +985,15 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_service_parser.add_argument("--stop-file", default=".cmu/evidence_service.stop")
     evidence_service_parser.set_defaults(func=cmd_evidence_service)
 
+    evidence_install_parser = subparsers.add_parser("evidence-service-install", help="Generate OS/service-manager wrapper files for cmu evidence-service.")
+    evidence_install_parser.add_argument("--target", choices=["systemd-user", "windows-task", "launchd"], default="systemd-user")
+    evidence_install_parser.add_argument("--output", default=".cmu/service-wrappers")
+    evidence_install_parser.add_argument("--interval", type=float, default=60.0)
+    evidence_install_parser.add_argument("--no-apply", action="store_true", help="Generate a dry-run evidence-service wrapper instead of applying clean links.")
+    evidence_install_parser.add_argument("--no-record", action="store_true", help="Generate wrapper with service/session recording disabled.")
+    evidence_install_parser.add_argument("--write", action="store_true", help="Write wrapper files. Defaults to preview.")
+    evidence_install_parser.set_defaults(func=cmd_evidence_service_install)
+
     host_path_parser = subparsers.add_parser("host-path-suite", help="Run fixture-backed scenario, runner, Codex adapter, and compare host-path checks.")
     host_path_parser.add_argument("--work-dir", default="", help="Directory for generated fixture repositories. Defaults to a temporary directory.")
     host_path_parser.add_argument("--strict", action="store_true", help="Exit non-zero unless every host-path fixture passes.")
@@ -1079,6 +1102,15 @@ def cmd_setup_guide(args: argparse.Namespace, store: MemoryStore) -> int:
 
 def cmd_host_setup_manifest(args: argparse.Namespace, store: MemoryStore) -> int:
     report = host_setup_manifest(args.root, host=args.host, output=args.output, write=args.write)
+    print(report.render())
+    return 0
+
+
+def cmd_host_examples(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = host_examples(args.root, host=args.host, output=args.output, write=args.write)
+    except ValueError as error:
+        raise SystemExit(f"host-examples failed: {error}") from error
     print(report.render())
     return 0
 
@@ -2113,6 +2145,26 @@ def cmd_review_export(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def cmd_review_inbox(args: argparse.Namespace, store: MemoryStore) -> int:
+    if args.input:
+        try:
+            report = review_inbox_from_export(args.input)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise SystemExit(f"review-inbox failed: {error}") from error
+    else:
+        memories = store.list()
+        receipts = MemoryUseStore(args.root).list()
+        team_scopes = TeamDirectoryStore(args.root).list()
+        report = review_inbox_from_reports(
+            root=args.root,
+            queue=review_queue(memories, receipts, team_scopes),
+            handoffs=team_review_handoffs(memories, team_scopes),
+            reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
+        )
+    print(report.to_json() if args.json else report.render())
+    return 0
+
+
 def cmd_authority(args: argparse.Namespace, store: MemoryStore) -> int:
     print(authority_report(store.list(), memory_id=args.memory, include_all=args.all).render())
     return 0
@@ -2523,6 +2575,23 @@ def cmd_evidence_service(args: argparse.Namespace, store: MemoryStore) -> int:
         )
     except ValueError as error:
         raise SystemExit(f"evidence-service failed: {error}") from error
+    print(report.render())
+    return 0
+
+
+def cmd_evidence_service_install(args: argparse.Namespace, store: MemoryStore) -> int:
+    try:
+        report = evidence_service_install(
+            args.root,
+            target=args.target,
+            output=args.output,
+            interval_seconds=args.interval,
+            apply=not args.no_apply,
+            record=not args.no_record,
+            write=args.write,
+        )
+    except ValueError as error:
+        raise SystemExit(f"evidence-service-install failed: {error}") from error
     print(report.render())
     return 0
 

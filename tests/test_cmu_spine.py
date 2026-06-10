@@ -20,10 +20,12 @@ from cmu.demo_walkthrough import demo_walkthrough
 from cmu.dist_check import dist_check
 from cmu.evidence_monitor import monitor_checkpoints
 from cmu.evidence_service import run_evidence_service
+from cmu.evidence_service_install import evidence_service_install
 from cmu.evidence_session import run_evidence_session
 from cmu.evidence_watch import run_evidence_watch
 from cmu.fixture_repos import create_fixture_repo
 from cmu.hardening_cycle import hardening_cycle_report
+from cmu.host_examples import host_examples
 from cmu.host_path_suite import run_host_path_suite
 from cmu.host_setup_manifest import host_setup_manifest
 from cmu.install_check import REQUIRED_README_COMMANDS, REQUIRED_SCRIPTS, install_check
@@ -51,6 +53,7 @@ from cmu.retrieval import (
 )
 from cmu.review_queue import review_queue
 from cmu.review_export import export_review_payload
+from cmu.review_inbox import review_inbox_from_export, review_inbox_from_reports
 from cmu.review_reminders import review_reminders
 from cmu.reminder_delivery import deliver_reminders_to_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
@@ -11455,15 +11458,18 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
                 sorted(report.files),
                 [
                     "future-v999-export.json",
+                    "historical-2023-current-schema-export.json",
                     "historical-2024-current-schema-export.json",
                     "invalid-missing-memories.json",
                     "legacy-v0-export.json",
+                    "migration-v0-to-current-plan.json",
                     "valid-current-export.json",
                 ],
             )
             self.assertTrue(compat.passed, compat.render())
             self.assertIn("historical current-schema fixture still validates", compat.render())
             self.assertIn("legacy schema fixture failed validation", compat.render())
+            self.assertIn("migration fixture failed safely", compat.render())
 
             output = StringIO()
             with redirect_stdout(output):
@@ -11483,7 +11489,7 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             rendered = report.render()
 
             self.assertTrue(report.passed, rendered)
-            self.assertEqual({item.kind for item in report.items}, {"billing-incident", "checkout-release"})
+            self.assertEqual({item.kind for item in report.items}, {"billing-incident", "checkout-release", "inventory-migration"})
             self.assertTrue(all(item.scenario_passed for item in report.items))
             self.assertTrue(all(item.runner_passed for item in report.items))
             self.assertTrue(all(item.codex_ok for item in report.items))
@@ -11649,6 +11655,134 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             openai_payload = json.loads((Path(tmp) / ".cmu" / "openai_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(sorted(openai_payload["adapters"]), ["openai"])
             self.assertIn("CMU Host Setup Manifest", output.getvalue())
+
+    def test_evidence_service_install_generates_service_manager_wrappers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = evidence_service_install(tmp, target="windows-task", output=".cmu/wrappers", interval_seconds=5, write=True)
+            rendered = report.render()
+            wrapper_dir = Path(tmp) / ".cmu" / "wrappers"
+            manifest = json.loads((wrapper_dir / "cmu-evidence-service.install.json").read_text(encoding="utf-8"))
+            script = (wrapper_dir / "cmu-evidence-service-task.ps1").read_text(encoding="utf-8")
+
+            self.assertTrue(report.wrote, rendered)
+            self.assertEqual(manifest["schema"], "cmu-evidence-service-install/v1")
+            self.assertIn("evidence-service", manifest["command"])
+            self.assertIn("--interval 5", manifest["command"])
+            self.assertIn("Set-Location", script)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "evidence-service-install", "--target", "systemd-user", "--interval", "0", "--write"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertTrue((Path(tmp) / ".cmu" / "service-wrappers" / "cmu-evidence-service.service").exists())
+            self.assertIn("CMU Evidence Service Install", output.getvalue())
+
+    def test_host_examples_write_manifest_derived_runtime_examples(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = host_examples(tmp, host="all", output=".cmu/examples", write=True)
+            example_dir = Path(tmp) / ".cmu" / "examples"
+            codex = json.loads((example_dir / "codex-mcp.json").read_text(encoding="utf-8"))
+            openai = json.loads((example_dir / "openai-runner-event.json").read_text(encoding="utf-8"))
+
+            self.assertTrue(report.wrote, report.render())
+            self.assertEqual(codex["mcpServers"]["central-memory-unit"]["command"], "cmu-mcp")
+            self.assertEqual(openai["event"], "openai.run.started")
+            self.assertTrue((example_dir / "mcp-tool-call.json").exists())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "host-examples", "--host", "openai", "--output", ".cmu/openai-example", "--write"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertTrue((Path(tmp) / ".cmu" / "openai-example" / "openai-runner-event.json").exists())
+            self.assertFalse((Path(tmp) / ".cmu" / "openai-example" / "codex-mcp.json").exists())
+
+    def test_review_inbox_renders_live_and_exported_non_cli_review_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory = Memory.create(
+                type=MemoryType.PRACTICE,
+                title="Inbox authority gap",
+                summary="Review inbox should surface stable authority gaps.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu"]),
+                liability_score=4,
+                approved_by="legacy owner",
+            )
+            MemoryStore(tmp).add(memory)
+            memories = MemoryStore(tmp).list()
+            receipts = MemoryUseStore(tmp).list()
+            team_scopes = TeamDirectoryStore(tmp).list()
+            inbox = review_inbox_from_reports(
+                root=tmp,
+                queue=review_queue(memories, receipts, team_scopes),
+                handoffs=team_review_handoffs(memories, team_scopes),
+                reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
+            )
+            self.assertGreaterEqual(len(inbox.items), 1, inbox.render())
+            self.assertTrue(inbox.to_json().startswith("{"))
+
+            export_path = Path(tmp) / ".cmu" / "review_export.json"
+            export_review_payload(
+                root=tmp,
+                output=export_path,
+                queue=review_queue(memories, receipts, team_scopes),
+                handoffs=team_review_handoffs(memories, team_scopes),
+                reminders=review_reminders(memories, receipts, team_scopes=team_scopes),
+                write=True,
+            )
+            exported = review_inbox_from_export(export_path)
+            self.assertEqual(len(exported.items), len(inbox.items))
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-inbox", "--input", str(export_path), "--json"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["schema"], "cmu-review-inbox/v1")
+
+    def test_fixture_repo_catalog_includes_inventory_migration_fixture(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "inventory-migration"
+            report = create_fixture_repo("inventory-migration", fixture_root)
+            self.assertEqual(report.kind, "inventory-migration")
+            self.assertTrue((fixture_root / "src" / "inventory" / "migrate.py").exists())
+            self.assertTrue((fixture_root / "tests" / "test_inventory_migrate.py").exists())
+
+            memories = MemoryStore(fixture_root).list()
+            scenarios = ScenarioLibraryStore(fixture_root).list(tag="migration")
+            self.assertEqual(len(memories), 1)
+            self.assertEqual(len(scenarios), 1)
+            self.assertEqual(scenarios[0].expect_memory, memories[0].id)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", str(fixture_root), "scenario-run", "--tag", "fixture", "--strict"])
+            self.assertEqual(exit_code, 0, output.getvalue())
+
+    def test_portable_fixture_seed_adds_migration_and_multiple_historical_fixtures(self) -> None:
+        with TemporaryDirectory() as tmp:
+            MemoryStore(tmp).add(
+                Memory.create(
+                    type=MemoryType.SITUATION,
+                    title="Portable migration corpus memory",
+                    summary="Portable fixtures should include migration and historical corpus examples.",
+                    scope=MemoryScope(code=["portable"]),
+                    evidence=["Fixture corpus uses real exported stores."],
+                )
+            )
+            fixture_dir = Path(tmp) / "fixtures"
+            report = seed_portable_fixtures(tmp, fixture_dir, include_historical=True)
+            self.assertIn("migration-v0-to-current-plan.json", report.files)
+            self.assertIn("historical-2023-current-schema-export.json", report.files)
+            self.assertIn("historical-2024-current-schema-export.json", report.files)
+
+            compat = portable_compat_report(fixture_dir)
+            self.assertTrue(compat.passed, compat.render())
+            self.assertIn("migration fixture failed safely", compat.render())
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "portable-compat", "--fixture-dir", str(fixture_dir)])
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertIn("migration-v0-to-current-plan.json", output.getvalue())
 
 
 def add_strong_receipts(root: str, memory: Memory, *, count: int) -> None:

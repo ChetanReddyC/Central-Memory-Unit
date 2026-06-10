@@ -10,7 +10,7 @@ from .store import MemoryStore
 
 
 FIXTURE_REPO_VERSION = "cmu-fixture-repo/v1"
-FIXTURE_KINDS = {"billing-incident", "checkout-release"}
+FIXTURE_KINDS = {"billing-incident", "checkout-release", "inventory-migration"}
 
 
 @dataclass
@@ -59,6 +59,8 @@ def create_fixture_repo(kind: str, output: Path | str) -> FixtureRepoReport:
         return create_checkout_release_fixture(root)
     if normalized == "billing-incident":
         return create_billing_incident_fixture(root)
+    if normalized == "inventory-migration":
+        return create_inventory_migration_fixture(root)
     raise ValueError(f"unsupported fixture kind: {kind}")
 
 
@@ -234,6 +236,96 @@ def create_billing_incident_fixture(root: Path) -> FixtureRepoReport:
     warnings = init_git(root)
     return FixtureRepoReport(
         kind="billing-incident",
+        output=root,
+        memory_id=memory.id,
+        scenario_id=scenario.id,
+        files=sorted(written + [".cmu/memories.json", ".cmu/scenarios.json"]),
+        warnings=warnings,
+    )
+
+
+def create_inventory_migration_fixture(root: Path) -> FixtureRepoReport:
+    written: list[str] = []
+    write_fixture_file(
+        root,
+        "README.md",
+        "# Inventory Migration Fixture\n\nA tiny repository used by CMU migration, scenario, and host-path tests.\n",
+        written,
+    )
+    write_fixture_file(
+        root,
+        "src/inventory/migrate.py",
+        "\n".join(
+            [
+                '"""Inventory migration helpers for the CMU fixture catalog."""',
+                "",
+                "def requires_shadow_count(before: int, after: int) -> bool:",
+                "    return abs(before - after) > 0",
+                "",
+            ]
+        ),
+        written,
+    )
+    write_fixture_file(
+        root,
+        "tests/test_inventory_migrate.py",
+        "\n".join(
+            [
+                "from src.inventory.migrate import requires_shadow_count",
+                "",
+                "",
+                "def test_shadow_count_required_when_counts_change():",
+                "    assert requires_shadow_count(10, 11)",
+                "    assert not requires_shadow_count(10, 10)",
+                "",
+            ]
+        ),
+        written,
+    )
+    memory = Memory.create(
+        type=MemoryType.PRACTICE,
+        title="Inventory migration requires shadow count proof",
+        summary="Inventory migration work should compare shadow counts before switching read paths.",
+        scope=MemoryScope(
+            ownership=["Inventory owner"],
+            code=["inventory", "src/inventory/migrate.py"],
+            workflow=["migration", "data validation"],
+            environment=["staging", "prod"],
+            actor=["agent"],
+        ),
+        evidence=["Fixture repository encodes inventory count drift risk during migration."],
+        use_this_path="Run shadow count comparison before switching inventory reads.",
+        avoid_this="Do not flip inventory read paths without proving count parity.",
+        challenge_only_if="Inventory migrations no longer use shadow-read validation.",
+        liability_score=4,
+        confidence=0.87,
+        approved_by="Inventory owner",
+        authority_owner="Inventory team",
+        authority_role="owner",
+        authority_consequence="high",
+    )
+    MemoryStore(root).add(memory)
+    scenario = ScenarioDefinition.create(
+        name="inventory migration shadow count scenario",
+        description="High-risk inventory migration should surface the fixture Practice memory.",
+        prompt="switch inventory read path after migration count drift",
+        actor="agent",
+        area="inventory",
+        files=["src/inventory/migrate.py"],
+        workflow=["migration", "data validation"],
+        environment=["prod"],
+        risk="high",
+        irreversible=True,
+        expect_trigger="must-call",
+        expect_action="action-note",
+        expect_memory=memory.id,
+        expect_candidate="not-recommended",
+        tags=["fixture", "inventory", "runner-host-path", "migration"],
+    )
+    ScenarioLibraryStore(root).add(scenario)
+    warnings = init_git(root)
+    return FixtureRepoReport(
+        kind="inventory-migration",
         output=root,
         memory_id=memory.id,
         scenario_id=scenario.id,

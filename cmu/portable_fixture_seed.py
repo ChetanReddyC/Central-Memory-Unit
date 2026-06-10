@@ -27,7 +27,7 @@ class PortableFixtureSeedReport:
         lines.extend(
             [
                 "",
-                "Proof Meaning: portability compatibility now has a reproducible fixture corpus seeded from a real CMU store, including current, invalid, future-schema, and legacy-schema migration cases.",
+                "Proof Meaning: portability compatibility now has a reproducible fixture corpus seeded from a real CMU store, including current, historical, invalid, future-schema, legacy-schema, and migration-planned cases.",
             ]
         )
         return "\n".join(lines)
@@ -53,6 +53,10 @@ def seed_portable_fixtures(
         historical["exported_at"] = "2024-01-01T00:00:00+00:00"
         historical["warnings"] = list(historical.get("warnings", [])) + ["historical fixture derived from a real current-schema export"]
         write_json(target / "historical-2024-current-schema-export.json", historical, files)
+        older_historical = dict(current)
+        older_historical["exported_at"] = "2023-06-01T00:00:00+00:00"
+        older_historical["warnings"] = list(older_historical.get("warnings", [])) + ["older historical current-schema export for corpus breadth"]
+        write_json(target / "historical-2023-current-schema-export.json", older_historical, files)
     invalid = dict(current)
     invalid.pop("contents", None)
     write_json(target / "invalid-missing-memories.json", invalid, files)
@@ -66,6 +70,11 @@ def seed_portable_fixtures(
         "receipts": current.get("uses", []),
     }
     write_json(target / "legacy-v0-export.json", legacy, files)
+    migration = dict(legacy)
+    migration["schema"] = "cmu-portable-bundle/v0-migration-plan"
+    migration["migration_target_schema"] = current.get("schema")
+    migration["migration_notes"] = ["fixture requires explicit migration support before import"]
+    write_json(target / "migration-v0-to-current-plan.json", migration, files)
     return PortableFixtureSeedReport(output=target, files=sorted(files))
 
 

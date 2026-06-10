@@ -61,7 +61,7 @@ class PortableCompatReport:
         lines.extend(
             [
                 "",
-                "Proof Meaning: portable bundle compatibility is now checked against saved fixtures, including current valid bundles, historical current-schema exports, intentionally invalid bundles, and future-schema bundles that must fail safely.",
+                "Proof Meaning: portable bundle compatibility is now checked against saved fixtures, including current valid bundles, historical current-schema exports, intentionally invalid bundles, future-schema bundles, legacy bundles, and migration-planned bundles that must fail safely.",
             ]
         )
         return "\n".join(lines)
@@ -123,12 +123,17 @@ def evaluate_fixture(path: Path) -> PortableCompatFixture:
         if not validation.valid and schema and schema != PORTABLE_BUNDLE_VERSION:
             return PortableCompatFixture(path, expectation, schema, "pass", "legacy schema fixture failed validation instead of importing silently")
         return PortableCompatFixture(path, expectation, schema, "fail", "legacy fixture did not fail safely")
-    return PortableCompatFixture(path, expectation, schema, "fail", "fixture filename must start with valid-, historical-, invalid-, legacy-, or future-")
+    if expectation == "migration":
+        migration_target = bundle.get("migration_target_schema", "") if isinstance(bundle, dict) else ""
+        if not validation.valid and schema and schema != PORTABLE_BUNDLE_VERSION and migration_target == PORTABLE_BUNDLE_VERSION:
+            return PortableCompatFixture(path, expectation, schema, "pass", "migration fixture failed safely pending explicit migration support")
+        return PortableCompatFixture(path, expectation, schema, "fail", "migration fixture did not fail safely with a current-schema target")
+    return PortableCompatFixture(path, expectation, schema, "fail", "fixture filename must start with valid-, historical-, invalid-, legacy-, migration-, or future-")
 
 
 def expectation_for_path(path: Path) -> str:
     name = path.name.lower()
-    for expectation in ["valid", "historical", "invalid", "future", "legacy"]:
+    for expectation in ["valid", "historical", "invalid", "future", "legacy", "migration"]:
         if name.startswith(f"{expectation}-"):
             return expectation
     return "unknown"

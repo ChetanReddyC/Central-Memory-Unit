@@ -80,12 +80,18 @@ First machine-readable host/IDE setup manifest slice now implemented:
 - The manifest is generated from live `AgentIntegration`, MCP tool schemas, and adapter manifests instead of duplicated setup prose.
 - Automated tests verify MCP server/tool contracts, Codex/OpenAI adapter inclusion, CLI write behavior, and root-relative output paths. Manual verification under `.manual/five-capability-proof-20260610` wrote `.cmu/host_setup_manifest.json` with MCP, Codex, and OpenAI setup data.
 
+First manifest-derived host examples slice now implemented:
+
+- `cmu host-examples` generates runtime example files from the live `host-setup-manifest` contract instead of hand-written setup prose.
+- The examples cover Codex MCP configuration, OpenAI runner event input, and direct MCP tool-call JSON.
+- Preview mode is read-only; `--write` persists files under the CMU root for host/IDE adoption.
+- Automated tests verify generated Codex, OpenAI, and MCP example files plus CLI host filtering. Manual verification under `.manual/five-burndown-host` wrote `.cmu/host-examples` and confirmed the live manifest still reports MCP, Codex, and OpenAI commands.
+
 Still needed:
 
 - Additional host-specific runner adapters beyond Codex-style and OpenAI Agents-style events.
 - Host-specific MCP setup polish beyond the first machine-readable manifest.
 - Deeper IDE/coding-agent integration beyond manifest handoff.
-- Integration examples for common agent runtimes.
 - Runtime behavior where CMU becomes part of the work loop, not an optional manual command.
 
 ### 3. Automatic Evidence Loop
@@ -117,9 +123,15 @@ First background evidence service slice now implemented:
 - The service can apply only the same conservative clean high-confidence links as `evidence-session`, can record every session, and records durable service-run state under `.cmu/evidence_service_runs.json`.
 - Automated tests verify service state persistence and CLI execution through real stores. Manual verification under `.manual/five-capability-proof-20260610` ran `evidence-service --interval 0 --max-cycles 1`, recorded one service cycle, and wrote `.cmu/evidence_service_runs.json`.
 
+First evidence service-manager wrapper slice now implemented:
+
+- `cmu evidence-service-install` generates concrete service-manager wrapper artifacts for `cmu evidence-service`.
+- Supported targets are user systemd units, Windows Task Scheduler PowerShell wrappers, and launchd plist files.
+- Preview mode is non-mutating; `--write` persists the wrapper manifest and target-specific service file under the CMU root without registering an OS service.
+- Automated tests verify generated wrapper metadata, command content, Windows and systemd file creation, and CLI dispatch. Manual verification under `.manual/five-burndown-service` wrote a Windows Task Scheduler wrapper and install manifest.
+
 Still needed:
 
-- OS/service-manager installation wrappers around `cmu evidence-service`.
 - Broader automatic receipt-to-checkpoint linking policy across long-running work sessions.
 - Richer documentation-only and multi-commit handling beyond the current clean/risky monitor gate.
 - Longitudinal evidence that tracks whether memory saved time, reduced mistakes, or created drag.
@@ -176,11 +188,17 @@ First structured non-CLI review export slice now implemented:
 - Preview mode is read-only; `--write` writes the payload under the CMU root without promoting, approving, retiring, resolving, or mutating any memory.
 - Automated tests verify preview/write behavior, payload schema, authority/handoff card inclusion, and root-relative output paths. Manual verification under `.manual/five-capability-proof-20260610` wrote `.cmu/review_export.json` with review queue cards, handoff cards, and reminders.
 
+First review inbox slice now implemented:
+
+- `cmu review-inbox` renders a priority-ordered non-CLI inbox from either live stores or a saved `cmu-review-export/v1` payload.
+- The inbox combines review queue cards, owner/team handoffs, and reminders into structured items with priority, source, category, subject id, title, and exact follow-up command.
+- `--json` emits a read-only payload for UI or workflow adapters without approving, promoting, retiring, resolving, notifying, or mutating memory.
+- Automated tests verify live-store inbox generation, exported-payload ingestion, JSON rendering, and CLI dispatch. Manual verification under `.manual/five-burndown-review` exported real review cards and rendered a three-item JSON inbox with one urgent handoff.
+
 Still needed:
 
 - Richer interactive or UI-backed approval cards beyond the read-only CLI queue.
 - Deeper controlled UX flows beyond the current authority, team-metadata, challenge, strengthen, retire, split, and narrow-scope CLI apply paths.
-- Clear human review moments in non-CLI surfaces beyond the first structured export payload.
 - Better owner/team review flows beyond local metadata handoff application.
 - Actual scheduling/notification delivery beyond the machine-readable reminder payload.
 
@@ -305,10 +323,15 @@ First fixture catalog expansion slice now implemented:
 - Automated tests verify the new fixture files, stable authority metadata, saved scenario expectations, and strict scenario pass behavior through real generated stores.
 - Manual verification created `.manual/billing-incident-proof` and confirmed `cmu --root .manual/billing-incident-proof scenario-run --tag fixture --strict` passed.
 
+Second fixture catalog expansion slice now implemented:
+
+- `cmu fixture-repo-create --kind inventory-migration` adds a third concrete repository fixture with real inventory migration source/test files, scoped high-consequence Practice memory, and a saved strict scenario.
+- The inventory fixture is tagged for fixture, runner-host-path, and migration coverage, so the host-path suite now exercises checkout, billing, and inventory domains.
+- Automated tests verify generated files, persisted memory/scenario linkage, strict scenario pass behavior, and host-path suite coverage across all three fixture kinds. Manual verification under `.manual/five-burndown-fixture/inventory-migration` confirmed the generated fixture's strict scenario passed.
+
 Still needed:
 
 - Runner-scenario evidence that uses the autonomous hook surface. First slice now implemented through `cmu runner-scenario`, which copies the source store into a temporary isolated store, executes real runner hooks there, and checks start/memory/Candidate/checkpoint expectations without mutating source memory or receipts.
-- Richer fixture repository catalog beyond the first checkout-release and billing-incident fixtures.
 - Before/after comparisons of agent behavior with and without CMU.
 - Longitudinal scenario suites.
 - Measurable usefulness and drag metrics.
@@ -391,6 +414,12 @@ First historical portable fixture slice now implemented:
 - `cmu portable-compat` now recognizes `historical-*.json` fixtures and requires them to validate under the current bundle schema, giving the corpus a saved older-export class without importing it.
 - Automated tests verify historical fixture creation and compatibility through the real export/validate path. Manual verification under `.manual/five-slice-proof/portable-history-fixtures` passed valid, historical, invalid, future, and legacy fixtures.
 
+First migration-oriented portable corpus slice now implemented:
+
+- `cmu portable-fixture-seed --historical` now writes two historical current-schema exports plus a `migration-v0-to-current-plan.json` fixture derived from the real store.
+- `cmu portable-compat` recognizes `migration-*.json` fixtures and requires them to fail safely while naming the current schema migration target, so migration-shaped bundles cannot import silently before explicit migration support exists.
+- Automated tests verify the expanded corpus and compatibility behavior through real exported stores and CLI paths. Manual verification under `.manual/five-burndown-portable` seeded seven fixtures and confirmed all compatibility expectations passed, including the migration fixture.
+
 First hardening-cycle adoption gate now implemented:
 
 - `cmu hardening-cycle --portable-fixture-dir <dir>` gives adopters one cautious pass/review report over the five current product-hardening tracks: team owner metadata, checkpoint evidence monitoring, fixture catalog coverage, portable compatibility fixtures, and review reminders.
@@ -404,7 +433,6 @@ First non-CLI reminder delivery contract now implemented:
 Still needed:
 
 - Published/package workflow beyond local built-distribution validation.
-- Broader portable bundle fixture corpus across future schema migrations and more historical real-world bundles.
 
 ## Strategic Priority Order
 
@@ -431,11 +459,11 @@ The next implementation phase should be hardening and packaging, not more tiny s
 
 Most recent completed implementation slice:
 
-This cycle implemented five concrete unfinished CMU capabilities end to end: background evidence service operation (`cmu evidence-service`), machine-readable host/IDE setup manifest (`cmu host-setup-manifest`), structured non-CLI review export (`cmu review-export`), gravity-backed lifecycle settling (`cmu lifecycle-settle`), and receipt-pressure lifecycle scope suggestions (`cmu lifecycle-scope-suggest`). Each slice has real code, CLI wiring, tests, and manual verification against a persisted `.cmu` store under `.manual/five-capability-proof-20260610`.
+This cycle implemented five concrete unfinished CMU capabilities end to end: service-manager wrapper generation for the evidence service (`cmu evidence-service-install`), manifest-derived host/runtime examples (`cmu host-examples`), a read-only review inbox over live/exported review payloads (`cmu review-inbox`), a third generated fixture repository domain (`cmu fixture-repo-create --kind inventory-migration`), and a migration-oriented portable fixture corpus (`portable-fixture-seed` plus `portable-compat` migration fixture checks). Each slice has real code, CLI wiring, tests, and manual verification against persisted `.cmu` stores under `.manual/five-burndown-*`.
 
 Next best implementation slice:
 
-The next product-hardening slice should move one of these workflow surfaces further toward production operation: add OS/service-manager wrappers around `cmu evidence-service`, add richer IDE/coding-agent examples that consume `host-setup-manifest`, build an actual UI/inbox surface on top of `review-export`, or deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
+The next product-hardening slice should move one of these workflow surfaces further toward production operation: deepen long-session receipt linking policy, build richer IDE/coding-agent integration beyond generated examples, add actual scheduling/notification delivery beyond local JSONL outbox payloads, or deepen lifecycle settling/scope-refinement with approved merge, split, decay, and authority handoff policies. The cleanup memories should stay on quality watch until future work creates linked receipts proving usefulness or drag.
 
 Maintenance rule:
 
