@@ -78,6 +78,7 @@ from .review_queue import review_queue
 from .review_export import export_review_payload
 from .review_inbox import review_inbox_from_export, review_inbox_from_reports
 from .review_reminders import review_reminders
+from .review_tui import terminal_review
 from .review_ui import build_review_ui
 from .reminder_delivery import deliver_reminders_to_outbox
 from .reminder_dispatch import dispatch_reminder_outbox
@@ -851,6 +852,17 @@ def build_parser() -> argparse.ArgumentParser:
     review_ui_parser = subparsers.add_parser("review-ui", help="Generate read-only UI-backed review cards from the live review inbox.")
     review_ui_parser.add_argument("--write", action="store_true", help="Write .cmu/review-ui/index.html under the CMU root.")
     review_ui_parser.set_defaults(func=cmd_review_ui)
+
+    review_tui_parser = subparsers.add_parser("review-tui", help="Review and optionally apply approval cards from a focused terminal surface.")
+    review_tui_parser.add_argument("--select", type=int, default=0, help="1-based review card number to inspect/apply. Defaults to preview only.")
+    review_tui_parser.add_argument("--interactive", action="store_true", help="Open an arrow-key terminal selector for review cards.")
+    review_tui_parser.add_argument("--apply", action="store_true", help="Apply the selected supported card through the controlled gate.")
+    review_tui_parser.add_argument("--approved-by", default="", help="Owner or team approving stable Practice/Anchor promotion.")
+    review_tui_parser.add_argument("--authority-owner", default="", help="Accountable person or team for stable-memory authority.")
+    review_tui_parser.add_argument("--approver-role", choices=["agent", "member", "owner", "team", "org"], default="")
+    review_tui_parser.add_argument("--consequence", choices=["low", "medium", "high", "critical"], default="")
+    review_tui_parser.add_argument("--review-due", default="", help="Optional ISO-8601 authority review expiry.")
+    review_tui_parser.set_defaults(func=cmd_review_tui)
 
     product_console_parser = subparsers.add_parser("product-console", help="Render the read-only human-facing CMU product console.")
     product_console_parser.add_argument("--memory", default="", help="Focus graph, evidence, cleanup, and navigation on one memory id.")
@@ -2495,6 +2507,24 @@ def cmd_review_ui(args: argparse.Namespace, store: MemoryStore) -> int:
     report = build_review_ui(args.root, inbox, write=args.write)
     print(report.render())
     return 0
+
+
+def cmd_review_tui(args: argparse.Namespace, store: MemoryStore) -> int:
+    report = terminal_review(
+        store,
+        MemoryUseStore(args.root).list(),
+        TeamDirectoryStore(args.root).list(),
+        select=args.select,
+        apply=args.apply,
+        approved_by=args.approved_by,
+        authority_owner=args.authority_owner,
+        approver_role=args.approver_role,
+        consequence=args.consequence,
+        review_due=args.review_due,
+        interactive=args.interactive,
+    )
+    print(report.render())
+    return 0 if report.result is None or report.result.applied or not args.apply else 1
 
 
 def live_review_inbox(root: str, store: MemoryStore):

@@ -400,6 +400,13 @@ First human-facing product console slice now implemented:
 - `--memory <id>` focuses the graph, evidence, cleanup, and navigation view on one stored memory without mutating memories, receipts, team scopes, reviews, or graph links.
 - Automated tests verify the console against real `MemoryStore`, `MemoryUseStore`, graph relationships, review cards, readiness cleanup items, CLI JSON output, focus filtering, and read-only store behavior. Manual verification under `.manual/product-console-proof-20260610` seeded a real `.cmu` store, linked a real receipt, and confirmed `cmu product-console` and `cmu product-console --json` rendered graph/tree, review, trust/evidence, cleanup, and situation-path sections.
 
+First terminal approval surface now implemented:
+
+- `cmu review-tui` renders live review cards as a focused terminal approval surface with card numbers, evidence, suggested commands, direct terminal actions, and a full arrow-key `--interactive` flow.
+- Preview mode is read-only; interactive mode now supports card selection, detail/action selection, approval metadata prompts, final confirmation, and controlled application through the existing `cmu promote` gates. `--select <n> --apply` remains available for scripted use.
+- Candidate -> Situation promotion can be applied from inside the terminal UI, while Practice and Anchor approval still require explicit owner/team approval and optional authority owner, approver role, consequence, and review expiry metadata.
+- Automated tests verify terminal preview rendering, arrow-key selector movement/cancel behavior, full in-UI Candidate approval/confirmation, full in-UI Practice approval with prompted metadata, selected Candidate promotion, and selected Practice approval with persisted authority metadata through real CLI/store paths. Manual verification against the workspace rendered the current stable-promotion review cards without applying trust changes.
+
 ### 10. Packaging, Install, And Documentation
 
 Motive: once the core engine works, CMU needs to be easy to adopt. A powerful memory layer that is hard to install will not become part of daily work.

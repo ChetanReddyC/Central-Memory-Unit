@@ -69,6 +69,7 @@ from cmu.review_queue import review_queue
 from cmu.review_export import export_review_payload
 from cmu.review_inbox import review_inbox_from_export, review_inbox_from_reports
 from cmu.review_reminders import review_reminders
+from cmu.review_tui import arrow_key_select, terminal_review
 from cmu.reminder_delivery import deliver_reminders_to_outbox
 from cmu.reminder_dispatch import dispatch_reminder_outbox
 from cmu.runner_hooks import RUNNER_HOOKS_VERSION, AutonomousRunnerHooks, runner_hooks_report
@@ -12347,6 +12348,238 @@ class ProductHardeningWorkflowTests(unittest.TestCase):
             self.assertIn("UI authority gap", html_text)
             self.assertIn("cmu authority-set", html_text)
             self.assertIn("Controlled action packet", html_text)
+
+    def test_review_tui_previews_terminal_approval_cards(self) -> None:
+        with TemporaryDirectory() as tmp:
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Terminal approval candidate",
+                summary="Terminal approval should show a candidate ready for Situation promotion.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["TUI review fixture."],
+                use_this_path="Use the terminal approval surface for low-friction review.",
+                challenge_only_if="Use raw commands when terminal review cannot express the action.",
+            )
+            MemoryStore(tmp).add(candidate)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-tui"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("CMU Terminal Review", rendered)
+            self.assertIn("candidate-promotion", rendered)
+            self.assertIn("Terminal Action:", rendered)
+            self.assertIn("review-tui --select <n> --apply", rendered)
+
+    def test_review_tui_supports_interactive_card_selection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Interactive terminal candidate",
+                summary="Interactive review should select a card without applying it.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Interactive selection proof."],
+                use_this_path="Prompt for the review card when requested.",
+                challenge_only_if="Preview unless apply is explicit.",
+            )
+            store.add(candidate)
+
+            report = terminal_review(store, [], [], input_fn=lambda prompt: "1")
+
+            self.assertEqual(report.selected_index, 1)
+            self.assertIsNotNone(report.result)
+            self.assertFalse(report.result.applied)
+            self.assertIn("preview only", report.result.reason)
+
+    def test_review_tui_arrow_selector_moves_and_selects_card(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Arrow candidate",
+                summary="Arrow selector should move to this second card.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Arrow selector proof."],
+                use_this_path="Select cards with arrow keys.",
+                challenge_only_if="Cancel if the card is wrong.",
+            )
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Arrow situation",
+                summary="Situation creates Practice and Anchor approval cards.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Stable approval proof."],
+                use_this_path="Approve only with explicit authority.",
+                challenge_only_if="Challenge stale authority.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(situation)
+            store.add(candidate)
+            queue = review_queue(store.list(), [], [])
+            keys = iter(["down", "enter"])
+            frames: list[str] = []
+
+            selected = arrow_key_select(queue, key_reader=lambda: next(keys), output_fn=frames.append)
+
+            self.assertEqual(selected, 2)
+            self.assertTrue(any("CMU Review" in frame for frame in frames))
+            self.assertTrue(any("Keys: up/down" in frame for frame in frames))
+
+    def test_review_tui_arrow_selector_can_cancel(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Cancel candidate",
+                summary="Arrow selector should be cancellable.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Cancel selector proof."],
+                use_this_path="Cancel without applying.",
+                challenge_only_if="Review later.",
+            )
+            store.add(candidate)
+            queue = review_queue(store.list(), [], [])
+
+            selected = arrow_key_select(queue, key_reader=lambda: "quit", output_fn=lambda text: None)
+
+            self.assertEqual(selected, 0)
+
+    def test_review_tui_interactive_flow_applies_candidate_after_confirmation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Interactive approval candidate",
+                summary="Full terminal flow should approve a Candidate from inside the UI.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Full interactive candidate proof."],
+                use_this_path="Choose approve and confirm inside the terminal UI.",
+                challenge_only_if="Cancel before confirmation if the card is wrong.",
+            )
+            store.add(candidate)
+            keys = iter(["enter", "enter", "enter"])
+
+            report = terminal_review(store, [], [], interactive=True, key_reader=lambda: next(keys), output_fn=lambda text: None)
+
+            updated = MemoryStore(tmp).list()[0]
+            self.assertEqual(report.selected_index, 1)
+            self.assertIsNotNone(report.result)
+            self.assertTrue(report.result.applied)
+            self.assertEqual(updated.type, MemoryType.SITUATION)
+
+    def test_review_tui_interactive_flow_applies_practice_with_prompted_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Interactive practice approval",
+                summary="Full terminal flow should approve Practice with prompted authority metadata.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"], workflow=["review"]),
+                evidence=["Full interactive practice proof."],
+                use_this_path="Approve stable memory from the terminal UI.",
+                challenge_only_if="Challenge if authority or scope changes.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(situation)
+            keys = iter(["down", "enter", "enter", "enter"])
+            answers = iter(["Platform owner", "Platform", "owner", "high", ""])
+
+            report = terminal_review(
+                store,
+                [],
+                [],
+                interactive=True,
+                key_reader=lambda: next(keys),
+                input_fn=lambda prompt: next(answers),
+                output_fn=lambda text: None,
+            )
+
+            updated = MemoryStore(tmp).list()[0]
+            self.assertEqual(report.selected_index, 2)
+            self.assertIsNotNone(report.result)
+            self.assertTrue(report.result.applied)
+            self.assertEqual(updated.type, MemoryType.PRACTICE)
+            self.assertEqual(updated.approved_by, "Platform owner")
+            self.assertEqual(updated.authority_owner, "Platform")
+            self.assertEqual(updated.authority_role, "owner")
+            self.assertEqual(updated.authority_consequence, "high")
+
+    def test_review_tui_applies_candidate_promotion_from_selected_card(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            candidate = Memory.create(
+                type=MemoryType.CANDIDATE,
+                title="Terminal promotion candidate",
+                summary="A selected terminal card can apply the existing promotion gate.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"]),
+                evidence=["Candidate promotion proof."],
+                use_this_path="Apply selected terminal review cards through real gates.",
+                challenge_only_if="Keep as Candidate if required fields are missing.",
+            )
+            store.add(candidate)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--root", tmp, "review-tui", "--select", "1", "--apply"])
+
+            rendered = output.getvalue()
+            updated = MemoryStore(tmp).list()[0]
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("Apply Result:", rendered)
+            self.assertIn("Applied: yes", rendered)
+            self.assertEqual(updated.type, MemoryType.SITUATION)
+
+    def test_review_tui_applies_practice_approval_with_authority_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MemoryStore(tmp)
+            situation = Memory.create(
+                type=MemoryType.SITUATION,
+                title="Terminal practice approval",
+                summary="A selected terminal card can approve a stable Practice.",
+                scope=MemoryScope(ownership=["Platform"], code=["cmu/review_tui.py"], workflow=["review"]),
+                evidence=["Situation has stable promotion evidence."],
+                use_this_path="Use the terminal review surface for approved stable promotion.",
+                challenge_only_if="Challenge when the scope or evidence no longer holds.",
+                liability_score=4,
+                confidence=0.8,
+            )
+            store.add(situation)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--root",
+                        tmp,
+                        "review-tui",
+                        "--select",
+                        "2",
+                        "--apply",
+                        "--approved-by",
+                        "Platform owner",
+                        "--authority-owner",
+                        "Platform",
+                        "--approver-role",
+                        "owner",
+                        "--consequence",
+                        "high",
+                    ]
+                )
+
+            rendered = output.getvalue()
+            updated = MemoryStore(tmp).list()[0]
+            self.assertEqual(exit_code, 0, rendered)
+            self.assertIn("Applied: yes", rendered)
+            self.assertEqual(updated.type, MemoryType.PRACTICE)
+            self.assertEqual(updated.approved_by, "Platform owner")
+            self.assertEqual(updated.authority_owner, "Platform")
+            self.assertEqual(updated.authority_role, "owner")
+            self.assertEqual(updated.authority_consequence, "high")
 
     def test_cleanup_workflows_close_authority_receipts_evidence_and_audit_paths(self) -> None:
         with TemporaryDirectory() as tmp:
